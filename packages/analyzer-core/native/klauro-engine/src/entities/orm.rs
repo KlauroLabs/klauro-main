@@ -33,7 +33,7 @@ pub struct Model {
     pub name: String,
     pub file: u32,
     pub line: u32,
-    pub extends: Option<String>,
+    pub bases: Vec<String>,
     pub evidence: Option<String>,
     pub table: Option<String>,
     pub fields: Vec<Attribute>,
@@ -90,7 +90,7 @@ pub fn standing(models: Vec<Model>) -> Vec<Model> {
     loop {
         let before = established.len();
         for model in &models {
-            if model.extends.as_ref().is_some_and(|base| established.contains(base)) {
+            if model.bases.iter().any(|base| established.contains(base)) {
                 established.insert(model.name.clone());
             }
         }
@@ -98,12 +98,13 @@ pub fn standing(models: Vec<Model>) -> Vec<Model> {
             break;
         }
     }
+    let established_here = established.clone();
     let kept: Vec<Model> = models
         .into_iter()
         .filter(|model| established.contains(&model.name))
         .map(|mut model| {
             if model.evidence.is_none() {
-                model.evidence = model.extends.as_ref().map(|base| format!("extends {base}"));
+                model.evidence = model.bases.iter().find(|base| established_here.contains(*base)).map(|base| format!("extends {base}"));
             }
             model
         })

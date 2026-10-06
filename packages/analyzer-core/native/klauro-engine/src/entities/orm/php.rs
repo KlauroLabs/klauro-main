@@ -49,7 +49,7 @@ pub fn declared(text: &str) -> Vec<Model> {
             name,
             file: 0,
             line,
-            extends: base,
+            bases: base.into_iter().collect(),
             evidence,
             table: mapped_table(preface),
             fields: Vec::new(),

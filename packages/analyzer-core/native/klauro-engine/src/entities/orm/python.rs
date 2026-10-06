@@ -43,14 +43,14 @@ pub fn declared(text: &str) -> Vec<Model> {
         let whole = opening.get(0).expect("a whole match");
         let end = classes.get(at + 1).and_then(|next| next.get(0)).map(|next| next.start()).unwrap_or(text.len());
         let body = &text[whole.end()..end];
-        let bases: Vec<&str> = opening.get(2).map(|held| held.as_str()).unwrap_or_default().split(',').map(str::trim).filter(|base| !base.is_empty() && !base.contains('=')).collect();
+        let bases: Vec<&str> = top_level(opening.get(2).map(|held| held.as_str()).unwrap_or_default()).into_iter().map(str::trim).filter(|base| !base.is_empty() && !base.contains('=')).collect();
         let name = opening[1].to_string();
         let line = super::line_of(text, whole.start());
         let mut model = Model {
             name: name.clone(),
             file: 0,
             line,
-            extends: bases.first().map(|base| last_segment(base).to_string()),
+            bases: bases.iter().map(|base| last_segment(generic_free(base)).to_string()).collect(),
             evidence: None,
             table: patterns.tablename.captures(body).map(|held| held[1].to_string()),
             fields: Vec::new(),
@@ -59,7 +59,7 @@ pub fn declared(text: &str) -> Vec<Model> {
         };
         match framework {
             Framework::Django => {
-                if let Some(base) = bases.iter().find(|base| last_segment(base) == "Model") {
+                if let Some(base) = bases.iter().find(|base| last_segment(generic_free(base)) == "Model") {
                     model.evidence = Some(format!("extends {base}"));
                 }
                 django_fields(&patterns, body, &mut model);
@@ -97,6 +97,10 @@ impl Framework {
             Framework::None
         }
     }
+}
+
+fn generic_free(base: &str) -> &str {
+    base.split('[').next().unwrap_or(base)
 }
 
 fn statements(body: &str) -> Vec<String> {

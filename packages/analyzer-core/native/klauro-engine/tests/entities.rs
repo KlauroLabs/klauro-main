@@ -131,6 +131,14 @@ fn a_django_model_relates_through_its_relation_fields_wherever_the_target_is_spe
 }
 
 #[test]
+fn a_django_model_inherits_its_mapping_through_an_abstract_base_whichever_base_it_lists_and_a_generic_wrapper_is_not_a_model() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Ledger"), vec![("shop", "Shop", "N:1")]);
+    assert!(!named(&held).contains(&"ShopType"));
+    assert!(!named(&held).contains(&"Audited"));
+}
+
+#[test]
 fn a_mongoose_model_registered_over_a_schema_relates_through_its_ref_fields() {
     let held = entities("entities/orm");
     assert_eq!(references(&held, "Album"), vec![("tracks", "Track", "1:N")]);

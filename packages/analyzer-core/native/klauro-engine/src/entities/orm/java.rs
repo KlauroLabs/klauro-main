@@ -19,7 +19,7 @@ pub fn declared(text: &str) -> Vec<Model> {
             name: opening[2].to_string(),
             file: 0,
             line: line_of(text, whole.start()),
-            extends: opening.get(3).map(|base| last_segment(base.as_str()).to_string()),
+            bases: opening.get(3).map(|base| last_segment(base.as_str()).to_string()).into_iter().collect(),
             evidence: entity.is_match(&preface[tail_start..]).then(|| "@Entity".to_string()),
             table: table.captures(&preface[tail_start..]).map(|held| held[1].to_string()),
             fields: Vec::new(),

@@ -27,7 +27,7 @@ pub fn declared(text: &str) -> Vec<Model> {
             name,
             file: 0,
             line: line_of(text, open_at),
-            extends: None,
+            bases: Vec::new(),
             evidence: Some("mongoose Schema".to_string()),
             table: None,
             fields: Vec::new(),

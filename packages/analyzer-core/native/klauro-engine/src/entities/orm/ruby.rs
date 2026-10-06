@@ -65,7 +65,7 @@ pub fn declared(text: &str) -> Vec<Model> {
             file: 0,
             line: first as u32 + 1,
             evidence: RECORD_BASES.contains(&base.as_str()).then(|| format!("extends {base}")),
-            extends: Some(last_segment(&base).to_string()),
+            bases: vec![last_segment(&base).to_string()],
             table: None,
             fields: Vec::new(),
             relations,

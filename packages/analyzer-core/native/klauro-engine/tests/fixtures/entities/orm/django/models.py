@@ -21,3 +21,16 @@ class Owner(models.Model):
 
 class Supplier(models.Model):
     name = models.CharField(max_length=40)
+
+
+class Audited(models.Model):
+    class Meta:
+        abstract = True
+
+
+class Ledger(Audited, Generic[Region]):
+    shop = models.ForeignKey(Shop, on_delete=models.CASCADE)
+
+
+class ShopType(ModelObjectType[Shop]):
+    label = models.CharField(max_length=4)
