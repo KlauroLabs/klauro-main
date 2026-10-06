@@ -5,6 +5,7 @@ use tree_sitter::{Node, Tree};
 use crate::language::LanguageSpec;
 use crate::model::*;
 
+mod actix_routes;
 mod bounds;
 mod django_routes;
 mod ktor_routes;
@@ -115,6 +116,7 @@ pub struct Extractor<'a> {
     last_receiver: Option<String>,
     visited_as_an_arm: rustc_hash::FxHashSet<usize>,
     directives_declared: rustc_hash::FxHashSet<usize>,
+    attached_routes: rustc_hash::FxHashSet<usize>,
 }
 
 #[derive(Clone)]
@@ -160,6 +162,7 @@ impl<'a> Extractor<'a> {
             last_receiver: None,
             visited_as_an_arm: rustc_hash::FxHashSet::default(),
             directives_declared: rustc_hash::FxHashSet::default(),
+            attached_routes: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -1030,6 +1033,9 @@ impl<'a> Extractor<'a> {
             if scope.dispatch_param.is_some() {
                 self.declare_channel_dispatch_match(node, scope);
             }
+        }
+        if kind == "call_expression" {
+            self.declare_attached_route(node);
         }
         if kind == "case_block" {
             self.declare_scala_routes(node, scope);
@@ -3040,11 +3046,11 @@ impl<'a> Extractor<'a> {
         {
             self.labelled.insert(closure.id(), (callee.clone(), label, Vec::new()));
         }
-        if let Some(arguments) = arguments {
+        if let Some(arguments) = arguments.filter(|_| !self.composes_routes(node, &callee)) {
             let mut cursor = arguments.walk();
             let children: Vec<Node> = arguments.named_children(&mut cursor).map(unwrapped).collect();
             let already_an_mcp_tool = self.registers_an_mcp_tool(&receiver, &callee, &children);
-            let nested = if already_an_mcp_tool { None } else { self.mounted_route(arguments) };
+            let nested = if already_an_mcp_tool || crate::names::leaf(&callee) == "new" { None } else { self.mounted_route(arguments) };
             let direct = (!already_an_mcp_tool)
                 .then(|| {
                     children

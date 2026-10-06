@@ -58,3 +58,11 @@ fn a_mount_prefixes_the_attribute_routes_it_lists() {
         vec![pair("GET", "/api/users"), pair("GET", "/ping"), pair("POST", "/api/users")]
     );
 }
+
+#[test]
+fn routes_attached_to_an_app_scope_and_resource_serve_under_their_scope() {
+    assert_eq!(
+        served("route-verbs/actix-app"),
+        vec![pair("GET", "/api/items/{id}"), pair("GET", "/ping"), pair("GET", "/users"), pair("POST", "/api/items")]
+    );
+}
