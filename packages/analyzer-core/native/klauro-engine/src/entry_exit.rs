@@ -222,7 +222,7 @@ fn overridden_by_the_decorator(decorator: &Decorator) -> Option<String> {
 }
 
 fn speaks_a_routing_dsl(path: &str) -> bool {
-    path.ends_with(".rb")
+    path.ends_with(".rb") || path.ends_with(".ex") || path.ends_with(".exs")
 }
 
 fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sdk: bool, in_a_routing_dsl: bool) -> Option<&'static str> {
@@ -1553,7 +1553,7 @@ fn a_cookie_kept(call: &CallFact) -> Option<&'static str> {
     READS_A_COOKIE.contains(&spoken.as_str()).then_some("read")
 }
 
-static GATHERS_ROUTES: &[&str] = &["basepath", "group", "grouped", "mapgroup", "prefix"];
+static GATHERS_ROUTES: &[&str] = &["basepath", "group", "grouped", "mapgroup", "pathprefix", "prefix"];
 
 type Groups<'a> = HashMap<(u32, &'a str, &'a str), (String, Option<&'a str>)>;
 
@@ -1689,13 +1689,13 @@ fn handed_to_functions<'a>(groups: &mut Groups<'a>, calls: &'a [CallFact], nodes
 
 fn opened_groups<'a>(nodes: &'a [IndexNode], calls: &'a [CallFact]) -> HashMap<&'a str, String> {
     let mut opening: HashMap<(u32, &str), Vec<&CallFact>> = HashMap::default();
-    for call in calls.iter().filter(|call| call.callee == "group") {
+    for call in calls.iter().filter(|call| matches!(call.callee.as_str(), "group" | "namespace")) {
         if let Some(caller) = call.caller.as_deref() {
             opening.entry((call.file, caller)).or_default().push(call);
         }
     }
     let mut prefixes: HashMap<(u32, &str, u32, u32), String> = HashMap::default();
-    for call in calls.iter().filter(|call| matches!(call.callee.as_str(), "group" | "prefix") && call.receiver.is_some()) {
+    for call in calls.iter().filter(|call| matches!(call.callee.as_str(), "group" | "namespace" | "prefix") && (call.receiver.is_some() || call.callee == "namespace")) {
         let (Some(caller), Some(prefix)) =
             (call.caller.as_deref(), call.literals.iter().find_map(|literal| a_route_prefix(literal)))
         else {
@@ -1707,7 +1707,7 @@ fn opened_groups<'a>(nodes: &'a [IndexNode], calls: &'a [CallFact]) -> HashMap<&
     if prefixes.is_empty() {
         return opened;
     }
-    for node in nodes.iter().filter(|node| node.callback_of.as_deref().is_some_and(|registrar| names::leaf(registrar) == "group")) {
+    for node in nodes.iter().filter(|node| node.callback_of.as_deref().is_some_and(|registrar| matches!(names::leaf(registrar), "group" | "namespace"))) {
         let Some(parent) = node.parent.as_deref() else { continue };
         let Some(group) = opening
             .get(&(node.file, parent))
@@ -2831,8 +2831,10 @@ pub fn derive(
                 declared.contains(leaf).then(|| files[registration.file as usize].clone())
             }))
             .or_else(|| {
-                (kind == "http" && registered_on_a_router(&registration.registrar))
-                    .then(|| files[registration.file as usize].clone())
+                (kind == "http"
+                    && (registered_on_a_router(&registration.registrar)
+                        || speaks_a_routing_dsl(&files[registration.file as usize])))
+                .then(|| files[registration.file as usize].clone())
             })
         else {
             continue;

@@ -1,0 +1,4 @@
+# routes
+GET     /users                 controllers.UserController.list()
+GET     /users/$id<[0-9]+>     controllers.UserController.show(id: Long)
+POST    /users                 controllers.UserController.create()

@@ -73,12 +73,88 @@ fn screen_route(router: &Router, within: &str) -> Option<String> {
     Some(format!("/{}", route.join("/")))
 }
 
+static ROUTE_VERBS: &[&str] = &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+
+fn routes_file(path: &str) -> bool {
+    let within_conf = path.split('/').rev().nth(1) == Some("conf");
+    let name = basename(path);
+    within_conf && (name == "routes" || name.ends_with(".routes"))
+}
+
+fn placeholder_path(written: &str) -> String {
+    let mut path = String::new();
+    let mut rest = written;
+    while let Some(at) = rest.find('$') {
+        path.push_str(&rest[..at]);
+        let held = &rest[at + 1..];
+        let name_end = held.find('<').unwrap_or(held.len());
+        path.push(':');
+        path.push_str(&held[..name_end]);
+        rest = match held[name_end..].find('>') {
+            Some(close) => &held[name_end + close + 1..],
+            None => "",
+        };
+    }
+    path.push_str(rest);
+    path
+}
+
+fn action_of(written: &str) -> Option<(&str, &str)> {
+    let call = written.split('(').next()?;
+    let (controller, action) = call.rsplit_once('.')?;
+    (!controller.is_empty() && !action.is_empty()).then_some((controller, action))
+}
+
+fn declared_by_routes_files(root: &Path, files: &[String], nodes: &[IndexNode], module_of: &HashMap<u32, &IndexNode>) -> Vec<EntryPoint> {
+    let declaring: Vec<(usize, &String)> = files.iter().enumerate().filter(|(_, path)| routes_file(path)).collect();
+    if declaring.is_empty() {
+        return Vec::new();
+    }
+    let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut members: HashMap<(&str, &str), &IndexNode> = HashMap::default();
+    for node in nodes.iter().filter(|node| matches!(node.kind, NodeKind::Method | NodeKind::Function)) {
+        if let Some(owner) = node.parent.as_deref().and_then(|parent| by_id.get(parent)) {
+            members.insert((owner.name.as_str(), node.name.as_str()), node);
+        }
+    }
+    let mut found = Vec::new();
+    for (at, path) in declaring {
+        let Some(module) = module_of.get(&(at as u32)) else { continue };
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        for (position, line) in text.lines().enumerate() {
+            let mut words = line.split_whitespace();
+            let (Some(verb), Some(written), Some(action)) = (words.next(), words.next(), words.next()) else { continue };
+            if !ROUTE_VERBS.contains(&verb) || !written.starts_with('/') {
+                continue;
+            }
+            let route = placeholder_path(written);
+            let handler = action_of(action)
+                .and_then(|(controller, action)| members.get(&(controller.rsplit('.').next()?, action)))
+                .map_or_else(|| module.id.clone(), |member| member.id.clone());
+            found.push(EntryPoint {
+                id: format!("entry:{}:{verb}:{route}", module.id),
+                kind: "http",
+                name: route.clone(),
+                method: Some(verb.to_string()),
+                path: Some(route),
+                handler,
+                file: at as u32,
+                line: position as u32 + 1,
+                guards: Vec::new(),
+                registrar: "routes_file".to_string(),
+                unshipped: None,
+            });
+        }
+    }
+    found
+}
+
 pub fn drawn(root: &Path, files: &[String], nodes: &[IndexNode]) -> Vec<EntryPoint> {
     let mut module_of: HashMap<u32, &IndexNode> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind == NodeKind::Module) {
         module_of.entry(node.file).or_insert(node);
     }
-    let mut found = Vec::new();
+    let mut found = declared_by_routes_files(root, files, nodes, &module_of);
     for manifest in files.iter().filter(|path| basename(path) == "package.json") {
         let Ok(text) = std::fs::read_to_string(root.join(manifest)) else { continue };
         let declared = declared_packages(&text);
@@ -126,6 +202,26 @@ mod tests {
         assert_eq!(route(0, "chat/[id].tsx").as_deref(), Some("/chat/:id"));
         assert_eq!(route(0, "(tabs)/index.tsx").as_deref(), Some("/"));
         assert_eq!(route(0, "sessions.tsx").as_deref(), Some("/sessions"));
+    }
+
+    #[test]
+    fn a_routes_file_names_the_conf_directory_it_sits_in() {
+        assert!(routes_file("conf/routes"));
+        assert!(routes_file("app/conf/admin.routes"));
+        assert!(!routes_file("app/routes"));
+        assert!(!routes_file("conf/routes.rb"));
+    }
+
+    #[test]
+    fn a_pattern_placeholder_becomes_a_named_parameter() {
+        assert_eq!(placeholder_path("/users/$id<[0-9]+>/posts"), "/users/:id/posts");
+        assert_eq!(placeholder_path("/users/:id"), "/users/:id");
+    }
+
+    #[test]
+    fn an_action_is_its_controller_and_member_without_the_arguments() {
+        assert_eq!(action_of("controllers.UserController.show(id: Long)"), Some(("controllers.UserController", "show")));
+        assert_eq!(action_of("list"), None);
     }
 
     #[test]

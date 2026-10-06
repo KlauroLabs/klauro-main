@@ -12,6 +12,7 @@ mod lambdas;
 mod messages;
 mod phoenix_scopes;
 mod programs;
+mod scala_routes;
 mod swift_routes;
 
 static COLUMNS_OF: &[&str] = &[
@@ -113,6 +114,7 @@ pub struct Extractor<'a> {
     labelled: HashMap<usize, (String, String, Vec<String>)>,
     last_receiver: Option<String>,
     visited_as_an_arm: rustc_hash::FxHashSet<usize>,
+    directives_declared: rustc_hash::FxHashSet<usize>,
 }
 
 #[derive(Clone)]
@@ -157,6 +159,7 @@ impl<'a> Extractor<'a> {
             labelled: HashMap::default(),
             last_receiver: None,
             visited_as_an_arm: rustc_hash::FxHashSet::default(),
+            directives_declared: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -271,8 +274,15 @@ impl<'a> Extractor<'a> {
     }
 
     fn call_receiver<'t>(&self, call: Node<'t>) -> Option<Node<'t>> {
-        let function = call.child_by_field_name("function")?;
-        self.spec.calls.receiver_fields.iter().find_map(|field| function.child_by_field_name(field))
+        let held = call.child_by_field_name("function").unwrap_or(call);
+        self.spec.calls.receiver_fields.iter().find_map(|field| held.child_by_field_name(field))
+    }
+
+    fn invoked_name(&self, call: Node) -> String {
+        call.child_by_field_name("function")
+            .map(|function| crate::names::leaf(self.text(function)).to_ascii_lowercase())
+            .or_else(|| call.child_by_field_name("name").map(|name| self.text(name).to_ascii_lowercase()))
+            .unwrap_or_default()
     }
 
     fn chained_route(&self, node: Node, callee: &str) -> Option<String> {
@@ -283,10 +293,7 @@ impl<'a> Extractor<'a> {
         let mut path: Option<String> = None;
         let mut method: Option<String> = None;
         while let Some(call) = held.filter(|call| self.spec.calls.kinds.contains(&call.kind())) {
-            let named = call
-                .child_by_field_name("function")
-                .map(|function| crate::names::leaf(self.text(function)).to_ascii_lowercase())
-                .unwrap_or_default();
+            let named = self.invoked_name(call);
             let arguments: Vec<Node> = call
                 .child_by_field_name("arguments")
                 .map(|arguments| {
@@ -303,6 +310,16 @@ impl<'a> Extractor<'a> {
             }
             if NAMES_A_METHOD.contains(&named.as_str()) && method.is_none() {
                 method = self.request_method_of(&arguments);
+            }
+            if REQUEST_METHODS.binary_search(&named.as_str()).is_ok() && path.is_none() {
+                path = arguments
+                    .iter()
+                    .filter(|argument| argument.kind().contains("string"))
+                    .map(|argument| trim_quotes(self.text(*argument)).to_string())
+                    .find(|written| written.starts_with('/'));
+                if path.is_some() {
+                    method = Some(named.to_ascii_uppercase());
+                }
             }
             held = self.call_receiver(call);
         }
@@ -998,6 +1015,12 @@ impl<'a> Extractor<'a> {
             if scope.dispatch_param.is_some() {
                 self.declare_channel_dispatch_match(node, scope);
             }
+        }
+        if kind == "case_block" {
+            self.declare_scala_routes(node, scope);
+        }
+        if kind == "call_expression" && self.opens_a_path_directive(node) {
+            self.declare_directive_routes(node, scope);
         }
         if self.spec.id == "rust" && kind == "if_expression" && scope.dispatch_param.is_some() {
             self.declare_channel_dispatch_if(node, scope);
