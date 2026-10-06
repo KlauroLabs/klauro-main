@@ -775,3 +775,32 @@ pub static LANGUAGE_BY_EXTENSION: &[(&str, &str)] = &[
     ("zig", "zig"),
     ("zsh", "shell"),
 ];
+
+pub struct CallForm {
+    pub qualifier_kind: &'static str,
+    pub qualifier_left: &'static str,
+    pub qualifier_right: &'static str,
+    pub directives: &'static [&'static str],
+    pub annotation_wrapper: &'static str,
+}
+
+static ELIXIR_CALL_FORM: CallForm = CallForm {
+    qualifier_kind: "dot",
+    qualifier_left: "left",
+    qualifier_right: "right",
+    directives: &[
+        "alias", "defexception", "defguard", "defguardp", "defoverridable", "import", "require", "use",
+    ],
+    annotation_wrapper: "unary_operator",
+};
+
+pub fn call_form(id: &str) -> Option<&'static CallForm> {
+    match id {
+        "elixir" => Some(&ELIXIR_CALL_FORM),
+        _ => None,
+    }
+}
+
+pub fn names_modules_globally(id: &str) -> bool {
+    matches!(id, "elixir")
+}

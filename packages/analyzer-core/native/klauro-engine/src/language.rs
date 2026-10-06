@@ -1932,7 +1932,7 @@ static SPECS: &[LanguageSpec] = &[
         signature: Signature {
             parameter_fields: &["parameters", "formal_parameter_list"],
             parameter_kinds: &["formal_parameter", "optional_formal_parameters"],
-            parameter_type_kinds: &[],
+            parameter_type_kinds: &["type"],
             return_fields: &["return_type"],
             return_child_kinds: &[],
             body_fields: &["body"],
@@ -1942,7 +1942,7 @@ static SPECS: &[LanguageSpec] = &[
             extension_container_kinds: &[],
         },
         calls: Calls {
-            kinds: &["call_expression", "new_expression"],
+            kinds: &["call_expression", "new_expression", "cascade_call_expression"],
             receiver_fields: &["object"],
             call_receiver_fields: &[],
             receiver_type_field: "",
@@ -3762,7 +3762,7 @@ static SPECS: &[LanguageSpec] = &[
             impl_kinds: &[],
             impl_type_field: "type",
             heritage_kinds: &[],
-            lambda_kinds: &[],
+            lambda_kinds: &["fun_expression"],
             binding_kinds: &[],
             binding_name_field: "name",
             binding_type_field: "type",

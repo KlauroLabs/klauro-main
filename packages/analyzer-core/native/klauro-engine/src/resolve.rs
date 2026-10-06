@@ -904,7 +904,29 @@ impl<'a> Resolver<'a> {
         {
             return Origin::Declared(only);
         }
+        if name.starts_with(char::is_uppercase)
+            && crate::language_tables::names_modules_globally(self.languages.get(file as usize).copied().unwrap_or(""))
+            && let Some(found) = self.global_module(file, name)
+        {
+            return Origin::Declared(found);
+        }
         Origin::Unknown
+    }
+
+    fn global_module(&self, file: u32, name: &str) -> Option<u32> {
+        let language = self.languages.get(file as usize)?;
+        let held: Vec<u32> = self
+            .types_named
+            .get(name)?
+            .iter()
+            .copied()
+            .filter(|found| self.languages.get(self.symbols.nodes[*found as usize].file as usize) == Some(language))
+            .collect();
+        let exact: Vec<u32> = held.iter().copied().filter(|found| self.symbols.nodes[*found as usize].name == name).collect();
+        match (exact.as_slice(), held.as_slice()) {
+            ([only], _) | ([], [only]) => Some(*only),
+            _ => None,
+        }
     }
 
     fn returned(&self, member: &str) -> Origin<'a> {
@@ -1355,6 +1377,8 @@ fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
         format!("{base}.cjs"),
         format!("{base}.svelte"),
         format!("{base}.vue"),
+        format!("{base}.py"),
+        format!("{base}/__init__.py"),
         format!("{base}.rs"),
         format!("{base}/mod.rs"),
         format!("{base}/lib.rs"),
@@ -1881,6 +1905,12 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let mut types_named: HashMap<&str, Vec<u32>> = HashMap::default();
     for (at, node) in index.nodes.iter().enumerate().filter(|(_, node)| node.kind.is_type()) {
         types_named.entry(node.name.as_str()).or_default().push(at as u32);
+        let language = index.languages.get(node.file as usize).copied().unwrap_or("");
+        if crate::language_tables::names_modules_globally(language)
+            && let Some((_, leaf)) = node.name.rsplit_once('.')
+        {
+            types_named.entry(leaf).or_default().push(at as u32);
+        }
     }
     let resolver = Resolver {
         symbols,

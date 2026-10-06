@@ -1,0 +1,6 @@
+[project]
+name = "svc"
+version = "0.1.0"
+dependencies = ["fixture-auth"]
+[tool.uv.sources]
+fixture-auth = { path = "../../libs/auth", editable = true }

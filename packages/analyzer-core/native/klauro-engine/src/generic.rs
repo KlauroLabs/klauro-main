@@ -7,10 +7,12 @@ use crate::model::*;
 
 mod actix_routes;
 mod bounds;
+mod clojure_routes;
 mod django_routes;
 mod ktor_routes;
 mod lambdas;
 mod messages;
+mod ocaml_routes;
 mod phoenix_scopes;
 mod programs;
 mod rocket_mounts;
@@ -274,6 +276,26 @@ impl<'a> Extractor<'a> {
             .named_children(&mut cursor)
             .find(|argument| argument.kind().contains("string"))
             .map(|argument| trim_quotes(self.text(argument)).to_string())
+    }
+
+    fn formed_call(&self, call: Node, form: &crate::language_tables::CallForm) -> Option<(Option<String>, String)> {
+        let target = call.child_by_field_name(self.spec.keywords.target_field)?;
+        if call.parent().is_some_and(|parent| parent.kind() == form.annotation_wrapper) {
+            return None;
+        }
+        let (receiver, callee) = match target.kind() == form.qualifier_kind {
+            true => (
+                target.child_by_field_name(form.qualifier_left).map(|left| self.text(left).trim().to_string()),
+                target.child_by_field_name(form.qualifier_right).map(|right| self.text(right).trim().to_string())?,
+            ),
+            false => (None, self.text(target).trim().to_string()),
+        };
+        let named = callee.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | '?' | '!'));
+        let declaring = receiver.is_none()
+            && (self.spec.keywords.types.contains(&callee.as_str())
+                || self.spec.keywords.functions.contains(&callee.as_str())
+                || form.directives.contains(&callee.as_str()));
+        (named && !callee.is_empty() && !declaring).then_some((receiver, callee))
     }
 
     fn call_receiver<'t>(&self, call: Node<'t>) -> Option<Node<'t>> {
@@ -1050,6 +1072,9 @@ impl<'a> Extractor<'a> {
         if self.spec.id == "rust" && kind == "if_expression" && scope.dispatch_param.is_some() {
             self.declare_channel_dispatch_if(node, scope);
         }
+        if kind == "vec_lit" {
+            self.clojure_data_routes(node);
+        }
         if kind.starts_with("if_") && scope.argv_param.is_some() {
             self.declare_cli_dispatch_if(node, scope);
         }
@@ -1237,11 +1262,18 @@ impl<'a> Extractor<'a> {
             .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
     }
 
+    fn guarded<'t>(&self, head: Node<'t>) -> Node<'t> {
+        match head.kind() == "binary_operator" && self.spec.id == "elixir" {
+            true => head.child_by_field_name("left").unwrap_or(head),
+            false => head,
+        }
+    }
+
     fn keyword_name(&self, node: Node) -> Option<String> {
         let Some(arguments) = self.arguments_of(node) else {
             return self.name_of(node.named_child(1)?);
         };
-        let first = arguments.named_child(0)?;
+        let first = self.guarded(arguments.named_child(0)?);
         if first.kind() == self.spec.keywords.kind {
             return first
                 .child_by_field_name(self.spec.keywords.target_field)
@@ -1341,6 +1373,9 @@ impl<'a> Extractor<'a> {
         } else {
             inner.callable = Some(id);
             inner.type_owner = None;
+            if let Some(head) = self.arguments_of(node).and_then(|arguments| arguments.named_child(0)) {
+                self.visited_as_an_arm.insert(head.id());
+            }
         }
         self.walk(node, &inner);
     }
@@ -1348,7 +1383,7 @@ impl<'a> Extractor<'a> {
     fn keyword_signature(&self, node: Node) -> Signature {
         let mut parameters = Vec::new();
         if let Some(arguments) = self.arguments_of(node)
-            && let Some(first) = arguments.named_child(0)
+            && let Some(first) = arguments.named_child(0).map(|head| self.guarded(head))
             && first.kind() == self.spec.keywords.kind
             && let Some(inner) = self.arguments_of(first)
         {
@@ -2958,8 +2993,13 @@ impl<'a> Extractor<'a> {
             .or_else(|| node.child_by_field_name("method"))
             .or_else(|| node.child_by_field_name("constructor"))
             .or_else(|| node.child_by_field_name("type"));
-        let (receiver, callee) = match function {
-            Some(function) => {
+        let formed = match crate::language_tables::call_form(self.spec.id) {
+            Some(form) => Some(self.formed_call(node, form)?),
+            None => None,
+        };
+        let (receiver, callee) = match (formed, function) {
+            (Some(formed), _) => formed,
+            (None, Some(function)) => {
                 let receiver = self
                     .spec
                     .calls.receiver_fields
@@ -2983,7 +3023,7 @@ impl<'a> Extractor<'a> {
                 };
                 (receiver, callee)
             }
-            None => {
+            (None, None) => {
                 let receiver = self
                     .spec
                     .calls.receiver_fields
@@ -3035,6 +3075,9 @@ impl<'a> Extractor<'a> {
                     .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
             })
             .or_else(|| self.swift_arguments(node));
+        if arguments.is_none() && (self.clojure_route(node, &callee) || self.ocaml_route(node, &receiver, &callee)) {
+            return Some(callee);
+        }
         if arguments.is_none()
             && self.swift_names_a_verb(&callee)
             && let Some(closure) = self.swift_trailing_closure(node)

@@ -161,7 +161,24 @@ fn serves_through_its_receiver(registrar: &str) -> bool {
 }
 
 fn spells_a_path(path: &str) -> bool {
-    !path.contains(['<', '>', '"', '\'', '\\', '`']) && !crate::entry_exit::names_an_http_method(path)
+    !without_placeholders(path).contains(['<', '>', '"', '\'', '\\', '`']) && !crate::entry_exit::names_an_http_method(path)
+}
+
+fn without_placeholders(path: &str) -> String {
+    let mut kept = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(open) = rest.find('<') {
+        let Some(close) = rest[open..].find('>') else { break };
+        let inside = &rest[open + 1..open + close];
+        let names_a_parameter = !inside.is_empty() && inside.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | ':' | '-'));
+        kept.push_str(&rest[..open]);
+        if !names_a_parameter {
+            kept.push_str(&rest[open..open + close + 1]);
+        }
+        rest = &rest[open + close + 1..];
+    }
+    kept.push_str(rest);
+    kept
 }
 
 pub fn registrar_kind(registrar: &str, label: Option<&str>, in_a_routing_dsl: bool) -> Option<&'static str> {

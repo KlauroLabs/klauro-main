@@ -27,6 +27,8 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
     });
     let mut required = false;
     let mut declared_requirements = false;
+    let mut replaced = false;
+    let mut declared_replacements = false;
     for (offset, text) in source.lines().enumerate() {
         let line = offset as u32 + 1;
         if let Some(module) = directive(text, "module") {
@@ -42,6 +44,25 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
             continue;
         }
         let trimmed = text.trim();
+        if trimmed.starts_with("replace") {
+            replaced = !trimmed.ends_with(')') && trimmed.ends_with('(');
+            if !declared_replacements {
+                declared_replacements = true;
+                facts.nodes.push(declaration(
+                    format!("{path}:section:replace"),
+                    "replace".to_string(),
+                    NodeKind::Class,
+                    file,
+                    line,
+                    Some(path.to_string()),
+                    None,
+                ));
+            }
+            if let Some(single) = directive(trimmed, "replace") {
+                replace(&mut facts, single, file, path, line);
+            }
+            continue;
+        }
         if trimmed.starts_with("require") {
             required = !trimmed.ends_with(')') && trimmed.ends_with('(');
             if let Some(single) = directive(trimmed, "require") {
@@ -63,13 +84,37 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
         }
         if trimmed == ")" {
             required = false;
+            replaced = false;
             continue;
         }
         if required {
             require(&mut facts, trimmed, file, path, line);
         }
+        if replaced {
+            replace(&mut facts, trimmed, file, path, line);
+        }
     }
     facts
+}
+
+fn replace(facts: &mut FileFacts, text: &str, file: u32, path: &str, line: u32) {
+    let text = match text.split_once("//") {
+        Some((named, _)) => named,
+        None => text,
+    };
+    let Some((original, replacement)) = text.split_once("=>") else { return };
+    let (Some(name), Some(target)) = (original.split_whitespace().next(), replacement.split_whitespace().next()) else {
+        return;
+    };
+    facts.nodes.push(declaration(
+        format!("{path}:replace:{name}:{line}"),
+        name.to_string(),
+        NodeKind::Property,
+        file,
+        line,
+        Some(format!("{path}:section:replace")),
+        Some(target.to_string()),
+    ));
 }
 
 fn require(facts: &mut FileFacts, text: &str, file: u32, path: &str, line: u32) {

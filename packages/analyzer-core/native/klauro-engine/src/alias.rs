@@ -35,12 +35,23 @@ impl Aliases {
             if home.is_empty() || name.starts_with('.') {
                 continue;
             }
-            entries.push(Entry {
-                scope: String::new(),
-                prefix: name.clone(),
-                wildcard: true,
-                target: home.clone(),
-            });
+            let manifest = join(home, "package.json");
+            for entry in package_entries(&children, &manifest, home) {
+                entries.push(Entry {
+                    scope: String::new(),
+                    prefix: name.clone(),
+                    wildcard: false,
+                    target: entry,
+                });
+            }
+            for target in [home.clone(), join(home, "src")] {
+                entries.push(Entry {
+                    scope: String::new(),
+                    prefix: name.clone(),
+                    wildcard: true,
+                    target,
+                });
+            }
         }
         for path in files {
             let name = basename(path).to_ascii_lowercase();
@@ -92,6 +103,24 @@ impl Aliases {
                         target: join(home, "src"),
                     });
                 }
+            }
+            if name == "go.mod"
+                && let Some(replacements) = section(&children, path, "replace")
+            {
+                for replacement in children.get(replacements.id.as_str()).into_iter().flatten() {
+                    let Some(target) = replacement.type_annotation.as_deref().filter(|target| target.starts_with('.')) else {
+                        continue;
+                    };
+                    entries.push(Entry {
+                        scope: home.to_string(),
+                        prefix: replacement.name.clone(),
+                        wildcard: true,
+                        target: normalize(&join(home, target)),
+                    });
+                }
+            }
+            if name == "pyproject.toml" {
+                path_dependencies(&children, files, path, home, &mut entries);
             }
             if name == "go.mod"
                 && let Some(module) = value_of(&children, path, "module")
@@ -446,6 +475,59 @@ fn depends_on(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str, package
                 .any(|node| node.name.trim_matches('"') == package)
         })
     })
+}
+
+const PYTHON_SOURCE_TABLES: &[&str] = &["tool.uv.sources", "tool.poetry.dependencies", "tool.pdm.dev-dependencies"];
+
+fn path_dependencies(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    files: &[String],
+    manifest: &str,
+    home: &str,
+    entries: &mut Vec<Entry>,
+) {
+    for table in PYTHON_SOURCE_TABLES {
+        let Some(sources) = section(children, manifest, table) else { continue };
+        for source in children.get(sources.id.as_str()).into_iter().flatten() {
+            let Some(path) = value_of(children, &source.id, "path") else { continue };
+            let folder = normalize(&join(home, &path));
+            for file in files.iter().filter(|file| basename(file) == "__init__.py" && contains(&folder, file)) {
+                let package = directory_of(file);
+                if package.len() <= folder.len() + 1 + "src/".len() + basename(package).len() {
+                    entries.push(Entry {
+                        scope: home.to_string(),
+                        prefix: basename(package).to_string(),
+                        wildcard: true,
+                        target: package.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+const CONVENTIONAL_ENTRIES: &[&str] = &["src/index", "index", "lib/index", "src/main", "src/lib"];
+const ENTRY_FIELDS: &[&str] = &["source", "module", "main", "types", "typings"];
+const EXPORT_CONDITIONS: &[&str] = &["source", "import", "default", "require", "types"];
+
+fn package_entries(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str, home: &str) -> Vec<String> {
+    let mut declared: Vec<String> = ENTRY_FIELDS.iter().filter_map(|field| value_of(children, manifest, field)).collect();
+    match value_of(children, manifest, "exports") {
+        Some(whole) => declared.push(whole),
+        None => {
+            if let Some(exports) = section(children, manifest, "exports")
+                && let Some(root) = section(children, &exports.id, ".")
+            {
+                declared.extend(EXPORT_CONDITIONS.iter().filter_map(|condition| value_of(children, &root.id, condition)));
+            }
+        }
+    }
+    declared
+        .iter()
+        .map(String::as_str)
+        .chain(CONVENTIONAL_ENTRIES.iter().copied())
+        .map(|entry| normalize(&join(home, entry.trim_start_matches("./"))))
+        .collect()
 }
 
 fn value_of(children: &HashMap<&str, Vec<&IndexNode>>, parent: &str, name: &str) -> Option<String> {

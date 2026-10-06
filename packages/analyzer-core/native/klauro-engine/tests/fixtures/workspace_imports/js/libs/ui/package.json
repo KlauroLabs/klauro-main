@@ -1,0 +1,1 @@
+{"name":"@w/ui","version":"1.0.0","exports":{".":{"import":"./src/ui.ts","types":"./dist/ui.d.ts"}}}
