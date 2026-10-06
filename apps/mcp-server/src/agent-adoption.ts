@@ -60,6 +60,7 @@ import {
 } from './agent-small-context';
 import { adaptAgentStartContext } from './agent-start-context-budget';
 import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
+import { isInstalledToolName } from './installed-tool-registry';
 import { buildOrientationExecutionBrief, buildOrientationValidationPlan, buildTargetlessOrientationContext, isTargetlessOrientationTask, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -526,7 +527,7 @@ function buildDescriptionContextForAgent(
     generation_status: generation?.status || null,
     reasons,
     guidance: reasons.length > 0
-      ? 'Use structural CAS context for edits, but call generate_element_description when the task requires explaining this target, planning UI drilldown content, or preserving product intent.'
+      ? 'Use structural CAS context for edits; this target has no usable narrative, so explain it from its code, connections, and tests when the task requires explaining it, planning UI drilldown content, or preserving product intent.'
       : 'Target narrative is usable; preserve it unless source changes invalidate the target.',
     suggested_tool: reasons.length > 0 ? {
       tool: 'generate_element_description',
@@ -627,7 +628,7 @@ async function buildOperationalPriorityContextForAgent(
           observation_count: 0,
           priorities: [],
           agent_guidance: [
-            'No runtime observations are stored yet. Use ingest_telemetry or simulate_runtime_telemetry, then rerun get_operational_priorities before prioritizing production work.',
+            'No runtime observations are stored yet. Follow get_runtime_instrumentation_plan to start collecting telemetry before prioritizing production work.',
           ],
         }
       : null;
@@ -841,8 +842,7 @@ function buildRuntimeHotspotsForAgent(
       p95_ms: m.latency?.p95_ms,
       source: m.source,
     })),
-    detail_tool: 'get_operational_priorities',
-    note: 'Highest error_rate / p95 endpoints from telemetry. Use get_operational_priorities for the cross-signal ranking with static risk.',
+    note: 'Highest error_rate / p95 endpoints from telemetry.',
   };
 }
 
@@ -2171,7 +2171,11 @@ function compactFirstTurnDescriptionContext(context: any): string[] {
   if (!/needs-ai/.test(String(context.status || ''))) return [];
   const target = context.target?.name || context.target?.id || context.scope || 'target';
   const reason = Array.isArray(context.reasons) ? context.reasons[0] : undefined;
-  return [compactFirstTurnText(`desc ${target}: ${reason || 'AI narrative needed'}; call ${context.suggested_tool?.tool || 'generate_element_description'} only if explanation needed`, 90)];
+  const suggestedTool = context.suggested_tool?.tool;
+  const nextStep = typeof suggestedTool === 'string' && isInstalledToolName(suggestedTool)
+    ? `call ${suggestedTool} only if explanation needed`
+    : 'explain from code and tests if explanation needed';
+  return [compactFirstTurnText(`desc ${target}: ${reason || 'AI narrative needed'}; ${nextStep}`, 90)];
 }
 
 function compactDescriptionContextForAgent(context: any) {
@@ -3515,7 +3519,7 @@ export function getAgentToolPlan(cas: CASOutput, input: { path: string; task?: A
   const needsFlowTarget = task.task_type !== 'modify' && task.task_type !== 'review';
   const entryPoint = needsFlowTarget ? representativeEntryPoint(cas) : undefined;
   const chain = needsFlowTarget ? (cas.call_chains || [])[0] : undefined;
-  const steps = normalizeAgentToolSteps(stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id), task);
+  const steps = normalizeAgentToolSteps(stepsForTask(input.path, task, target, nodeId, entryPoint?.id, chain?.id));
 
   return {
     path: input.path,
@@ -5576,12 +5580,9 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     adoption_gaps: adoptionGaps,
     required_agent_behavior: [
       'Call get_agent_start_context before broad file reads when an analysis exists.',
-      'Call open_agent_workbench for task-specific orientation, file-read plan, codebase rules, and evidence policy.',
       'Call get_agent_tool_plan for the user task before choosing MCP queries.',
-      'Call preflight_agent_change before presenting multi-file plans, refactors, removals, or risky edits.',
       'Call get_coding_context before code edits in a targeted area.',
       'Use assess_change_risk and find_tests before landing changes that touch connected behavior.',
-      'After edits, call validate_agent_change before finalizing.',
       'After edits, call validate_behavioral_invariants against the working diff before finalizing.',
       'After edits, call validate_codebase_idioms against the working diff before finalizing.',
       'Report CAS/MCP errors as blockers to agent context readiness and then fall back to direct code reading.',

@@ -17,16 +17,15 @@ interface ToolStep {
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
-export function normalizeAgentToolSteps<T extends ToolStep>(steps: T[], task: OrientationTask): T[] {
+export function normalizeAgentToolSteps<T extends ToolStep>(steps: T[]): T[] {
   const seen = new Set<string>();
   const unique = steps.filter(step => {
     if (!step.tool || seen.has(step.tool)) return false;
     seen.add(step.tool);
     return true;
   });
-  return (task.task_type === 'orient'
-    ? unique.filter(step => isInstalledToolName(step.tool))
-    : unique)
+  return unique
+    .filter(step => isInstalledToolName(step.tool))
     .map((step, index) => ({ ...step, order: index + 1 }));
 }
 

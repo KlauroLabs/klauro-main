@@ -1,3 +1,4 @@
+import { constrainToInstalledTools } from './installed-tool-surface';
 import { z } from 'zod';
 import { FIND_TESTS_QUERY_SCHEMA } from './test-query-schema';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -320,6 +321,7 @@ export async function executeHostedProjectQuery(input: {
       break;
   }
 
+  result = constrainToInstalledTools(result);
   if (input.transformUnbounded) result = input.transformUnbounded(tool, result);
   if (input.observeUnbounded) {
     try {
