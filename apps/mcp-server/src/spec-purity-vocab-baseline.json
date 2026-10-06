@@ -419,12 +419,12 @@
       "name": "SOURCE_EXTENSIONS"
     },
     {
-      "file": "apps/mcp-server/src/installed-cli.ts",
-      "name": "FLAGS_WITH_VALUES"
+      "file": "apps/mcp-server/src/installed-cli-help.ts",
+      "name": "COMMAND_HELP"
     },
     {
       "file": "apps/mcp-server/src/installed-cli.ts",
-      "name": "USAGE_TEXT"
+      "name": "FLAGS_WITH_VALUES"
     },
     {
       "file": "apps/mcp-server/src/installed-client-runtime.ts",
