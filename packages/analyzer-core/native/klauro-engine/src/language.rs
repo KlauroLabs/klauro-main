@@ -2175,7 +2175,7 @@ static SPECS: &[LanguageSpec] = &[
             impl_kinds: &[],
             impl_type_field: "type",
             heritage_kinds: &[],
-            lambda_kinds: &[],
+            lambda_kinds: &["anonymous_function"],
             binding_kinds: &[],
             binding_name_field: "name",
             binding_type_field: "type",
@@ -2206,9 +2206,9 @@ static SPECS: &[LanguageSpec] = &[
             extension_container_kinds: &[],
         },
         calls: Calls {
-            kinds: &["function_call_expression", "method_call_expression"],
+            kinds: &["function_call_expression", "method_call_expression", "call_expression_with_spaced_args", "call_expression_with_args_with_brackets", "method_invocation"],
             receiver_fields: &["object"],
-            call_receiver_fields: &[],
+            call_receiver_fields: &["object_return_value"],
             receiver_type_field: "",
         },
         flow: Flow {
@@ -3828,7 +3828,7 @@ static SPECS: &[LanguageSpec] = &[
             impl_kinds: &[],
             impl_type_field: "type",
             heritage_kinds: &[],
-            lambda_kinds: &[],
+            lambda_kinds: &["do_clause"],
             binding_kinds: &[],
             binding_name_field: "name",
             binding_type_field: "type",
@@ -3859,7 +3859,7 @@ static SPECS: &[LanguageSpec] = &[
             extension_container_kinds: &[],
         },
         calls: Calls {
-            kinds: &["call_expression"],
+            kinds: &["call_expression", "macrocall_expression"],
             receiver_fields: &["object"],
             call_receiver_fields: &[],
             receiver_type_field: "",

@@ -17,6 +17,7 @@ mod phoenix_scopes;
 mod programs;
 mod rocket_mounts;
 mod scala_routes;
+mod script_routes;
 mod swift_routes;
 
 static COLUMNS_OF: &[&str] = &[
@@ -891,6 +892,7 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.collect_types(root);
+        self.declare_command_routes(root);
         let scope = Scope {
             owner: Some(self.module_id.clone()),
             extends: None,
@@ -1326,6 +1328,13 @@ impl<'a> Extractor<'a> {
         self.walk(node, &inner);
     }
 
+    fn declaring_keyword(&self, node: Node) -> Option<String> {
+        node.child_by_field_name(self.spec.keywords.target_field)
+            .or_else(|| node.named_child(0))
+            .map(|target| self.text(target).trim().to_string())
+            .filter(|keyword| !keyword.is_empty())
+    }
+
     fn keyword_declaration(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
         let Some(name) = self.keyword_name(node) else {
             self.walk(node, scope);
@@ -1352,7 +1361,7 @@ impl<'a> Extractor<'a> {
             signature: Some(self.keyword_signature(node)),
             modifiers: self.published(node),
             decorators: Vec::new(),
-            type_annotation: None,
+            type_annotation: self.declaring_keyword(node),
             documentation: None,
             project: None,
         callback_of: None,
@@ -2142,10 +2151,14 @@ impl<'a> Extractor<'a> {
     }
 
     fn route_block<'t>(&self, call: Node<'t>, callee: &str) -> Option<Node<'t>> {
-        if self.spec.id != "ruby" || REQUEST_METHODS.binary_search(&callee.to_ascii_lowercase().as_str()).is_err() {
-            return None;
+        if self.spec.id == "ruby" {
+            if REQUEST_METHODS.binary_search(&callee.to_ascii_lowercase().as_str()).is_err() {
+                return None;
+            }
+            return call.child_by_field_name("block");
         }
-        call.child_by_field_name("block")
+        let mut cursor = call.walk();
+        call.named_children(&mut cursor).find(|child| self.spec.declares.lambda_kinds.contains(&child.kind()))
     }
 
     fn handled_inline<'t>(&self, argument: Node<'t>) -> Option<Node<'t>> {
@@ -2991,6 +3004,7 @@ impl<'a> Extractor<'a> {
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
             .or_else(|| node.child_by_field_name("method"))
+            .or_else(|| node.child_by_field_name("function_name"))
             .or_else(|| node.child_by_field_name("constructor"))
             .or_else(|| node.child_by_field_name("type"));
         let formed = match crate::language_tables::call_form(self.spec.id) {
@@ -3036,7 +3050,8 @@ impl<'a> Extractor<'a> {
                 }
             }
         };
-        let callee = match callee.strip_prefix(['!', '~']) {
+        let receiver = receiver.or_else(|| self.cascade_owner(node));
+        let callee = match callee.strip_prefix(['!', '~', '@']) {
             Some(bare) if !bare.is_empty() => bare.to_string(),
             _ => callee,
         };
@@ -3074,7 +3089,15 @@ impl<'a> Extractor<'a> {
                 node.named_children(&mut cursor)
                     .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
             })
+            .or_else(|| {
+                let mut cursor = node.walk();
+                let wrapper = node.named_children(&mut cursor).find(|child| child.kind() == "parenthesized_argument")?;
+                let mut inner = wrapper.walk();
+                wrapper.named_children(&mut inner).find(|child| child.kind() == "arguments")
+            })
             .or_else(|| self.swift_arguments(node));
+        self.mojo_route(node, &callee);
+        self.constructed_route(node, &callee);
         if arguments.is_none() && (self.clojure_route(node, &callee) || self.ocaml_route(node, &receiver, &callee)) {
             return Some(callee);
         }

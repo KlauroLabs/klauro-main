@@ -26,7 +26,7 @@ impl Declares {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub declares: Declares,
     pub kind: &'static str,
@@ -862,6 +862,13 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
             .any(|call| call.file == file && APPLICATION_BLOCKS.contains(&call.callee.as_str()));
         return (plugin || block || applies_plugin(calls, file, "application")).then_some("gradle-application");
     }
+    if basename == "cmakelists.txt" {
+        return files
+            .descendants(path)
+            .iter()
+            .any(|node| node.type_annotation.as_deref() == Some("add_executable"))
+            .then_some("cmake-executable");
+    }
     if basename == "pom.xml" {
         let document = files.descendants(path);
         return document
@@ -886,7 +893,7 @@ fn installer(
     file: u32,
 ) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
-    if !basename.starts_with("install") || crate::paths::is_continuous_integration(path) {
+    if !basename.contains("install") || crate::paths::is_continuous_integration(path) {
         return None;
     }
     if !INSTALLER_SUFFIXES
@@ -1029,6 +1036,7 @@ pub fn derive(
     let index = Files::build(files, nodes);
     let runnable = runnable_roots(files, entry_points);
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut scripted: Vec<(usize, Vec<String>)> = Vec::new();
 
     for (at, path) in index.paths.iter().enumerate() {
         if !kinds.get(at).copied().unwrap_or(false) {
@@ -1065,6 +1073,7 @@ pub fn derive(
             continue;
         }
         if let Some(found) = installer(&index, path, calls, at as u32) {
+            scripted.push((candidates.len(), named_by_script(calls, at as u32)));
             candidates.push(found);
             continue;
         }
@@ -1103,6 +1112,21 @@ pub fn derive(
         }
     }
 
+    for (at, named) in scripted {
+        let homes: Vec<String> = named
+            .iter()
+            .filter_map(|word| {
+                let mut held = candidates.iter().filter(|other| {
+                    !other.root.is_empty()
+                        && other.declarations.iter().any(|found| found.declares == Declares::Identity)
+                        && (other.name == *word || other.root.rsplit('/').next() == Some(word.as_str()))
+                });
+                let first = held.next()?;
+                held.next().is_none().then(|| first.root.clone())
+            })
+            .collect();
+        candidates[at].ships.extend(homes);
+    }
     separate_containers(&mut candidates);
     let mut scope = consolidate(candidates, &index, nodes, edges, entry_points, code, calls);
     ship_the_programs_containers_run(&mut scope.deployables, &index);
@@ -1146,6 +1170,44 @@ fn follow_a_relative_import(files: &[String], nodes: &[IndexNode], imports: &[Im
     Some(normalize(&format!("{}/{}", directory_of(target), specifier)))
 }
 
+fn named_by_script(calls: &[CallFact], file: u32) -> Vec<String> {
+    let mut named: Vec<String> = calls
+        .iter()
+        .filter(|call| call.file == file)
+        .flat_map(|call| call.literals.iter())
+        .filter(|literal| !literal.is_empty() && !literal.contains(['/', '=', ' ', '$']))
+        .cloned()
+        .collect();
+    named.sort();
+    named.dedup();
+    named
+}
+
+fn stem_of_the_rest(group: &[usize], deployables: &[Deployable]) -> Option<usize> {
+    group.iter().copied().find(|candidate| {
+        let stem = deployables[*candidate].name.as_str();
+        group.len() > 1
+            && group.iter().filter(|other| **other != *candidate).all(|other| {
+                deployables[*other]
+                    .name
+                    .strip_prefix(stem)
+                    .is_some_and(|rest| rest.starts_with(['-', '_', '.']))
+            })
+    })
+}
+
+fn fold_into(deployables: &mut [Deployable], group: &[usize], primary: usize) {
+    let owner_id = deployables[primary].id.clone();
+    deployables[primary].bundled_into = None;
+    for member in group.iter().copied().filter(|member| *member != primary) {
+        let member_id = deployables[member].id.clone();
+        deployables[member].bundled_into = Some(owner_id.clone());
+        if !deployables[primary].members.contains(&member_id) {
+            deployables[primary].members.push(member_id);
+        }
+    }
+}
+
 fn programs_of_a_container(files: &Files, path: &str) -> Vec<String> {
     let mut programs: Vec<String> = Vec::new();
     for stage in files.of(path).into_iter().flatten() {
@@ -1168,19 +1230,44 @@ fn programs_of_a_container(files: &Files, path: &str) -> Vec<String> {
 }
 
 fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &Files) {
-    let containers: Vec<(String, Vec<String>)> = deployables
+    let containers: Vec<(String, Vec<String>, Option<String>)> = deployables
         .iter()
-        .flat_map(|unit| unit.declarations.iter())
-        .filter(|found| found.kind == "container")
-        .map(|found| (found.at.clone(), programs_of_a_container(files, &found.at)))
+        .flat_map(|unit| {
+            unit.declarations
+                .iter()
+                .filter(|found| found.kind == "container")
+                .map(move |found| (found.at.clone(), unit.runs.clone()))
+        })
+        .map(|(at, runs)| {
+            let program = runs.as_deref().and_then(|held| unquote(held).rsplit('/').next().map(str::to_string));
+            (at.clone(), programs_of_a_container(files, &at), program)
+        })
         .collect();
-    for unit in deployables.iter_mut().filter(|unit| !unit.root.is_empty() && !unit.shipped) {
-        let Some((at, _)) = containers.iter().find(|(_, programs)| programs.contains(&unit.name)) else {
+    let mut attached: Vec<(usize, String)> = Vec::new();
+    for (at_unit, unit) in deployables.iter_mut().enumerate().filter(|(_, unit)| !unit.root.is_empty() && !unit.shipped) {
+        let Some((at, _, _)) = containers.iter().find(|(_, programs, _)| programs.contains(&unit.name)) else {
             continue;
         };
         unit.declarations.push(Declaration { declares: Declares::Ship, kind: "container", at: at.clone() });
         unit.category = Declares::Ship.category();
         unit.shipped = true;
+        attached.push((at_unit, at.clone()));
+    }
+    let mut artifacts: Vec<&String> = attached.iter().map(|(_, at)| at).collect();
+    artifacts.sort();
+    artifacts.dedup();
+    for artifact in artifacts {
+        let group: Vec<usize> = attached.iter().filter(|(_, at)| at == artifact).map(|(unit, _)| *unit).collect();
+        if group.len() < 2 {
+            continue;
+        }
+        let entry = containers.iter().find(|(at, _, _)| at == artifact).and_then(|(_, _, program)| program.as_deref());
+        let primary = entry
+            .and_then(|program| group.iter().copied().find(|unit| deployables[*unit].name == program))
+            .or_else(|| stem_of_the_rest(&group, deployables));
+        if let Some(primary) = primary {
+            fold_into(deployables, &group, primary);
+        }
     }
 }
 
@@ -1340,6 +1427,26 @@ fn consolidate(
             let member_id = deployables[at].id.clone();
             deployables[at].bundled_into = Some(owner_id);
             deployables[*owner].members.push(member_id);
+        }
+    }
+
+    for artifact in 0..deployables.len() {
+        if !deployables[artifact].root.is_empty() || deployables[artifact].members.len() < 2 {
+            continue;
+        }
+        let artifact_id = deployables[artifact].id.clone();
+        let group: Vec<usize> = (0..deployables.len())
+            .filter(|unit| deployables[*unit].bundled_into.as_deref() == Some(artifact_id.as_str()))
+            .collect();
+        if let Some(primary) = stem_of_the_rest(&group, &deployables) {
+            let artifact_declarations: Vec<Declaration> =
+                deployables[artifact].declarations.iter().filter(|found| found.declares == Declares::Ship).cloned().collect();
+            deployables[primary].declarations.extend(artifact_declarations);
+            deployables[primary].category = Declares::Ship.category();
+            deployables[primary].shipped = true;
+            fold_into(&mut deployables, &group, primary);
+            let folded: Vec<String> = group.iter().map(|unit| deployables[*unit].id.clone()).collect();
+            deployables[artifact].members.retain(|member| !folded.contains(member));
         }
     }
 
