@@ -38,7 +38,7 @@ export function productMapOverview(map: CASProductMap) {
     },
     journeys: {
       total: map.journeys.total,
-      representative: map.journeys.representative,
+      shown: map.journeys.shown,
     },
     entities: map.data.entities,
     paradigms: map.conventions.paradigms.length,

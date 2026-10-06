@@ -20,8 +20,9 @@ import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../pac
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
-import { getCausalJourneys, hasCausalJourneys } from './causal-journeys';
+import { getFlowChainJourneys } from './flow-chain-journeys';
 import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
+import { projectJourneys } from '../../../packages/analyzer-core/src/analyzer/core/flow-chains';
 import { computeSemanticCoverage, toCompactSemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -289,7 +290,7 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     database_entities_total: databaseEntityNames.length,
     capabilities: cas.capabilities?.length || 0,
     flows: cas.flows?.length || 0,
-    journeys: cas.causal_journeys?.length || 0,
+    journeys: projectJourneys(cas).total,
     structural_capability_candidates: cas.flow_graph?.capability_candidates?.length || 0,
     top_capabilities: cas.capabilities?.length
       ? [...cas.capabilities]
@@ -1755,10 +1756,10 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
 
 export function getUserJourneys(
   cas: CASOutput,
-  opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
+  opts: { journeyId?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
 ) {
-  if (hasCausalJourneys(cas)) return getCausalJourneys(cas, opts);
-  const notice = 'This analysis has no cross-boundary journeys. Journeys chain flows across program boundaries; entry-point flows (one program\'s entry point followed to its effects) are available from get_entry_point_flows.';
+  if (projectJourneys(cas).total > 0) return getFlowChainJourneys(cas, opts);
+  const notice = 'This analysis has no journeys: no user-facing flow is linked through a crossing to another flow, and no user-facing flow ends in an effect. Entry-point flows (one program\'s entry point followed to its effects) are available from get_entry_point_flows.';
   const versionNotice = analysisVersionNotice(cas, 'journeys');
   if (opts.journeyId) {
     return opts.format === 'markdown'
@@ -2310,9 +2311,9 @@ export function productMapToMarkdown(map: CASProductMap): string {
   if (map.journeys.total === 0) {
     lines.push('No cross-boundary journeys in this analysis.');
   } else {
-    lines.push(`${map.journeys.total} total, ${map.journeys.representative} representative.`);
+    lines.push(`${map.journeys.total} total, ${map.journeys.shown} listed.`);
     for (const journey of map.journeys.top) {
-      lines.push(`- ${journey.label}: ${journey.does} (${journey.steps} steps)`);
+      lines.push(`- ${journey.label}: ${journey.does} (${journey.flows} flows, ${journey.steps} steps)`);
     }
   }
 

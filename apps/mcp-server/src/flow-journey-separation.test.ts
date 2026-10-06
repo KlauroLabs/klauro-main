@@ -12,13 +12,20 @@ const flows = Object.values(JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'entry-point-flows', 'real-entry-point-flows.json'), 'utf8'),
 ) as Record<string, CASEntryPointFlow>).filter(flow => typeof flow === 'object' && flow !== null && flow.entry !== undefined);
 
-const JOURNEY = {
-  id: 'journey:send-message',
-  label: 'Send a message',
-  does: 'a user types a message and the daemon delivers it',
-  rank: 1,
-  representative: true,
-  steps: [{ file: 'ui/send.ts', symbol: 'send', does: 'submits' }, { file: 'daemon/deliver.rs', symbol: 'deliver', does: 'delivers', via: 'ipc' as const }],
+const stepOf = (flow: string, name: string) => ({ step_id: `${flow}:${name}`, order: 1, name, description: name, functions: [{ function_id: `${flow}/${name}` }], entities: [] });
+const flowOf = (id: string, name: string, entry: string, effect?: string) => ({
+  flow_id: id, name, intent: name, entry_point: entry, entities: [],
+  contract: { input: [], logic: name, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+  steps: [stepOf(id, 'submit'), stepOf(id, 'deliver')],
+  ...(effect === undefined ? {} : { terminus: { exit_point_id: 'exit', kind: 'process', produces: effect, node_id: id } }),
+});
+const JOURNEY = { id: 'journey:flow:send>flow:deliver', label: 'Send a message \u2192 Deliver the message' };
+const JOURNEY_PARTS = {
+  flows: [flowOf('flow:send', 'Send a message', 'entry:send'), flowOf('flow:deliver', 'Deliver the message', 'entry:deliver', 'agent')],
+  entry_points: [{ id: 'entry:send', type: 'ui', name: 'send' }, { id: 'entry:deliver', type: 'ipc', name: 'deliver' }],
+  communication_seams: {
+    seams: [{ id: 'seam_1', modality: 'sync', confidence: 0.8, kind: 'exit_point', source: 'ui', target: 'daemon', evidence: '', summary: '', metadata: { via: 'ipc', channel: 'chat:send', from_flow: 'flow:send', to_flow: 'flow:deliver' } }],
+  },
 };
 
 function cas(withEntryPointFlows: boolean): CASOutput {
@@ -34,7 +41,7 @@ function cas(withEntryPointFlows: boolean): CASOutput {
     analyzer_contributions: [],
     entry_point_flows: flows,
     entry_point_flow_summary: { total_discovered: flows.length, included: flows.length, by_kind: { 'user-facing': flows.length, system: 0, scheduled: 0 } },
-    ...(withEntryPointFlows ? { causal_journeys: [JOURNEY] } : {}),
+    ...(withEntryPointFlows ? JOURNEY_PARTS : {}),
   } as unknown as CASOutput;
 }
 
@@ -85,12 +92,12 @@ test('no output labels an entry-point flow as a journey when the analysis has no
 
 test('entry-point flows and journeys are counted and listed separately', () => {
   const map = getProductMap(cas(true)) as { entry_point_flows: { total: number }; journeys: { total: number; top: Array<{ id: string }> } };
-  assert.equal(map.entry_point_flows.total, flows.length);
+  const flowList = getEntryPointFlows(cas(true)) as { entry_point_flows: Array<{ id: string }> };
+  assert.equal(map.entry_point_flows.total, flowList.entry_point_flows.length);
   assert.equal(map.journeys.total, 1);
   assert.deepEqual(map.journeys.top.map(item => item.id), [JOURNEY.id]);
   const listed = getUserJourneys(cas(true)) as { journeys: Array<{ id: string }> };
   assert.deepEqual(listed.journeys.map(item => item.id), [JOURNEY.id]);
-  const flowList = getEntryPointFlows(cas(true)) as { entry_point_flows: Array<{ id: string }> };
   assert.equal(flowList.entry_point_flows.some(item => item.id === JOURNEY.id), false);
   const summary = buildSummary(cas(true)) as { journeys: number; flows: number };
   assert.equal(summary.journeys, 1);
@@ -98,6 +105,7 @@ test('entry-point flows and journeys are counted and listed separately', () => {
   assert.ok(markdown.includes('## Entry-point flows'));
   assert.ok(markdown.includes('## Journeys'));
   assert.ok(markdown.includes('Send a message'));
+  assert.ok(markdown.includes('2 flows'));
 });
 
 test('the behaviour diff keeps entry-point flow changes and journey changes in separate sections', () => {
@@ -110,21 +118,36 @@ test('the behaviour diff keeps entry-point flow changes and journey changes in s
   for (const item of [...diff.journeys.added, ...diff.journeys.removed, ...diff.journeys.changed]) assert.equal(flowIds.has(item.id), false);
   const journeyIds = new Set([JOURNEY.id]);
   for (const item of [...diff.entry_point_flows.added, ...diff.entry_point_flows.removed, ...diff.entry_point_flows.changed]) assert.equal(journeyIds.has(item.id), false);
-  const changed = diffBehavior(cas(true), { ...cas(true), causal_journeys: [{ ...JOURNEY, steps: [JOURNEY.steps[0]] }] } as CASOutput);
+  const slimmer = { ...cas(true), flows: [{ ...JOURNEY_PARTS.flows[0], steps: [stepOf('flow:send', 'submit')] }, JOURNEY_PARTS.flows[1]] } as unknown as CASOutput;
+  const changed = diffBehavior(cas(true), slimmer);
   assert.deepEqual(changed.journeys.changed.map(item => item.id), [JOURNEY.id]);
   assert.deepEqual(changed.entry_point_flows.changed, []);
 });
 
-test('engine analysis facts label journeys as journeys and never label flows as journeys', () => {
+test('the stored record carries crossings as seams naming flow endpoints and no journey structure', () => {
+  const flow = (id: string, entry: string, units: string[]) => ({ id, entry_point: entry, kind: 'ipc', operation: id, standing: 'open', steps: [{ id: 's1', kind: 'call', label: 'Call', when: 'always', regions: units.map(unit => ({ unit, file: 0, start_line: 1, end_line: 2 })) }], path: units.map((unit, depth) => ({ unit, depth })) });
   const index = {
     root: '/tmp/x',
-    files: [{ path: 'a.ts', kind: 'source', language: 'typescript', extracted: true }],
-    nodes: [{ id: 'a.ts', name: 'a.ts', kind: 'module', file: 0, span: { line: 1 } }],
+    files: [{ path: 'ui/a.ts', kind: 'source', language: 'typescript', extracted: true }, { path: 'daemon/b.rs', kind: 'source', language: 'rust', extracted: true }],
+    nodes: [{ id: 'ui/a.ts:function:send', name: 'send', kind: 'function', file: 0, span: { line: 1 } }, { id: 'daemon/b.rs:function:deliver', name: 'deliver', kind: 'function', file: 1, span: { line: 1 } }],
     edges: [],
-    journeys: [{ id: JOURNEY.id, label: JOURNEY.label, does: JOURNEY.does, rank: 1, representative: true, steps: JOURNEY.steps }],
+    entry_points: [
+      { id: 'entry:send', kind: 'ui', name: 'send', handler: 'ui/a.ts:function:send', file: 0, line: 1, registrar: 'r' },
+      { id: 'entry:deliver', kind: 'ipc', name: 'deliver', handler: 'daemon/b.rs:function:deliver', file: 1, line: 1, registrar: 'r' },
+    ],
+    crossings: [{ kind: 'ipc', communication: 'sync', channel: 'chat:send', from: 'ui/a.ts:function:send', from_file: 0, from_line: 2, to: 'daemon/b.rs:function:deliver', to_file: 1, to_line: 1 }],
+    comprehension: { flows: [flow('flow:send', 'entry:send', ['ui/a.ts:function:send']), flow('flow:deliver', 'entry:deliver', ['daemon/b.rs:function:deliver'])] },
   } as unknown as Parameters<typeof tierStackToCas>[0];
-  const facts = tierStackToCas(index).analysis_facts ?? [];
-  const journeyFacts = facts.filter(fact => fact.fact_type === 'journey');
-  assert.deepEqual(journeyFacts.map(fact => fact.subject_id), [JOURNEY.id]);
-  assert.equal(facts.some(fact => fact.fact_type === 'journey' && fact.subject_type !== 'journey'), false);
+  const record = tierStackToCas(index);
+  assert.equal('causal_journeys' in record, false);
+  assert.equal((record.analysis_facts ?? []).some(fact => (fact.fact_type as string) === 'journey'), false);
+  const linked = (record.communication_seams?.seams ?? []).filter(seam => seam.metadata?.via === 'ipc');
+  assert.equal(linked.length, 1);
+  assert.deepEqual(
+    [linked[0].metadata?.from_flow, linked[0].metadata?.to_flow, linked[0].metadata?.exit_unit, linked[0].metadata?.entry],
+    ['flow:send', 'flow:deliver', 'ui/a.ts:function:send', 'entry:deliver'],
+  );
+  const chained = getUserJourneys(record) as { total: number; journeys: Array<{ flows: unknown[] }> };
+  assert.equal(chained.total, 1);
+  assert.equal(chained.journeys[0].flows.length, 2);
 });

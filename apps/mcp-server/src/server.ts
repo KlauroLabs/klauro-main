@@ -4900,20 +4900,19 @@ function registerTools(server: McpServer) {
     'get_user_journeys',
     {
       title: 'Get User Journeys',
-      description: 'Cross-boundary journeys: end-to-end user actions that chain flows across program boundaries (the engine journeys), each with ordered steps and the boundary crossings between them. A journey is not a flow: one program\'s entry point followed to its effects is an entry-point flow (get_entry_point_flows). Returns an empty list with a notice when the analysis has no journeys.',
+      description: 'Cross-boundary journeys: end-to-end user actions that chain flows across program boundaries computed when requested as a chain of flows: from a user-facing flow, across a crossing (ipc, event, network, queue) to the flow that receives it, on to a flow that ends in an effect. Steps are the chained flows\' own steps, labelled with their flow names. A journey is not a flow: one program\'s entry point followed to its effects is an entry-point flow (get_entry_point_flows). Responses state their bounds and the true total. Returns an empty list with a notice when the analysis has no journeys.',
       inputSchema: {
         path: z.string().describe('Project path'),
         journey_id: z.string().optional().describe('Specific journey ID for full detail'),
-        kind: z.string().optional().describe("Use 'representative' to list only representative journeys"),
         limit: z.number().optional().describe('Max results when listing (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
         format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown'"),
         include_steps: z.boolean().optional().describe('Include the ordered steps per journey (default true)'),
       } as any,
     } as any,
-    async ({ path, journey_id, kind, limit, offset, format, include_steps }: any) => withErrorHandling(async () => {
+    async ({ path, journey_id, limit, offset, format, include_steps }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getUserJourneys(cas, { journeyId: journey_id, kind, limit, offset, format, includeSteps: include_steps }));
+      return json(query.getUserJourneys(cas, { journeyId: journey_id, limit, offset, format, includeSteps: include_steps }));
     })
   );
 

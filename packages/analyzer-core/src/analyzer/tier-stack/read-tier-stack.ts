@@ -9,23 +9,6 @@ import { readInterned } from './read-interned';
 
 const run = promisify(execFile);
 
-export interface TierStackJourneyStep {
-  file: string;
-  symbol: string;
-  does: string;
-  via?: 'ipc' | 'event' | 'network' | 'process' | 'queue';
-  effect?: string;
-}
-
-export interface TierStackJourney {
-  id: string;
-  label: string;
-  does: string;
-  rank: number;
-  representative: boolean;
-  steps: TierStackJourneyStep[];
-}
-
 export interface TierStackCrossing {
   kind: 'ipc' | 'event' | 'network' | 'queue';
   communication: 'sync' | 'message';
@@ -374,7 +357,6 @@ export interface TierStackIndex {
   scope?: { deployables?: TierStackDeployable[] };
   partition?: { sub_projects?: TierStackSubProject[] };
   composition?: TierStackComposition;
-  journeys?: TierStackJourney[];
   crossings?: TierStackCrossing[];
   verification?: { cases?: TierStackTestCase[] };
   dead?: Array<{ node: string; reason: string; callers: number; open?: string; unlinked?: number }>;

@@ -14,6 +14,7 @@ import { exposureScore } from './data-lineage';
 import { projectEntryPointFlowsFromCas, type EntryPointFlowProjectionResult } from './entry-point-flow-projection';
 import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
 import { entryPointFlowPrimaryEntityNames, linkEntryPointFlowsToCapability, normalizeProductMapEntityName } from './product-map-flow-linking';
+import { projectJourneys } from './flow-chains';
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -185,16 +186,18 @@ function buildCapabilities(cas: CASOutput, entryPointFlows: CASEntryPointFlow[])
 }
 
 function buildJourneys(cas: CASOutput): CASProductMap['journeys'] {
-  const held = [...(cas.causal_journeys ?? [])].sort((left, right) => left.rank - right.rank);
+  const { total, journeys } = projectJourneys(cas);
+  const top = journeys.slice(0, TOP_JOURNEY_LIMIT);
   return {
-    total: held.length,
-    representative: held.filter(journey => journey.representative).length,
-    top: held.slice(0, TOP_JOURNEY_LIMIT).map(journey => ({
+    total,
+    shown: top.length,
+    top: top.map(journey => ({
       id: journey.id,
       label: journey.label,
       does: journey.does,
       steps: journey.steps.length,
-      representative: journey.representative,
+      flows: journey.flows.length,
+      programs: journey.programs,
     })),
   };
 }

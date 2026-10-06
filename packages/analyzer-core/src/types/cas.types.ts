@@ -85,7 +85,6 @@ export interface CASOutput extends CASSourceInputCatalog {
   system_purpose?: SystemPurpose;
 
   entry_point_flows?: CASEntryPointFlow[];
-  causal_journeys?: import('./causal-journey.types').CASCausalJourney[];
   entry_point_flow_summary?: CASEntryPointFlowSummary;
   data_lineage?: CASEntityLineage[];
   domain_concepts?: CASDomainConcept[];
@@ -1259,7 +1258,8 @@ export interface CASProductMapJourney {
   label: string;
   does: string;
   steps: number;
-  representative: boolean;
+  flows: number;
+  programs: number;
 }
 
 export interface CASProductMap {
@@ -1294,7 +1294,7 @@ export interface CASProductMap {
   };
   journeys: {
     total: number;
-    representative: number;
+    shown: number;
     top: CASProductMapJourney[];
   };
   data: {
@@ -1510,9 +1510,9 @@ export interface CASAnalysisFact {
 
 
 
-  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'entry_point_flow' | 'journey' | 'capability' | 'runtime_link' | 'repository_link';
+  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'entry_point_flow' | 'capability' | 'runtime_link' | 'repository_link';
   subject_id: string;
-  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'entry_point_flow' | 'journey' | 'capability' | 'runtime-correlation' | 'cross-repository';
+  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'entry_point_flow' | 'capability' | 'runtime-correlation' | 'cross-repository';
   claim: string;
   confidence: number;
   produced_by: string;

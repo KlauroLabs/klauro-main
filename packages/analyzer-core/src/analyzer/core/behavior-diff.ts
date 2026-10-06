@@ -1,4 +1,5 @@
-import type { CASCausalJourney } from '../../types/causal-journey.types';
+import type { JourneyView } from '../../types/journey-view.types';
+import { projectJourneys } from './flow-chains';
 import {
   CASBehaviorDiff,
   CASBehaviorDiffEntryPointFlow,
@@ -368,10 +369,10 @@ function formatEntityList(entities: string[]): string {
 }
 
 function diffJourneys(before: CASOutput, after: CASOutput): CASBehaviorDiff['journeys'] {
-  const held = (cas: CASOutput) => new Map((cas.causal_journeys ?? []).map(journey => [journey.id, journey]));
+  const held = (cas: CASOutput) => new Map(projectJourneys(cas).journeys.map(journey => [journey.id, journey]));
   const was = held(before);
   const now = held(after);
-  const brief = (journey: CASCausalJourney): CASBehaviorDiffJourney => ({
+  const brief = (journey: JourneyView): CASBehaviorDiffJourney => ({
     id: journey.id,
     label: journey.label,
     does: journey.does,
@@ -384,7 +385,7 @@ function diffJourneys(before: CASOutput, after: CASOutput): CASBehaviorDiff['jou
     if (!previous) continue;
     const what: string[] = [];
     if (previous.steps.length !== journey.steps.length) what.push(`steps ${previous.steps.length} -> ${journey.steps.length}`);
-    const crossed = (value: CASCausalJourney) => value.steps.filter(step => step.via).length;
+    const crossed = (value: JourneyView) => value.flows.filter(flow => flow.via).length;
     if (crossed(previous) !== crossed(journey)) what.push(`boundary crossings ${crossed(previous)} -> ${crossed(journey)}`);
     if (what.length > 0) changed.push({ id, label: journey.label, what });
   }

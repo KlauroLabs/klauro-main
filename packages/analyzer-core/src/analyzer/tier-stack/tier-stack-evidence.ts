@@ -14,7 +14,6 @@ import type {
   CASOutput,
   CASParadigmConformance,
 } from '../../types/cas.types';
-import type { CASCausalJourney } from '../../types/causal-journey.types';
 
 const PRODUCER = 'tier-stack';
 const FOUND_BY_ENGINE = 0.85;
@@ -46,7 +45,6 @@ export function analysisFactsOf(input: {
   entryPoints: CASEntryPoint[];
   exitPoints: CASExitPoint[];
   capabilities: NonNullable<CASOutput['capabilities']>;
-  journeys: CASCausalJourney[];
 }): CASAnalysisFact[] {
   const nodes = new Map(input.nodes.map(node => [node.id, node]));
   const facts: CASAnalysisFact[] = [];
@@ -84,19 +82,6 @@ export function analysisFactsOf(input: {
       confidence: capability.confidence ?? FOUND_BY_ENGINE,
       produced_by: PRODUCER,
       evidence: [{ kind: 'analyzer', source: capability.name, confidence: capability.confidence ?? FOUND_BY_ENGINE }],
-    });
-  }
-  for (const journey of input.journeys) {
-    const first = journey.steps[0];
-    facts.push({
-      id: `fact_journey_${journey.id}`,
-      subject_type: 'journey',
-      subject_id: journey.id,
-      fact_type: 'journey',
-      claim: `${journey.label}: ${journey.does}`,
-      confidence: FOUND_BY_ENGINE,
-      produced_by: PRODUCER,
-      evidence: [{ kind: 'graph', source: journey.id, ...(first ? { file: first.file } : {}), confidence: FOUND_BY_ENGINE }],
     });
   }
   return facts;

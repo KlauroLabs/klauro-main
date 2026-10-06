@@ -3,6 +3,7 @@ import * as nodePath from 'path';
 import { sourceExclusionReadiness } from './source-coverage';
 import type { CASEntryPoint, CASOutput, CASNode, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
+import { projectJourneys } from '../../../packages/analyzer-core/src/analyzer/core/flow-chains';
 import {
   assessChangeRisk,
   buildSummary,
@@ -1215,7 +1216,7 @@ function buildProductOrientationLine(cas: CASOutput): string | null {
   const parts = [
     capabilities.length > 0 ? `Top capabilities: ${capabilities.join(', ')}` : '',
     typeof map.entry_point_flows?.total === 'number' ? `${map.entry_point_flows.total} entry-point flows` : '',
-    typeof map.journeys?.total === 'number' && map.journeys.total > 0 ? `${map.journeys.total} cross-boundary journeys` : '',
+    typeof map.journeys?.total === 'number' && map.journeys.total > 0 ? `${map.journeys.total} journeys chained from flows` : '',
     Array.isArray(map.data?.sensitive) ? `${map.data.sensitive.length} sensitive entities` : '',
   ].filter(Boolean);
   if (parts.length === 0) return null;
@@ -1278,7 +1279,7 @@ export function buildEntryPointFlowContextForAgent(
   };
 }
 
-const ENTRY_POINT_FLOW_UNIT = 'entry-point flows: each item follows one entry point to its effects inside one program; cross-boundary journeys are listed under causal_journeys';
+const ENTRY_POINT_FLOW_UNIT = 'entry-point flows: each item follows one entry point to its effects inside one program; cross-boundary journeys chain these flows and are listed by get_user_journeys';
 
 const SENSITIVE_EXPOSURE_INSTRUCTION = 'Address or verify these sensitive-data exposure paths before answering security or data-exposure questions.';
 
@@ -5616,7 +5617,7 @@ function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {
     total_call_chains: cas.call_chains?.length || 0,
     measured_call_chains: cas.flow_coverage?.length || 0,
     entry_point_flows: projectEntryPointFlowsFromCas(cas).entryPointFlows.length,
-    causal_journeys: cas.causal_journeys?.length || 0,
+    journeys: projectJourneys(cas).total,
     critical_flows: cas.flow_summary?.total_critical_flows || 0,
     by_coverage_status: byStatus,
   };

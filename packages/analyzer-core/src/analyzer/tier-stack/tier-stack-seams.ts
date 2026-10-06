@@ -1,4 +1,5 @@
 import type { TierStackFlow, TierStackIndex } from './read-tier-stack';
+import { crossingSeamsOf } from './tier-stack-links';
 import { linkCoverageOf } from '../core/link-coverage';
 import { buildSeamInventory, type CommunicationSeam, type CommunicationSeamsResult } from '../core/communication-seams';
 
@@ -65,6 +66,13 @@ export function seamsOf(index: TierStackIndex): CommunicationSeamsResult | undef
       });
     }
   }
+  const entryFiles = new Map((index.entry_points ?? []).map(entry => [entry.id, entry.file]));
+  const directoryOf = (flow: TierStackFlow) => (index.files[entryFiles.get(flow.entry_point) ?? -1]?.path ?? '').split('/')[0];
+  const programsOf = (from: TierStackFlow, to: TierStackFlow): [string, string] => {
+    const parts: [string, string] = [named.get(from.project ?? '') ?? from.project ?? '', named.get(to.project ?? '') ?? to.project ?? ''];
+    return parts[0] !== '' && parts[1] !== '' && parts[0] !== parts[1] ? parts : [directoryOf(from), directoryOf(to)];
+  };
+  seams.push(...crossingSeamsOf(index, programsOf, seams.length + 1));
   const link_coverage = linkCoverageOf(index.composition?.links, project => named.get(project) ?? project);
   if (seams.length === 0 && link_coverage === undefined) return undefined;
   const inventory = buildSeamInventory(seams, 'deployable');

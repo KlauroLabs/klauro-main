@@ -41,7 +41,6 @@ function projectedValues(): CASChildProjectedValues {
     terminality: undefined,
     behavior_surfaces: [],
     entry_point_flows: [],
-    causal_journeys: [],
     data_lineage: [],
     flow_graph: undefined,
     runtime_static_links: [],

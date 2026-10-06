@@ -71,7 +71,7 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
     format: z.enum(['json', 'markdown']).optional(), include_steps: z.boolean().optional(),
   }).strict(),
   get_user_journeys: z.object({
-    journey_id: z.string().optional(), kind: z.string().optional(),
+    journey_id: z.string().optional(),
     limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
     format: z.enum(['json', 'markdown']).optional(), include_steps: z.boolean().optional(),
   }).strict(),
@@ -249,7 +249,7 @@ export async function executeHostedProjectQuery(input: {
       break;
     case 'get_user_journeys':
       result = query.getUserJourneys(input.cas, {
-        journeyId: args.journey_id, kind: args.kind, limit: args.limit, offset: args.offset,
+        journeyId: args.journey_id, limit: args.limit, offset: args.offset,
         format: args.format, includeSteps: args.include_steps,
       });
       break;

@@ -489,17 +489,24 @@ test('product map reuses a supplied canonical entry-point flow projection', () =
   assert.equal(map.entry_point_flows.top[0]?.id, 'entry_point_flow_canonical');
 });
 
-test('product map keeps entry-point flows and cross-boundary journeys as separate sections', () => {
+test('product map keeps entry-point flows and journeys chained from flows as separate sections', () => {
   const base = { cas_version: '1.11.0', system: { name: 'x', type: 'application' }, nodes: [], edges: [], entry_points: [], exit_points: [] } as unknown as CASOutput;
   const withoutEntryPointFlows = buildProductMap(base);
   assert.equal(withoutEntryPointFlows.journeys.total, 0);
   assert.equal(withoutEntryPointFlows.entry_point_flows.total, 0);
   const withEntryPointFlows = buildProductMap({
     ...base,
-    causal_journeys: [{ id: 'j1', label: 'Send a message', does: 'types and delivers', rank: 1, representative: true, steps: [{ file: 'a.ts', symbol: 'a', does: 'sends' }] }],
+    entry_points: [{ id: 'e1', type: 'ui', name: 'send' }, { id: 'e2', type: 'ipc', name: 'deliver' }],
+    flows: ['f1', 'f2'].map((id, at) => ({
+      flow_id: id, name: `Flow ${id}`, intent: id, entry_point: `e${at + 1}`, entities: [],
+      contract: { input: [], logic: id, side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+      steps: [{ step_id: `${id}:1`, order: 1, name: 'step', description: 'step', functions: [], entities: [] }],
+    })),
+    communication_seams: { seams: [{ id: 's1', modality: 'sync', confidence: 1, kind: 'exit_point', source: 'a', target: 'b', evidence: '', summary: '', metadata: { via: 'ipc', from_flow: 'f1', to_flow: 'f2' } }] },
   } as unknown as CASOutput);
   assert.equal(withEntryPointFlows.journeys.total, 1);
-  assert.equal(withEntryPointFlows.journeys.representative, 1);
-  assert.equal(withEntryPointFlows.journeys.top[0].steps, 1);
-  assert.equal(withEntryPointFlows.entry_point_flows.total, 0);
+  assert.equal(withEntryPointFlows.journeys.shown, 1);
+  assert.equal(withEntryPointFlows.journeys.top[0].flows, 2);
+  assert.equal(withEntryPointFlows.journeys.top[0].programs, 2);
+  assert.equal(withEntryPointFlows.journeys.top.some(journey => withEntryPointFlows.entry_point_flows.top.some(flow => flow.id === journey.id)), false);
 });
