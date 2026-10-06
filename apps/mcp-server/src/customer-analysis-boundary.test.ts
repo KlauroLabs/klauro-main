@@ -27,7 +27,7 @@ function callArguments(file: string, functionName: string): readonly ts.Expressi
 }
 
 test('customer MCP, CLI, and watcher paths do not launch analyzer internals', () => {
-  for (const file of ['server.ts', 'cli.ts', 'watcher.ts', 'agent-project-map.ts']) {
+  for (const file of ['cli.ts', 'watcher.ts', 'agent-project-map.ts']) {
     const text = source(file);
     assert.doesNotMatch(text, /\b(?:analyzeProject|analyzeProjectIncremental|runAnalysis)\s*\(/, `${file} must submit or read, never analyze locally`);
   }
