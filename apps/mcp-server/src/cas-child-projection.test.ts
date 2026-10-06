@@ -50,6 +50,7 @@ function projectedValues(): CASChildProjectedValues {
     principle_violations: [],
     module_health: undefined,
     communication_seams: undefined,
+    crossings: undefined,
       units: undefined,
   };
 }

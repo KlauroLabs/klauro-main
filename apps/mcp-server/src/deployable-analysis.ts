@@ -1339,6 +1339,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     flow_graph: scopedFlowGraph.graph,
     entry_point_flows: undefined,
     communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
+    crossings: cas.crossings?.filter(crossing => reachable.has(crossing.from) || reachable.has(crossing.to)),
     method_calls: methodCalls.length > 0 ? methodCalls : undefined,
     call_chains: callChains.length > 0 ? callChains : undefined,
     intents: (cas.intents || []).filter(intent => reachable.has(intent.node_id)),
