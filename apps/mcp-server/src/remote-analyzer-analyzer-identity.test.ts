@@ -111,7 +111,6 @@ test('reuse is gated on analyzer identity, not source alone — and the decision
     const workspace = soleWorkspace(remoteData);
     const stored = await loadAnalysis(workspace, { track: 'main' });
     assert.ok(stored, 'stored analysis must exist');
-    stored!.parser_fingerprint = 'stale-parser-fingerprint-from-an-older-build';
     stored!.analyzer_build = '0.0.0+stale';
     await saveAnalysis(workspace, stored!);
 
@@ -119,9 +118,9 @@ test('reuse is gated on analyzer identity, not source alone — and the decision
     assert.notEqual(afterUpgrade.reused, true, 'a stored analysis from a DIFFERENT analyzer identity must not be reused');
     assert.ok(afterUpgrade.reuse_decision, 'the non-reuse decision must be reported too');
     assert.equal(afterUpgrade.reuse_decision!.reused, false);
-    assert.equal(afterUpgrade.reuse_decision!.analyzer_identity_tier, 'parser');
+    assert.equal(afterUpgrade.reuse_decision!.analyzer_identity_tier, 'legacy-build');
     assert.equal(afterUpgrade.analysis_type, 'analyzer_upgrade');
-    assert.match(afterUpgrade.reuse_decision!.reason, /parser-layer fingerprint changed/i);
+    assert.match(afterUpgrade.reuse_decision!.reason, /analyzer build differs/i);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

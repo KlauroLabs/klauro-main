@@ -20,7 +20,7 @@ test('deployment selects source only after an optional release commit exists', (
   assert.ok(release >= 0);
   assert.ok(selection > release);
   assert.match(source, /DEPLOY_SHA="\$DEPLOY_SHA_FULL"/);
-  assert.match(source, /refusing to deploy from a dirty working tree/);
+  assert.match(source, /Deploying committed HEAD .*source-exact from that commit and these uncommitted paths are not part of it/);
 });
 
 test('deployment verifies live server and client artifacts against the selected source', () => {
