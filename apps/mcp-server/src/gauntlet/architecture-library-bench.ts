@@ -89,7 +89,7 @@ async function klauroArchitectureLibraries(dir: string): Promise<{
   const categories = [...new Set<string>(libraries.map((library: any) => String(library.category || '')).filter(Boolean))].sort();
   const packages = [...new Set<string>(libraries.map((library: any) => String(library.name || '')).filter(Boolean))].sort();
   const exitActions = [...new Set<string>((cas.exit_points || [])
-    .map((exit: any) => String(exit.operation?.action || exit.protocol?.action || exit.metadata?.action || ''))
+    .map((exit: any) => String(exit.metadata?.action || exit.protocol?.action || exit.operation?.action || ''))
     .filter(Boolean))].sort();
   const guidanceCount = libraries.filter((library: any) => /preserve|must|boundary|contract|retry|scope/i.test(String(library.description || ''))).length;
   const compact = {

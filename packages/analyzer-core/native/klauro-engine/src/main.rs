@@ -41,6 +41,8 @@ mod file_routes;
 mod history;
 mod jev;
 mod links;
+mod actions;
+mod model_calls;
 mod gomod;
 mod generic;
 mod externals;
@@ -1035,7 +1037,14 @@ fn read_it() {
     if !kept_in_stores.is_empty() {
         eprintln!("kept by a store | exits {}", kept_in_stores.len());
     }
-    let kept: Vec<entry_exit::ExitPoint> = kept.into_iter().chain(kept_in_stores).collect();
+    let kept_by_variable = model_calls::kept_by_a_model_variable(
+        &index.calls,
+        &paths,
+        &index.locals,
+        &index.imports,
+        &index.exit_points,
+    );
+    let kept: Vec<entry_exit::ExitPoint> = kept.into_iter().chain(kept_in_stores).chain(kept_by_variable).collect();
     if !kept.is_empty() {
         eprintln!("kept by a model | exits {}", kept.len());
         index.exit_points.extend(kept);
@@ -1052,6 +1061,7 @@ fn read_it() {
         index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
+    actions::assign(&mut index.exit_points, &index.calls, &index.imports, &paths);
 
     let patterns_started = Instant::now();
     let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();

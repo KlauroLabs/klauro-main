@@ -350,6 +350,7 @@ pub fn through_wrappers(
             service: None,
             method: None,
             origin: None,
+            action: None,
         });
     }
     exits.retain(|exit| {

@@ -50,6 +50,7 @@ import type {
   TierStackNode,
   TierStackSubProject,
 } from './read-tier-stack';
+import { nodeContractsOf } from './tier-stack-contracts';
 
 const EVIDENCE: Record<TierStackDeclaration, CASRelationEvidence> = {
   type: 'typed-composition',
@@ -181,6 +182,7 @@ function importNodesOf(index: TierStackIndex, depth: Map<string, number>): CASNo
 
 function nodesOf(index: TierStackIndex): CASNode[] {
   const depth = depths(index.nodes);
+  const contracts = nodeContractsOf(index);
   const dead = new Map((index.dead ?? []).map(held => [held.node, held]));
   const declared = index.nodes.map(node => ({
     id: node.id,
@@ -194,6 +196,7 @@ function nodesOf(index: TierStackIndex): CASNode[] {
     primaryAnalyzer: TIER_STACK_ANALYZER,
     source: sourceOf(index, node),
     ...(node.signature === undefined ? {} : { signature: signatureOf(node.signature) }),
+    ...(contracts.has(node.id) ? { contract: contracts.get(node.id) } : {}),
     metadata: {
       language: index.files[node.file]?.language,
       ...(node.modifiers?.exported ? { is_exported: true } : {}),

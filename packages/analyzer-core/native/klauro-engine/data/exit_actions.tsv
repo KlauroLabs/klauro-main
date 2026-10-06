@@ -1,0 +1,8 @@
+category	actor-system	ask,forward,pipeto,tell	actor-message	message	yes
+category	actor-system	publish,send	actor-message	message	no
+category	workflow-engine	signal,signalwithstart,startworkflow,executeworkflow	workflow-signal	message	yes
+category	workflow-engine	cancel,execute,query,start,terminate	workflow-signal	message	no
+category	workflow-engine	executeactivity,executelocalactivity,startactivity,scheduleactivity	activity-dispatch	message	yes
+category	service-sdk	*	sdk-call	api	no
+category	ai-sdk	*	model-call	api	no
+package	@prisma/client	*	model-call	database	no

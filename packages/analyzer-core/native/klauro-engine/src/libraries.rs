@@ -37,12 +37,12 @@ fn rows(table: &'static str) -> impl Iterator<Item = (&'static str, &'static str
     table.lines().filter_map(|line| line.split_once('\t'))
 }
 
-fn named_by(package: &str, prefix: &str) -> bool {
+pub(crate) fn named_by(package: &str, prefix: &str) -> bool {
     package == prefix
         || package.strip_prefix(prefix).is_some_and(|rest| rest.starts_with(['/', '.']))
 }
 
-fn category_of(package: &str, declared: &'static str) -> Option<String> {
+pub(crate) fn category_of(package: &str, declared: &'static str) -> Option<String> {
     rows(LIBRARIES)
         .filter(|(prefix, _)| named_by(package, prefix))
         .max_by_key(|(prefix, _)| prefix.len())
