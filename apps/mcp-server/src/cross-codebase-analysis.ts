@@ -10706,6 +10706,20 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       }
     }
 
+    const appByRoot = new Map(appsForRepo.filter(app => app.path_hint).map(app => [app.path_hint as string, app]));
+    for (const app of appsForRepo) {
+      const held = evidenceByRoot.get(app.path_hint || '');
+      if (!held?.bundled_into) continue;
+      const owner = appByRoot.get(held.bundled_into.replace(/^deployable:/, ''));
+      if (!owner || owner.id === app.id || owner.bundled_into === app.id) continue;
+      app.bundled_into = owner.id;
+      app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+        `bundled-into:${owner.name}`,
+        'positive-bundling-evidence:engine-scope-ship-artifact',
+        ...held.evidence,
+      ]);
+    }
+
     const rootBundleTargets = new Map<string, { primaryAppId: string; evidence: DeployableEvidence }>();
     for (const evidence of evidenceList) {
       if (evidence.tier !== 1 || evidence.root_path !== '.') continue;
