@@ -99,6 +99,8 @@ pub struct Reference {
     pub entity: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub many: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cardinality: Option<&'static str>,
     pub declared_by: &'static str,
 }
 
@@ -132,6 +134,8 @@ pub struct Entity {
     pub terminality: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unshipped: Option<crate::entry_exit::Unshipped>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persisted_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -305,6 +309,47 @@ fn same_record(named: &str) -> String {
         Some(stem) => stem.to_string(),
         None => bare,
     }
+}
+
+fn model_references(model: &crate::entities::orm::Model) -> Vec<Reference> {
+    model
+        .relations
+        .iter()
+        .map(|relation| {
+            let cardinality = relation.cardinality.as_deref().map(|held| match held {
+                crate::entities::orm::ONE_TO_ONE => crate::entities::orm::ONE_TO_ONE,
+                crate::entities::orm::ONE_TO_MANY => crate::entities::orm::ONE_TO_MANY,
+                crate::entities::orm::MANY_TO_MANY => crate::entities::orm::MANY_TO_MANY,
+                _ => crate::entities::orm::MANY_TO_ONE,
+            });
+            Reference {
+                field: relation.field.clone(),
+                entity: relation.target.clone(),
+                many: cardinality.is_some_and(crate::entities::orm::is_many),
+                cardinality,
+                declared_by: match relation.declared_by.as_str() {
+                    "decorator" => "decorator",
+                    "foreign key" => "foreign key",
+                    _ => "call",
+                },
+            }
+        })
+        .collect()
+}
+
+fn model_fields(model: &crate::entities::orm::Model) -> Vec<Field> {
+    model
+        .fields
+        .iter()
+        .map(|attribute| Field { name: attribute.name.clone(), declared_as: attribute.declared_as.clone() })
+        .chain(
+            model
+                .relations
+                .iter()
+                .filter(|relation| !model.fields.iter().any(|attribute| attribute.name == relation.field))
+                .map(|relation| Field { name: relation.field.clone(), declared_as: Some(relation.target.clone()) }),
+        )
+        .collect()
 }
 
 fn tabled_name(named: &str) -> bool {
@@ -1848,6 +1893,7 @@ pub fn derive(
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
+    models: &[crate::entities::orm::Model],
     calls: &[CallFact],
     type_references: &[crate::model::TypeReferenceFact],
     metrics: &[crate::model::UnitMetricsEntry],
@@ -2023,6 +2069,7 @@ pub fn derive(
         exit_points,
         roles,
         declared_tables,
+        models,
         calls,
         type_references,
         locals,
@@ -3776,6 +3823,7 @@ fn entities(
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
+    models: &[crate::entities::orm::Model],
     calls: &[CallFact],
     type_references: &[crate::model::TypeReferenceFact],
     locals: &[crate::model::LocalBinding],
@@ -3812,8 +3860,19 @@ fn entities(
                         field: field.name.clone(),
                         entity,
                         many,
+                        cardinality: None,
                         declared_by: "type",
                     });
+                }
+                let declared_cardinality = field
+                    .decorators
+                    .iter()
+                    .find_map(|decorator| crate::entities::orm::declared_cardinality(&decorator.name));
+                if let Some(cardinality) = declared_cardinality {
+                    for reference in held.iter_mut().filter(|reference| reference.field == field.name) {
+                        reference.cardinality = Some(cardinality);
+                        reference.many = crate::entities::orm::is_many(cardinality);
+                    }
                 }
                 for named in field
                     .decorators
@@ -3826,6 +3885,7 @@ fn entities(
                         field: field.name.clone(),
                         entity: named.to_string(),
                         many: false,
+                        cardinality: None,
                         declared_by: "decorator",
                     });
                 }
@@ -3854,6 +3914,7 @@ fn entities(
                     field: caller.name.clone(),
                     entity: held.to_string(),
                     many,
+                    cardinality: None,
                     declared_by: "call",
                 });
         }
@@ -4106,6 +4167,33 @@ fn entities(
             })
             .map(|node| node.id.as_str()),
     );
+    let standing_models = crate::entities::orm::standing(models.to_vec());
+    let mut model_nodes: HashMap<(u32, &str), &IndexNode> = HashMap::default();
+    for node in &candidates {
+        model_nodes.entry((node.file, unquoted(&node.name))).or_insert(node);
+    }
+    let mut persisted: HashMap<&str, String> = HashMap::default();
+    let mut unattached: Vec<&crate::entities::orm::Model> = Vec::new();
+    for model in &standing_models {
+        let Some(node) = model_nodes.get(&(model.file, model.name.as_str())).copied() else {
+            unattached.push(model);
+            continue;
+        };
+        let id = node.id.as_str();
+        admitted.insert(id);
+        if let Some(evidence) = model.evidence.clone() {
+            persisted.insert(id, evidence);
+        }
+        let references = model_references(model);
+        pointing.entry(id).or_default().splice(0..0, references);
+        let held = named_fields.entry(id).or_default();
+        for field in model_fields(model) {
+            if !held.iter().any(|known| known.name == field.name) {
+                held.push(field);
+                *fields.entry(id).or_insert(0) += 1;
+            }
+        }
+    }
     let mut handled_as: HashMap<String, &str> = HashMap::default();
     for (named, site, handle) in &handled {
         let denoted = denoting.named(named, *site);
@@ -4442,8 +4530,8 @@ fn entities(
             references: {
                 let mut held = pointing.remove(node.id.as_str()).unwrap_or_default();
                 held.sort_by(|left, right| {
-                    (left.field.as_str(), left.entity.as_str())
-                        .cmp(&(right.field.as_str(), right.entity.as_str()))
+                    (left.field.as_str(), left.entity.as_str(), left.cardinality.is_none())
+                        .cmp(&(right.field.as_str(), right.entity.as_str(), right.cardinality.is_none()))
                 });
                 held.dedup_by(|left, right| {
                     left.field == right.field && left.entity == right.entity
@@ -4453,6 +4541,7 @@ fn entities(
             project: node.project.clone(),
             terminality: None,
             unshipped: None,
+            persisted_by: persisted.get(node.id.as_str()).cloned(),
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity
@@ -4468,6 +4557,31 @@ fn entities(
             entity
         })
         .collect();
+    let mut entities = entities;
+    for model in unattached {
+        let path = files.get(model.file as usize).map(String::as_str).unwrap_or_default();
+        let fields = model_fields(model);
+        entities.push(Entity {
+            id: format!("entity:{path}:{}", model.name),
+            declared_as: model.name.clone(),
+            fields: fields.len() as u32,
+            named_fields: fields,
+            name: None,
+            description: None,
+            grounding: None,
+            declared_in: None,
+            addressed_by: 0,
+            written_by: Vec::new(),
+            read_by: Vec::new(),
+            written_in: Vec::new(),
+            read_in: Vec::new(),
+            references: model_references(model),
+            project: file_project.get(&model.file).map(|project| (*project).to_string()),
+            terminality: None,
+            unshipped: None,
+            persisted_by: model.evidence.clone(),
+        });
+    }
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
     for entity in entities {
         let key = (
@@ -4574,6 +4688,7 @@ fn entities(
                     field,
                     entity: pointed,
                     many: false,
+                    cardinality: None,
                     declared_by: "foreign key",
                 }),
         );
@@ -4615,6 +4730,7 @@ fn entities(
                 .map(|project| (*project).to_string()),
             terminality: None,
             unshipped: None,
+            persisted_by: None,
         });
     }
     for (named, table) in created {
@@ -4642,11 +4758,13 @@ fn entities(
                     field,
                     entity,
                     many: false,
+                    cardinality: None,
                     declared_by: "foreign key",
                 })
                 .collect(),
             terminality: None,
             unshipped: None,
+            persisted_by: None,
         });
     }
     let known: HashMap<String, String> = entities

@@ -5,11 +5,13 @@ type DataRelation = NonNullable<CASDataEntity['relations']>[number];
 const SIDE_OF = {
   'N:1': { type: 'ManyToOne', inverse: '1:N' },
   '1:N': { type: 'OneToMany', inverse: 'N:1' },
+  '1:1': { type: 'OneToOne', inverse: '1:1' },
+  'N:M': { type: 'ManyToMany', inverse: 'N:M' },
 } as const satisfies Record<string, { type: CASDatabaseRelationship['type']; inverse: string }>;
 
 function sideOf(relation: DataRelation): (typeof SIDE_OF)[keyof typeof SIDE_OF] | undefined {
   if (relation.kind !== 'data' || relation.field === undefined) return undefined;
-  return relation.cardinality === 'N:1' || relation.cardinality === '1:N' ? SIDE_OF[relation.cardinality] : undefined;
+  return relation.cardinality === undefined ? undefined : SIDE_OF[relation.cardinality];
 }
 
 function databaseEntityOf(entity: CASDataEntity): CASDatabaseEntity {

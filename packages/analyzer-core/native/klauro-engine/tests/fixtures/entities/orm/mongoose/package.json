@@ -1,0 +1,1 @@
+{ "name": "gallery", "dependencies": { "mongoose": "^8.0.0" } }

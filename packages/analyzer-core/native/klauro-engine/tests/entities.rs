@@ -68,3 +68,93 @@ fn a_request_body_is_written_by_the_flow_that_takes_it() {
     assert_eq!(strings(&creating["writes"]), vec!["CreateOrderDto"]);
     assert_eq!(strings(&creating["reads"]), vec!["OrderView"]);
 }
+
+fn references<'a>(held: &'a [Value], entity: &str) -> Vec<(&'a str, &'a str, &'a str)> {
+    let Some(found) = held.iter().find(|candidate| candidate["declared_as"] == entity) else { return Vec::new() };
+    found["references"]
+        .as_array()
+        .map(|references| {
+            references
+                .iter()
+                .map(|reference| {
+                    (
+                        reference["field"].as_str().unwrap_or_default(),
+                        reference["entity"].as_str().unwrap_or_default(),
+                        reference["cardinality"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn an_active_record_model_relates_to_its_neighbours_with_a_cardinality_and_a_plain_class_is_not_an_entity() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Author"), vec![("books", "Book", "1:N"), ("profile", "AuthorProfile", "1:1")]);
+    assert_eq!(references(&held, "Book"), vec![("author", "Author", "N:1"), ("tags", "Tag", "N:M")]);
+    assert!(!named(&held).contains(&"SearchForm"));
+}
+
+#[test]
+fn an_eloquent_model_relates_through_its_relation_methods_and_a_model_inheriting_a_shared_base_counts() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Team"), vec![("members", "Member", "1:N"), ("projects", "Project", "N:M")]);
+    assert_eq!(references(&held, "Member"), vec![("team", "Team", "N:1")]);
+    assert_eq!(references(&held, "Project"), vec![("teams", "Team", "N:M")]);
+    assert!(!named(&held).contains(&"BaseModel"));
+}
+
+#[test]
+fn a_doctrine_entity_relates_through_attributes_and_annotations_and_a_plain_value_class_is_not_an_entity() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Client"), vec![("account", "Account", "1:1"), ("invoices", "Invoice", "1:N")]);
+    assert_eq!(references(&held, "Invoice"), vec![("client", "Client", "N:1")]);
+    assert!(!named(&held).contains(&"Money"));
+}
+
+#[test]
+fn a_sqlalchemy_relationship_takes_its_cardinality_from_the_side_that_holds_the_foreign_key() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Department"), vec![("staff", "Employee", "1:N")]);
+    assert_eq!(references(&held, "Employee"), vec![("badge", "Badge", "1:1"), ("department", "Department", "N:1")]);
+    assert_eq!(references(&held, "Badge"), vec![("employee_id", "Employee", "N:1")]);
+}
+
+#[test]
+fn a_django_model_relates_through_its_relation_fields_wherever_the_target_is_spelled() {
+    let held = entities("entities/orm");
+    assert_eq!(
+        references(&held, "Shop"),
+        vec![("owner", "Owner", "1:1"), ("region", "Region", "N:1"), ("suppliers", "Supplier", "N:M")]
+    );
+}
+
+#[test]
+fn a_mongoose_model_registered_over_a_schema_relates_through_its_ref_fields() {
+    let held = entities("entities/orm");
+    assert_eq!(references(&held, "Album"), vec![("tracks", "Track", "1:N")]);
+    assert_eq!(references(&held, "Track"), vec![("album", "Album", "N:1")]);
+}
+
+#[test]
+fn a_jpa_entity_relates_with_the_cardinality_its_annotation_declares() {
+    let held = entities("entities/orm");
+    assert_eq!(
+        references(&held, "Student"),
+        vec![("courses", "Course", "N:M"), ("enrollments", "Enrollment", "1:N"), ("passport", "Passport", "1:1")]
+    );
+    assert_eq!(references(&held, "Enrollment"), vec![("student", "Student", "N:1")]);
+}
+
+#[test]
+fn an_orm_mapped_entity_names_the_mapping_that_makes_it_persisted() {
+    let held = entities("entities/orm");
+    let cited = |entity: &str| held.iter().find(|candidate| candidate["declared_as"] == entity).and_then(|found| found["persisted_by"].as_str());
+    assert_eq!(cited("Author"), Some("extends ApplicationRecord"));
+    assert_eq!(cited("Client"), Some("#[ORM\\Entity]"));
+    assert_eq!(cited("Student"), Some("@Entity"));
+    assert_eq!(cited("Album"), Some("mongoose Schema"));
+    assert_eq!(cited("Helper"), None);
+    assert_eq!(cited("Department"), Some("__tablename__ = departments"));
+}

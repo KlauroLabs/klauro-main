@@ -271,6 +271,7 @@ fn read(
         report_first_error(path, source, &tree);
         let mut facts = typescript::Extractor::new(source, file, path).run(&tree, path, lines(source));
         facts.tables.extend(tables::declared(source, path, file));
+        facts.models.extend(entities::orm::declared(source, path, file));
         if bundler::is_config(path) {
             facts.nodes.extend(bundler::declared_aliases(&tree, source, file, path));
         }
@@ -307,17 +308,19 @@ fn read(
         let tree = parser.parse(&source, None)?;
         let mut facts = structured::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
         facts.tables.extend(tables::declared(source, path, file));
+        facts.models.extend(entities::orm::declared(source, path, file));
         return Some(facts);
     }
     let (language, spec) = language::language_for(declared?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
-    let tree = parser.parse(&source, None)?;
-    let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
     if declared == Some("apex") {
         source_rewrite::apex_dialect(source);
     }
+    let tree = parser.parse(&source, None)?;
+    let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
     facts.tables.extend(tables::declared(source, path, file));
+    facts.models.extend(entities::orm::declared(source, path, file));
     Some(facts)
 }
 
@@ -518,6 +521,7 @@ fn read_it() {
         nested_repositories: found.nested_repositories,
     };
     let mut declared_tables: Vec<tables::Table> = Vec::new();
+    let mut declared_models: Vec<entities::orm::Model> = Vec::new();
     let mut parse_errors = 0;
     let mut extracted_files = rustc_hash::FxHashSet::default();
     let report_errors = std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok();
@@ -543,6 +547,7 @@ fn read_it() {
         index.settings.extend(file.settings);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
+        declared_models.extend(file.models);
         parse_errors += file.parse_errors;
     }
 
@@ -1263,6 +1268,7 @@ fn read_it() {
         &index.exit_points,
         index.roles.as_ref().expect("roles precede comprehension"),
         &declared_tables,
+        &declared_models,
         &index.calls,
         &index.type_references,
         &index.metrics,

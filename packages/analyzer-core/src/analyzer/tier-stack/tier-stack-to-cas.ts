@@ -361,6 +361,9 @@ function entitiesOf(index: TierStackIndex): CASDataEntity[] {
     schema_source: entity.declared_in,
     description: entity.description,
     description_source: entity.description ? ('ai' as const) : undefined,
+    ...(entity.persisted_by === undefined
+      ? {}
+      : { kind: 'persisted-entity' as const, kind_source: 'framework-evidence' as const, kind_evidence: entity.persisted_by }),
     fields: (entity.named_fields ?? []).map(field => ({
       name: field.name,
       type: field.declared_as ?? '',
@@ -371,7 +374,7 @@ function entitiesOf(index: TierStackIndex): CASDataEntity[] {
       target_name: reference.entity,
       relation_type: 'references',
       kind: 'data' as const,
-      cardinality: reference.many ? ('1:N' as const) : ('N:1' as const),
+      cardinality: reference.cardinality ?? (reference.many ? ('1:N' as const) : ('N:1' as const)),
       field: reference.field,
       evidence_source: EVIDENCE[reference.declared_by],
       evidence: `${entity.declared_as}.${reference.field} names ${reference.entity} by ${reference.declared_by}`,

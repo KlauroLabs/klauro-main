@@ -111,10 +111,13 @@ export interface TierStackExitPoint {
 
 export type TierStackDeclaration = 'type' | 'foreign key' | 'decorator' | 'call';
 
+export type TierStackCardinality = '1:1' | '1:N' | 'N:1' | 'N:M';
+
 export interface TierStackReference {
   field: string;
   entity: string;
   many?: boolean;
+  cardinality?: TierStackCardinality;
   declared_by: TierStackDeclaration;
 }
 
@@ -135,6 +138,7 @@ export interface TierStackEntity {
   written_by: string[];
   read_by: string[];
   references?: TierStackReference[];
+  persisted_by?: string;
   project?: string;
 }
 

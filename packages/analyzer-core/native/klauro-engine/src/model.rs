@@ -475,6 +475,8 @@ pub struct FileFacts {
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub tables: Vec<crate::tables::Table>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub models: Vec<crate::entities::orm::Model>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub kept: Vec<Kept>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub settings: Vec<SettingRead>,
@@ -509,6 +511,7 @@ impl FileFacts {
         self.kept.iter_mut().for_each(|held| held.file = file);
         self.settings.iter_mut().for_each(|held| held.file = file);
         self.tables.iter_mut().for_each(|held| held.file = file);
+        crate::entities::orm::refile(&mut self.models, file);
         self.forwards.iter_mut().for_each(|held| held.file = file);
         self.bundler_builds.iter_mut().for_each(|held| held.file = file);
         self.messages.iter_mut().for_each(|held| held.file = file);

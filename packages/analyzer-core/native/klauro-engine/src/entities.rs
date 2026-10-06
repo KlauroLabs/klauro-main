@@ -5,6 +5,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::{CallFact, EdgeKind, IndexEdge, IndexNode, LocalBinding, NodeKind};
 
+pub mod orm;
+
 const ARGUMENTS_READ: usize = 4;
 const ELEMENTS_READ: usize = 3;
 const MEMBERS_READ: usize = 6;
