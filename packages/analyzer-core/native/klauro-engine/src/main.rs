@@ -1215,7 +1215,7 @@ fn read_it() {
         .filter(|entry| unshipped::is_set_aside(entry.unshipped.as_ref()))
         .map(|entry| entry.file)
         .collect();
-    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points, &set_aside);
+    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points, &index.entry_points, &set_aside);
     eprintln!("journeys {:?} | {}", journeys_started.elapsed(), index.journeys.len());
     let composition_started = Instant::now();
     index.composition = index.partition.as_ref().and_then(|partition| {

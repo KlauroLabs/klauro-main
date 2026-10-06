@@ -154,6 +154,8 @@ fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNod
     (!holder.name.is_empty()).then_some(holder.name.as_str())
 }
 
+pub(crate) static USER_FACING: &[&str] = &["cli", "graphql", "http", "ipc", "rpc", "tool", "ui"];
+
 pub(crate) fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
 }
@@ -2893,7 +2895,7 @@ pub fn derive(
         {
             path.insert(0, '/');
         }
-        if !entry.name.starts_with('/') && entry.name.contains('/') {
+        if !entry.name.starts_with('/') && entry.name.contains('/') && split_label(&entry.name).0.is_none() {
             entry.name.insert(0, '/');
         }
     }

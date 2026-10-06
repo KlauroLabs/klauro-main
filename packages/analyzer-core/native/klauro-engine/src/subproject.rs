@@ -271,6 +271,12 @@ pub fn derive(
     }
 
     let mut derived = partition(declared, files, nodes, edges, entry_points, code, deployables);
+    for project in derived.sub_projects.iter_mut().filter(|project| project.status == "module" && project.declared_by != "repository-residue") {
+        let published = manifests.iter().any(|(root, manifest)| *root == project.root && publishes_a_package(&children, manifest));
+        if published {
+            project.status = "library";
+        }
+    }
     describe(&mut derived.sub_projects, descriptors);
     derived
 }
@@ -282,6 +288,22 @@ fn describe(sub_projects: &mut [SubProject], descriptors: Vec<Descriptor>) {
             project.system = descriptor.system;
             project.depends_on = descriptor.depends_on;
         }
+    }
+}
+
+fn publishes_a_package(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
+    let Some(document) = children.get(manifest) else { return false };
+    let has = |name: &str| document.iter().any(|node| node.name == name);
+    match basename(manifest).to_ascii_lowercase().as_str() {
+        "pyproject.toml" => {
+            has("build-system")
+                && document
+                    .iter()
+                    .filter(|node| node.name == "project")
+                    .any(|project| children.get(project.id.as_str()).is_some_and(|inner| inner.iter().any(|node| node.name == "name")))
+        }
+        "package.json" => has("name") && has("version") && (has("main") || has("exports") || has("module")) && !has("bin") && !has("private"),
+        _ => false,
     }
 }
 

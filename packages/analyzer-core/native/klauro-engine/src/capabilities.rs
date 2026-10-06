@@ -1324,6 +1324,14 @@ fn grouped(
     groups
 }
 
+fn reaches_a_user(capability: &Capability, flow_of: &BTreeMap<&str, &Flow>) -> bool {
+    capability
+        .flows
+        .iter()
+        .filter_map(|flow| flow_of.get(flow.as_str()))
+        .any(|flow| crate::entry_exit::USER_FACING.contains(&flow.kind) && flow.unshipped.is_none())
+}
+
 pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flows: &[Flow]) -> Vec<Capability> {
     let scope = &format!("{scope}\u{1}{}", crate::author::PURPOSE_CONTRACT_VERSION);
     let projects: BTreeSet<Option<&str>> = parts.iter().map(|capability| capability.project.as_deref()).collect();
@@ -1388,7 +1396,7 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
             .of
             .iter()
             .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
-            .filter(|at| *at < parts.len() && !taken[*at])
+            .filter(|at| *at < parts.len() && !taken[*at] && reaches_a_user(&parts[*at], &flow_of))
             .filter(|at| from_parts.insert(parts[*at].project.as_deref()))
             .collect();
         let Some(first) = members.first().copied() else { continue };
@@ -1412,7 +1420,7 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
         whole.push(together);
     }
     for (at, capability) in parts.iter().enumerate() {
-        if !taken[at] {
+        if !taken[at] && reaches_a_user(capability, &flow_of) {
             whole.push(capability.clone());
         }
     }
