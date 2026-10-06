@@ -454,6 +454,38 @@ fn declared_methods(decorator: &Decorator) -> Vec<String> {
     found
 }
 
+static VIEW_CLASS_METHODS: &[&str] = &["delete", "get", "head", "options", "patch", "post", "put"];
+
+fn methods_the_view_serves(view: &IndexNode, members: &HashMap<&str, Vec<&IndexNode>>) -> Vec<String> {
+    let mut served: Vec<String> = Vec::new();
+    let mut serve = |method: String| {
+        if !served.contains(&method) {
+            served.push(method);
+        }
+    };
+    if view.kind.is_type() {
+        for member in members.get(view.id.as_str()).into_iter().flatten() {
+            if VIEW_CLASS_METHODS.binary_search(&member.name.as_str()).is_ok() {
+                serve(member.name.to_ascii_uppercase());
+            }
+        }
+        return served;
+    }
+    for decorator in &view.decorators {
+        match names::leaf(&decorator.name).to_ascii_lowercase().as_str() {
+            "api_view" | "require_http_methods" | "action" => declared_methods(decorator).into_iter().for_each(&mut serve),
+            "require_get" => serve("GET".to_string()),
+            "require_post" => serve("POST".to_string()),
+            "require_safe" => {
+                serve("GET".to_string());
+                serve("HEAD".to_string());
+            }
+            _ => {}
+        }
+    }
+    served
+}
+
 fn action_name(node: &IndexNode) -> String {
     node.decorators
         .iter()
@@ -464,7 +496,7 @@ fn action_name(node: &IndexNode) -> String {
 }
 
 fn declared_base(class: &IndexNode) -> Option<String> {
-    class.decorators.iter().find_map(|decorator| match decorator_entry(decorator) {
+    class.decorators.iter().find_map(|decorator| match decorator_entry(decorator, false) {
         Some(("http", _, Some(path))) => Some(path),
         _ => None,
     })
@@ -474,7 +506,7 @@ fn owner_path(path: &str, owner: &str) -> String {
     path.replace("[controller]", owner.strip_suffix("Controller").unwrap_or(owner))
 }
 
-fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Option<String>)> {
+fn decorator_entry(decorator: &Decorator, bare_verbs: bool) -> Option<(&'static str, String, Option<String>)> {
     let verb = names::leaf(&decorator.name);
     let qualified = verb.len() != decorator.name.len();
     let lowered = normalize_annotation(&decorator.name);
@@ -484,6 +516,7 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         .find(|argument| {
             argument.literal
                 && looks_like_route(&argument.value)
+                && !names_an_http_method(&argument.value)
                 && (!qualified || argument.value.contains('/'))
         })
         .map(|argument| argument.value.clone());
@@ -509,7 +542,7 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         return path.map(|path| ("http", method, Some(path)));
     }
     if HTTP_METHODS.binary_search(&lowered.as_str()).is_ok() {
-        if !qualified && verb.starts_with(char::is_lowercase) {
+        if !qualified && verb.starts_with(char::is_lowercase) && !bare_verbs {
             return None;
         }
         return Some(("http", lowered.to_ascii_uppercase(), path));
@@ -1891,7 +1924,7 @@ static SAYS_WHAT_YOU_MAY_DO: &[&str] = &[
 static SAYS_HOW_OFTEN: &[&str] = &["limiter", "ratelimit", "throttle", "throttled", "throttler"];
 static LETS_ANYONE_IN: &[&str] = &["allowanonymous", "anonymous", "public", "skipauth"];
 
-fn guarding(written: &str) -> Option<&'static str> {
+pub(crate) fn guarding(written: &str) -> Option<&'static str> {
     let words = words_of(written);
     let has = |held: &[&str]| words.iter().any(|word| held.contains(&word.as_str()));
     let pair = |first: &str, second: &str| words.windows(2).any(|two| two[0] == first && two[1] == second);
@@ -1966,6 +1999,13 @@ fn guards_written_on(node: &IndexNode, via: &'static str, found: &mut Vec<Guard>
             found.push(Guard { name: written.to_string(), kind, via: "parameter" });
         }
     }
+}
+
+fn guards_through(names: &[String]) -> Vec<Guard> {
+    names
+        .iter()
+        .filter_map(|name| Some(Guard { name: name.clone(), kind: guarding(name)?, via: "route" }))
+        .collect()
 }
 
 fn lets_anyone_in(node: &IndexNode) -> bool {
@@ -2115,8 +2155,11 @@ pub fn guard(entry_points: &mut [EntryPoint], nodes: &[IndexNode]) {
             }
             found.extend(inherited);
         }
-        found.dedup();
-        entry.guards = found;
+        for held in found {
+            if !entry.guards.contains(&held) {
+                entry.guards.push(held);
+            }
+        }
     }
 }
 
@@ -2353,10 +2396,11 @@ pub fn derive(
         let own_path: Option<String> = node.decorators.iter().filter(|decorator| names_its_path(decorator)).find_map(|decorator| {
             decorator.arguments.iter().find(|argument| argument.literal).map(|argument| argument.value.clone())
         });
+        let bare_verbs = files.get(node.file as usize).is_some_and(|path| path.ends_with(".rs"));
         let has_a_verb = node
             .decorators
             .iter()
-            .any(|decorator| matches!(decorator_entry(decorator), Some(("http", method, _)) if method != "ANY"));
+            .any(|decorator| matches!(decorator_entry(decorator, bare_verbs), Some(("http", method, _)) if method != "ANY"));
         for (position, decorator) in node.decorators.iter().enumerate() {
             if mcp_files.contains(&node.file)
                 && matches!(node.kind, NodeKind::Function | NodeKind::Method)
@@ -2381,7 +2425,7 @@ pub fn derive(
             if has_a_verb && names_its_path(decorator) {
                 continue;
             }
-            if let Some((kind, method, path)) = decorator_entry(decorator) {
+            if let Some((kind, method, path)) = decorator_entry(decorator, bare_verbs) {
                 if method == "ANY" && matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
                     continue;
                 }
@@ -2739,29 +2783,45 @@ pub fn derive(
                 .to_string(),
             false => label.to_string(),
         };
-        entry_points.push(EntryPoint {
-            id: format!("entry:{handler}:{}", label),
-            kind,
-            name: spoken,
-            method: match kind == "http" {
-                true => label_method
-                    .or_else(|| mapped_method(verb))
-                    .or_else(|| {
-                        HTTP_METHODS
-                            .binary_search(&verb.to_ascii_lowercase().as_str())
-                            .is_ok()
-                            .then(|| verb.to_ascii_uppercase())
-                    }),
-                false => None,
-            },
-            path: if kind == "http" { Some(if path.is_empty() { "/".to_string() } else { path }) } else { None },
-            handler,
-            file: registration.file,
-            line: registration.line,
-            guards: Vec::new(),
-            registrar: registration.registrar.clone(),
-            unshipped: None,
-        });
+        let method = match kind == "http" {
+            true => label_method
+                .or_else(|| mapped_method(verb))
+                .or_else(|| {
+                    HTTP_METHODS
+                        .binary_search(&verb.to_ascii_lowercase().as_str())
+                        .is_ok()
+                        .then(|| verb.to_ascii_uppercase())
+                }),
+            false => None,
+        };
+        let served = match (&method, named_of.get(handler.as_str())) {
+            (None, Some(view)) if kind == "http" => methods_the_view_serves(view, &members),
+            _ => Vec::new(),
+        };
+        let methods: Vec<Option<String>> = match served.is_empty() {
+            true => vec![method],
+            false => served.into_iter().map(Some).collect(),
+        };
+        let path = (kind == "http").then(|| if path.is_empty() { "/".to_string() } else { path });
+        let several = methods.len() > 1;
+        for method in methods {
+            entry_points.push(EntryPoint {
+                id: match (&method, several) {
+                    (Some(method), true) => format!("entry:{handler}:{label}:{method}"),
+                    _ => format!("entry:{handler}:{label}"),
+                },
+                kind,
+                name: spoken.clone(),
+                method,
+                path: path.clone(),
+                handler: handler.clone(),
+                file: registration.file,
+                line: registration.line,
+                guards: guards_through(&registration.through),
+                registrar: registration.registrar.clone(),
+                unshipped: None,
+            });
+        }
     }
 
     lap("registered routes");

@@ -109,7 +109,7 @@ pub struct Extractor<'a> {
     metrics: HashMap<String, UnitMetrics>,
     types_by_name: HashMap<String, String>,
     remembered: HashMap<String, String>,
-    labelled: HashMap<usize, (String, String)>,
+    labelled: HashMap<usize, (String, String, Vec<String>)>,
     last_receiver: Option<String>,
     visited_as_an_arm: rustc_hash::FxHashSet<usize>,
 }
@@ -227,7 +227,7 @@ impl<'a> Extractor<'a> {
             None => callee.to_string(),
         };
         if let Some(inline) = self.handled_inline(children[1]) {
-            self.labelled.insert(inline.id(), (registrar, name));
+            self.labelled.insert(inline.id(), (registrar, name, Vec::new()));
             return true;
         }
         for handler in self.referenced_names(children[1], 0) {
@@ -237,6 +237,7 @@ impl<'a> Extractor<'a> {
                 label: name.clone(),
                 handler,
                 line: children[1].start_position().row as u32 + 1,
+                through: Vec::new(),
             });
         }
         true
@@ -300,11 +301,7 @@ impl<'a> Extractor<'a> {
                     .find(|written| written.starts_with('/'));
             }
             if NAMES_A_METHOD.contains(&named.as_str()) && method.is_none() {
-                method = arguments.iter().find_map(|argument| {
-                    let written = trim_quotes(self.text(*argument)).rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
-                    let verb = written.strip_prefix("method").unwrap_or(&written);
-                    REQUEST_METHODS.binary_search(&verb).is_ok().then(|| verb.to_ascii_uppercase())
-                });
+                method = self.request_method_of(&arguments);
             }
             held = self.call_receiver(call);
         }
@@ -313,6 +310,60 @@ impl<'a> Extractor<'a> {
             Some(method) => format!("{method} {path}"),
             None => path,
         })
+    }
+
+    fn middleware_through(&self, arguments: &[Node]) -> Vec<(usize, String)> {
+        let carried: Vec<&Node> = arguments
+            .iter()
+            .filter(|argument| !argument.kind().contains("string") && !configures_the_call(argument.kind()))
+            .collect();
+        if carried.len() < 2 {
+            return Vec::new();
+        }
+        let guarding: Vec<(usize, String)> = carried
+            .iter()
+            .filter_map(|argument| {
+                let written = match self.spec.calls.kinds.contains(&argument.kind()) {
+                    true => self.text(argument.child_by_field_name("function")?),
+                    false => self.text(**argument),
+                };
+                crate::entry_exit::guarding(written)?;
+                Some((argument.id(), written.to_string()))
+            })
+            .collect();
+        match guarding.len() < carried.len() {
+            true => guarding,
+            false => Vec::new(),
+        }
+    }
+
+    fn request_method_of(&self, arguments: &[Node]) -> Option<String> {
+        arguments.iter().find_map(|argument| {
+            let written = trim_quotes(self.text(*argument)).rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+            let verb = written.strip_prefix("method").unwrap_or(&written);
+            REQUEST_METHODS.binary_search(&verb).is_ok().then(|| verb.to_ascii_uppercase())
+        })
+    }
+
+    fn method_chained_after(&self, node: Node) -> Option<String> {
+        let mut held = node;
+        while let Some(function) = held.parent() {
+            let call = function
+                .parent()
+                .filter(|call| self.spec.calls.kinds.contains(&call.kind()))
+                .filter(|call| call.child_by_field_name("function").is_some_and(|found| found.id() == function.id()))?;
+            let named = crate::names::leaf(self.text(function)).to_ascii_lowercase();
+            if NAMES_A_METHOD.contains(&named.as_str()) {
+                let mut cursor = call.walk();
+                let arguments: Vec<Node> = call
+                    .child_by_field_name("arguments")
+                    .map(|arguments| arguments.named_children(&mut cursor).collect())
+                    .unwrap_or_default();
+                return self.request_method_of(&arguments);
+            }
+            held = call;
+        }
+        None
     }
 
     fn mounted_route(&self, node: Node) -> Option<String> {
@@ -1970,6 +2021,7 @@ impl<'a> Extractor<'a> {
                 .or_else(|| scope.owner.clone())
                 .unwrap_or_else(|| self.module_id.clone()),
             line: target.start_position().row as u32 + 1,
+            through: Vec::new(),
         });
     }
 
@@ -2036,13 +2088,14 @@ impl<'a> Extractor<'a> {
         if let Some(parameters) = parameters.as_deref() {
             self.declare_callback_elements(&id, parameters, scope, node.start_position().row as u32 + 1);
         }
-        if let Some((registrar, label)) = self.labelled.remove(&node.id()) {
+        if let Some((registrar, label, through)) = self.labelled.remove(&node.id()) {
             self.facts.registrations.push(RegistrationFact {
                 file: self.file,
                 registrar,
                 label,
                 handler: id.clone(),
                 line: node.start_position().row as u32 + 1,
+                through,
             });
         }
         if let Some(owner) = scope.callable.clone().or_else(|| scope.owner.clone()) {
@@ -2179,6 +2232,7 @@ impl<'a> Extractor<'a> {
                     label,
                     handler: handler.clone(),
                     line: child.start_position().row as u32 + 1,
+                    through: Vec::new(),
                 });
             }
         }
@@ -2270,6 +2324,7 @@ impl<'a> Extractor<'a> {
             label: label.to_string(),
             handler: id.clone(),
             line: site.start_position().row as u32 + 1,
+            through: Vec::new(),
         });
         id
     }
@@ -2907,12 +2962,12 @@ impl<'a> Extractor<'a> {
                 Some(receiver) => format!("{receiver}.{callee}"),
                 None => callee.clone(),
             };
-            self.labelled.insert(closure.id(), (registrar, "/".to_string()));
+            self.labelled.insert(closure.id(), (registrar, "/".to_string(), Vec::new()));
         }
         if let Some((label, block)) = self.ktor_route(node, &callee)
             && let Some(closure) = self.handled_inline(block)
         {
-            self.labelled.insert(closure.id(), (callee.clone(), label));
+            self.labelled.insert(closure.id(), (callee.clone(), label, Vec::new()));
         }
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
@@ -2943,7 +2998,7 @@ impl<'a> Extractor<'a> {
                 (_, direct) => direct,
             };
             let label = match direct {
-                Some(path) => Some(match self.mounted_method(arguments) {
+                Some(path) => Some(match self.mounted_method(arguments).or_else(|| self.method_chained_after(node)) {
                     Some(method) if path.starts_with('/') => format!("{method} {path}"),
                     _ => path,
                 }),
@@ -2955,16 +3010,20 @@ impl<'a> Extractor<'a> {
                     None => callee.clone(),
                 };
                 if let Some(closure) = self.swift_trailing_closure(node).or_else(|| self.route_block(node, &callee)) {
-                    self.labelled.insert(closure.id(), (registrar.clone(), label.clone()));
+                    self.labelled.insert(closure.id(), (registrar.clone(), label.clone(), Vec::new()));
                 }
                 let mut handlers: Vec<(String, Node)> = Vec::new();
                 let mut chained_handlers: Vec<(String, Node, String)> = Vec::new();
+                let through = self.middleware_through(&children);
                 for argument in children.iter() {
                     if argument.kind().contains("string") || configures_the_call(argument.kind()) {
                         continue;
                     }
                     if let Some(handler) = self.handled_inline(*argument) {
-                        self.labelled.insert(handler.id(), (registrar.clone(), label.clone()));
+                        self.labelled.insert(handler.id(), (registrar.clone(), label.clone(), through.iter().map(|(_, name)| name.clone()).collect()));
+                        continue;
+                    }
+                    if through.iter().any(|(held, _)| *held == argument.id()) {
                         continue;
                     }
                     if receiver.is_none()
@@ -3022,6 +3081,7 @@ impl<'a> Extractor<'a> {
                         label: label.clone(),
                         handler,
                         line: node.start_position().row as u32 + 1,
+                        through: through.iter().map(|(_, name)| name.clone()).collect(),
                     });
                 }
                 let bare_path = label.split_once(' ').map(|(_, path)| path).unwrap_or(label.as_str()).to_string();
@@ -3032,6 +3092,7 @@ impl<'a> Extractor<'a> {
                         label: format!("{verb} {bare_path}"),
                         handler,
                         line: at.start_position().row as u32 + 1,
+                        through: Vec::new(),
                     });
                 }
             }

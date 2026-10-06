@@ -335,6 +335,7 @@ impl Extractor<'_> {
             label: path,
             handler: self.text_owned(handler),
             line: line_of(object),
+            through: Vec::new(),
         });
     }
 

@@ -354,6 +354,8 @@ pub struct RegistrationFact {
     pub label: String,
     pub handler: String,
     pub line: u32,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::empty")]
+    pub through: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]

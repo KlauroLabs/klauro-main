@@ -239,6 +239,7 @@ impl<'a> Extractor<'a> {
             label,
             handler,
             line: line_of(node),
+            through: Vec::new(),
         });
     }
 
@@ -279,6 +280,7 @@ impl<'a> Extractor<'a> {
                 },
                 handler: self.text_owned(handler),
                 line: line_of(object),
+                through: Vec::new(),
             });
         }
     }
@@ -479,6 +481,7 @@ impl<'a> Extractor<'a> {
             label: label.clone(),
             handler: label,
             line: line_of(node),
+            through: Vec::new(),
         });
     }
 
@@ -606,6 +609,7 @@ impl<'a> Extractor<'a> {
                 label: specifier.clone(),
                 handler: wanted,
                 line: line_of(expression),
+                through: Vec::new(),
             });
         }
         self.facts.imports.push(ImportFact {
@@ -645,6 +649,7 @@ impl<'a> Extractor<'a> {
             label: named.clone(),
             handler: named,
             line: line_of(statement),
+            through: Vec::new(),
         });
     }
 

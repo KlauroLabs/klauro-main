@@ -1909,6 +1909,32 @@ impl<'a> Extractor<'a> {
         Some(trim_quotes(self.text(named)).to_string())
     }
 
+    fn middleware_through(&self, children: &[Node], label_argument: Option<usize>) -> Vec<(usize, String)> {
+        let carried: Vec<&Node> = children
+            .iter()
+            .filter(|argument| Some(argument.id()) != label_argument && argument.kind() != "string")
+            .collect();
+        if carried.len() < 2 {
+            return Vec::new();
+        }
+        let guarding: Vec<(usize, String)> = carried
+            .iter()
+            .filter_map(|argument| {
+                let written = match argument.kind() {
+                    "call_expression" => self.text(argument.child_by_field_name("function")?),
+                    "identifier" | "member_expression" => self.text(**argument),
+                    _ => return None,
+                };
+                crate::entry_exit::guarding(written)?;
+                Some((argument.id(), written.to_string()))
+            })
+            .collect();
+        match guarding.len() < carried.len() {
+            true => guarding,
+            false => Vec::new(),
+        }
+    }
+
     fn callback_arguments(&mut self, arguments: Node, scope: &Scope, callee: &str, dispatches_mcp_tools: bool) {
         let mut cursor = arguments.walk();
         let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
@@ -1927,11 +1953,17 @@ impl<'a> Extractor<'a> {
         let label_argument_id = named_by_a_literal.or(named_by_a_remembered_constant).map(|argument| argument.id());
         self.declared_route_objects(callee, &children);
 
+        let through = match label {
+            Some(_) => self.middleware_through(&children, label_argument_id),
+            None => Vec::new(),
+        };
+        let through_names: Vec<String> = through.iter().map(|(_, name)| name.clone()).collect();
         if let Some(label) = label.as_deref() {
             for argument in children.iter() {
                 if !matches!(argument.kind(), "identifier" | "member_expression")
                     || Some(argument.id()) == label_argument_id
                     || self.option_bags.contains(self.text(*argument))
+                    || through.iter().any(|(held, _)| *held == argument.id())
                 {
                     continue;
                 }
@@ -1941,6 +1973,7 @@ impl<'a> Extractor<'a> {
                     label: label.to_string(),
                     handler: self.text_owned(*argument),
                     line: line_of(*argument),
+                    through: through_names.clone(),
                 });
             }
         }
@@ -1967,7 +2000,10 @@ impl<'a> Extractor<'a> {
                 parent: scope.enclosing_callable.clone().or_else(|| scope.owner.clone()),
                 signature: Some(self.signature_of(*argument)),
                 modifiers,
-                decorators: Vec::new(),
+                decorators: through_names
+                    .iter()
+                    .map(|name| Decorator { name: name.clone(), arguments: Vec::new() })
+                    .collect(),
                 type_annotation: None,
                 documentation: None,
                 project: None,
