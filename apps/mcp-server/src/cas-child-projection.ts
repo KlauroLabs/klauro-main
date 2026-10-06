@@ -108,6 +108,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   coverage_gaps: { mode: 'inherit' },
   conventions_applied: { mode: 'inherit' },
   communication_seams: { mode: 'scope' },
+  crossings: { mode: 'scope' },
   consistency_model: { mode: 'inherit' },
   libraries: { mode: 'inherit' },
   type_shapes: { mode: 'inherit' },
