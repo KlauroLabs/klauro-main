@@ -70,6 +70,8 @@ pub fn declared(text: &str) -> Vec<Model> {
             fields: Vec::new(),
             relations,
             shared_base: shared,
+            module: String::new(),
+            base_homes: Vec::new(),
         });
     }
     found

@@ -13,6 +13,7 @@ mod lambdas;
 mod messages;
 mod phoenix_scopes;
 mod programs;
+mod rocket_mounts;
 mod scala_routes;
 mod swift_routes;
 
@@ -32,7 +33,6 @@ fn names_code(text: &str) -> bool {
 static REQUEST_METHODS: &[&str] =
     &["delete", "get", "head", "options", "patch", "post", "put", "trace"];
 
-static ATTACHES_A_HANDLER: &[&str] = &["handler", "handlerfunc"];
 static NAMES_A_PATH: &[&str] = &["path", "pathprefix"];
 static NAMES_A_METHOD: &[&str] = &["method", "methods"];
 static WRAPS_A_ROUTE: &[&str] = &["layer", "middleware", "route_layer", "wrap"];
@@ -289,7 +289,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn chained_route(&self, node: Node, callee: &str) -> Option<String> {
-        if !ATTACHES_A_HANDLER.contains(&callee.to_ascii_lowercase().as_str()) {
+        if !crate::rules::attaches_a_handler(callee) {
             return None;
         }
         let mut held = self.call_receiver(node);
@@ -435,6 +435,9 @@ impl<'a> Extractor<'a> {
                 if text.starts_with('/') {
                     return Some(text.to_string());
                 }
+                continue;
+            }
+            if child.kind() == "macro_invocation" {
                 continue;
             }
             if let Some(found) = self.mounted_path(child) {
@@ -1036,6 +1039,7 @@ impl<'a> Extractor<'a> {
         }
         if kind == "call_expression" {
             self.declare_attached_route(node);
+            self.declare_mounted_routes(node);
         }
         if kind == "case_block" {
             self.declare_scala_routes(node, scope);

@@ -25,6 +25,8 @@ pub fn declared(text: &str) -> Vec<Model> {
             fields: Vec::new(),
             relations: Vec::new(),
             shared_base: opening[1].contains("abstract") || preface[tail_start..].contains("MappedSuperclass"),
+            module: String::new(),
+            base_homes: Vec::new(),
         };
         persisted_fields(body, &mut model);
         found.push(model);

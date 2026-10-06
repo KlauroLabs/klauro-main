@@ -19,30 +19,32 @@ impl<'a> Extractor<'a> {
         }
         let arguments = self.argument_nodes(call);
         let (written, served) = match arguments.as_slice() {
-            [path, served] if path.kind() == "string_literal" => (Some(trim_quotes(self.text(*path)).to_string()), *served),
+            [path, served] if path.kind() == "string_literal" => (Some(vec![trim_quotes(self.text(*path)).to_string()]), *served),
             [served] => (None, *served),
             _ => return,
         };
         let Some((verb, handler)) = self.verb_served_by(served) else { return };
         let receiver = function.child_by_field_name("value");
-        let path = match written {
+        let paths = match written {
             Some(path) => path,
-            None => match receiver.and_then(|chain| self.resource_of(chain)) {
-                Some(path) => path,
+            None => match receiver.map(|chain| self.resource_of(chain)).filter(|found| !found.is_empty()) {
+                Some(paths) => paths,
                 None => return,
             },
         };
         let prefix = self.scope_prefix(call);
         self.attached_routes.insert(call.id());
-        let label = format!("{} {}", verb.to_ascii_uppercase(), join(&prefix, &path));
-        self.facts.registrations.push(RegistrationFact {
-            file: self.file,
-            registrar: "route".to_string(),
-            label,
-            handler,
-            line: call.start_position().row as u32 + 1,
-            through: Vec::new(),
-        });
+        for path in paths {
+            let label = format!("{} {}", verb.to_ascii_uppercase(), join(&prefix, &path));
+            self.facts.registrations.push(RegistrationFact {
+                file: self.file,
+                registrar: "route".to_string(),
+                label,
+                handler: handler.clone(),
+                line: call.start_position().row as u32 + 1,
+                through: Vec::new(),
+            });
+        }
     }
 
     pub(super) fn composes_routes(&self, call: Node, callee: &str) -> bool {
@@ -50,7 +52,7 @@ impl<'a> Extractor<'a> {
             || (self.spec.id == "rust" && COMPOSES.contains(&crate::names::leaf(callee)))
     }
 
-    fn argument_nodes<'t>(&self, call: Node<'t>) -> Vec<Node<'t>> {
+    pub(super) fn argument_nodes<'t>(&self, call: Node<'t>) -> Vec<Node<'t>> {
         let Some(arguments) = call.child_by_field_name("arguments") else { return Vec::new() };
         let mut cursor = arguments.walk();
         arguments.named_children(&mut cursor).collect()
@@ -79,26 +81,49 @@ impl<'a> Extractor<'a> {
         chain
     }
 
-    fn named_root(&self, chain: Node, wanted: &str) -> Option<String> {
+    fn named_root(&self, chain: Node, wanted: &str) -> Vec<String> {
         let root = self.root_call(chain);
-        let function = self.text(root.child_by_field_name("function")?);
+        let Some(function) = root.child_by_field_name("function").map(|held| self.text(held)) else { return Vec::new() };
         if function.rsplit("::").next() != Some(wanted) {
-            return None;
+            return Vec::new();
         }
-        let first = self.argument_nodes(root).into_iter().next()?;
-        (first.kind() == "string_literal").then(|| trim_quotes(self.text(first)).to_string())
+        let Some(first) = self.argument_nodes(root).into_iter().next() else { return Vec::new() };
+        match first.kind() {
+            "string_literal" => vec![trim_quotes(self.text(first)).to_string()],
+            "array_expression" => {
+                let mut cursor = first.walk();
+                first
+                    .named_children(&mut cursor)
+                    .filter(|element| element.kind() == "string_literal")
+                    .map(|element| trim_quotes(self.text(element)).to_string())
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
-    fn resource_of(&self, chain: Node) -> Option<String> {
+    fn resource_of(&self, chain: Node) -> Vec<String> {
         self.named_root(chain, "resource")
+    }
+
+    fn chain_end<'t>(&self, mut chain: Node<'t>) -> Node<'t> {
+        while let Some(next) = chain
+            .parent()
+            .filter(|held| held.kind() == "field_expression" && held.child_by_field_name("value").map(|value| value.id()) == Some(chain.id()))
+            .and_then(|held| held.parent())
+            .filter(|held| held.kind() == "call_expression")
+        {
+            chain = next;
+        }
+        chain
     }
 
     fn scope_prefix(&self, call: Node) -> String {
         let mut prefix = String::new();
-        let mut chain = call;
+        let mut chain = self.chain_end(call);
         for _ in 0..8 {
-            if let Some(scope) = self.named_root(chain, "scope") {
-                prefix = join(&scope, &prefix);
+            if let Some(scope) = self.named_root(chain, "scope").first() {
+                prefix = join(scope, &prefix);
             }
             let outer = chain
                 .parent()
@@ -106,7 +131,7 @@ impl<'a> Extractor<'a> {
                 .and_then(|held| held.parent())
                 .filter(|held| held.kind() == "call_expression");
             match outer {
-                Some(next) => chain = next,
+                Some(next) => chain = self.chain_end(next),
                 None => break,
             }
         }

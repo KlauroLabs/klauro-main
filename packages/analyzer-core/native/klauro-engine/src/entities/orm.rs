@@ -39,6 +39,10 @@ pub struct Model {
     pub fields: Vec<Attribute>,
     pub relations: Vec<Relation>,
     pub shared_base: bool,
+    #[serde(default)]
+    pub module: String,
+    #[serde(default)]
+    pub base_homes: Vec<Vec<String>>,
 }
 
 pub fn declared_cardinality(decorator: &str) -> Option<&'static str> {
@@ -67,14 +71,28 @@ pub fn declared(source: &[u8], path: &str, file: u32) -> Vec<Model> {
         "java" => java::declared(text),
         "rb" => ruby::declared(text),
         "php" => php::declared(text),
-        "py" => python::declared(text),
+        "py" => python::declared(text, &module_of(path), path.ends_with("__init__.py")),
         "ts" | "js" | "mjs" | "cjs" | "tsx" | "jsx" => mongoose::declared(text),
         _ => Vec::new(),
     };
     for model in found.iter_mut() {
         model.file = file;
+        model.module = module_of(path);
     }
     found
+}
+
+pub(crate) fn module_of(path: &str) -> String {
+    let stem = path.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(path);
+    let dotted = stem.trim_matches('/').replace('/', ".");
+    dotted.strip_suffix(".__init__").unwrap_or(&dotted).to_string()
+}
+
+fn lives_in(module: &str, home: &str) -> bool {
+    module == home
+        || module.ends_with(&format!(".{home}"))
+        || module.starts_with(&format!("{home}."))
+        || module.contains(&format!(".{home}."))
 }
 
 pub fn refile(models: &mut [Model], file: u32) {
@@ -82,29 +100,44 @@ pub fn refile(models: &mut [Model], file: u32) {
 }
 
 pub fn standing(models: Vec<Model>) -> Vec<Model> {
-    let mut established: HashSet<String> = models
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::default();
+    for (at, model) in models.iter().enumerate() {
+        by_name.entry(model.name.as_str()).or_default().push(at);
+    }
+    let bases_of: Vec<Vec<usize>> = models
         .iter()
-        .filter(|model| model.evidence.is_some())
-        .map(|model| model.name.clone())
+        .map(|model| {
+            let mut reached: Vec<usize> = Vec::new();
+            for (position, base) in model.bases.iter().enumerate() {
+                let candidates = by_name.get(base.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+                match model.base_homes.get(position) {
+                    Some(homes) => reached.extend(candidates.iter().copied().filter(|at| homes.iter().any(|home| lives_in(&models[*at].module, home)))),
+                    None => reached.extend(candidates.iter().copied()),
+                }
+            }
+            reached
+        })
         .collect();
+    let mut established: HashSet<usize> = models.iter().enumerate().filter(|(_, model)| model.evidence.is_some()).map(|(at, _)| at).collect();
     loop {
         let before = established.len();
-        for model in &models {
-            if model.bases.iter().any(|base| established.contains(base)) {
-                established.insert(model.name.clone());
+        for (at, reached) in bases_of.iter().enumerate() {
+            if reached.iter().any(|base| established.contains(base)) {
+                established.insert(at);
             }
         }
         if established.len() == before {
             break;
         }
     }
-    let established_here = established.clone();
     let kept: Vec<Model> = models
-        .into_iter()
-        .filter(|model| established.contains(&model.name))
-        .map(|mut model| {
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| established.contains(at))
+        .map(|(at, model)| {
+            let mut model = model.clone();
             if model.evidence.is_none() {
-                model.evidence = model.bases.iter().find(|base| established_here.contains(*base)).map(|base| format!("extends {base}"));
+                model.evidence = bases_of[at].iter().find(|base| established.contains(*base)).map(|base| format!("extends {}", models[*base].name));
             }
             model
         })

@@ -33,6 +33,8 @@ pub fn declared(text: &str) -> Vec<Model> {
             fields: Vec::new(),
             relations: Vec::new(),
             shared_base: false,
+            module: String::new(),
+            base_homes: Vec::new(),
         };
         for entry in top_level(body) {
             let Some((key, value)) = entry.split_once(':') else { continue };

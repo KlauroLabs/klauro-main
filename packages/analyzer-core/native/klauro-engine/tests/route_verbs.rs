@@ -55,7 +55,7 @@ fn a_django_view_serves_the_methods_it_declares() {
 fn a_mount_prefixes_the_attribute_routes_it_lists() {
     assert_eq!(
         served("route-verbs/rocket"),
-        vec![pair("GET", "/api/users"), pair("GET", "/ping"), pair("POST", "/api/users")]
+        vec![pair("GET", "/api/users"), pair("GET", "/never"), pair("GET", "/ping"), pair("GET", "/v2/users"), pair("POST", "/api/users")]
     );
 }
 
@@ -63,6 +63,15 @@ fn a_mount_prefixes_the_attribute_routes_it_lists() {
 fn routes_attached_to_an_app_scope_and_resource_serve_under_their_scope() {
     assert_eq!(
         served("route-verbs/actix-app"),
-        vec![pair("GET", "/api/items/{id}"), pair("GET", "/ping"), pair("GET", "/users"), pair("POST", "/api/items")]
+        vec![
+            pair("GET", "/api/alpha"),
+            pair("GET", "/api/beta"),
+            pair("GET", "/api/items/{id}"),
+            pair("GET", "/ping"),
+            pair("GET", "/users"),
+            pair("POST", "/api/alpha"),
+            pair("POST", "/api/beta"),
+            pair("POST", "/api/items"),
+        ]
     );
 }

@@ -1,4 +1,5 @@
 use regex::Regex;
+use rustc_hash::FxHashMap as HashMap;
 
 use super::{last_segment, top_level, Attribute, Model, Relation};
 use super::{MANY_TO_MANY, MANY_TO_ONE, ONE_TO_MANY, ONE_TO_ONE};
@@ -8,6 +9,95 @@ const DJANGO_RELATIONS: &[(&str, &str)] = &[
     ("OneToOneField", ONE_TO_ONE),
     ("ManyToManyField", MANY_TO_MANY),
 ];
+
+struct Imports {
+    named: HashMap<String, (String, String)>,
+    modules: HashMap<String, String>,
+    stars: Vec<String>,
+}
+
+fn absolute(level: usize, written: &str, module: &str, in_package: bool) -> String {
+    if level == 0 {
+        return written.to_string();
+    }
+    let mut parts: Vec<&str> = module.split('.').filter(|part| !part.is_empty()).collect();
+    if !in_package {
+        parts.pop();
+    }
+    parts.truncate(parts.len().saturating_sub(level - 1));
+    let mut joined = parts.join(".");
+    if !written.is_empty() {
+        if !joined.is_empty() {
+            joined.push('.');
+        }
+        joined.push_str(written);
+    }
+    joined
+}
+
+impl Imports {
+    fn of(text: &str, module: &str, in_package: bool) -> Imports {
+        let from = Regex::new(r"(?m)^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)").expect("a from-import pattern");
+        let plain = Regex::new(r"(?m)^[ \t]*import[ \t]+([^\n]+)").expect("an import pattern");
+        let mut found = Imports { named: HashMap::default(), modules: HashMap::default(), stars: Vec::new() };
+        for held in from.captures_iter(text) {
+            let source = absolute(held[1].len(), &held[2], module, in_package);
+            let listed = held[3].trim().trim_start_matches('(').trim_end_matches(')');
+            for item in listed.split(',') {
+                let item = item.split('#').next().unwrap_or_default().trim();
+                if item == "*" {
+                    found.stars.push(source.clone());
+                    continue;
+                }
+                let (original, local) = match item.split_once(" as ") {
+                    Some((original, local)) => (original.trim(), local.trim()),
+                    None => (item, item),
+                };
+                if !original.is_empty() && original.chars().all(|letter| letter.is_alphanumeric() || letter == '_') {
+                    found.named.insert(local.to_string(), (source.clone(), original.to_string()));
+                }
+            }
+        }
+        for held in plain.captures_iter(text) {
+            for item in held[1].split(',') {
+                let item = item.split('#').next().unwrap_or_default().trim();
+                let (target, local) = match item.split_once(" as ") {
+                    Some((target, local)) => (target.trim(), local.trim()),
+                    None => (item, item.split('.').next().unwrap_or(item)),
+                };
+                if !target.is_empty() {
+                    found.modules.insert(local.to_string(), if local == target { local.to_string() } else { target.to_string() });
+                }
+            }
+        }
+        found
+    }
+
+    fn reach(&self, written: &str, module: &str) -> (String, Vec<String>) {
+        let written = written.trim();
+        let name = last_segment(written).to_string();
+        let Some((head, rest)) = written.split_once('.') else {
+            return match self.named.get(written) {
+                Some((source, original)) => (original.clone(), vec![source.clone()]),
+                None => {
+                    let mut homes = vec![module.to_string()];
+                    homes.extend(self.stars.iter().cloned());
+                    (name, homes)
+                }
+            };
+        };
+        let within = rest.rsplit_once('.').map(|(inner, _)| inner);
+        let qualified = |base: &str| match within {
+            Some(inner) => format!("{base}.{inner}"),
+            None => base.to_string(),
+        };
+        match (self.named.get(head), self.modules.get(head)) {
+            (Some((source, original)), _) => (name, vec![qualified(&format!("{source}.{original}"))]),
+            (None, Some(target)) => (name, vec![qualified(target)]),
+            (None, None) => (name, Vec::new()),
+        }
+    }
+}
 
 struct Patterns {
     class: Regex,
@@ -31,12 +121,13 @@ impl Patterns {
     }
 }
 
-pub fn declared(text: &str) -> Vec<Model> {
+pub fn declared(text: &str, module: &str, in_package: bool) -> Vec<Model> {
     let framework = Framework::of(text);
     if framework == Framework::None {
         return Vec::new();
     }
     let patterns = Patterns::new();
+    let imports = Imports::of(text, module, in_package);
     let mut found = Vec::new();
     let classes: Vec<_> = patterns.class.captures_iter(text).collect();
     for (at, opening) in classes.iter().enumerate() {
@@ -50,12 +141,14 @@ pub fn declared(text: &str) -> Vec<Model> {
             name: name.clone(),
             file: 0,
             line,
-            bases: bases.iter().map(|base| last_segment(generic_free(base)).to_string()).collect(),
+            bases: bases.iter().map(|base| imports.reach(generic_free(base), module).0).collect(),
             evidence: None,
             table: patterns.tablename.captures(body).map(|held| held[1].to_string()),
             fields: Vec::new(),
             relations: Vec::new(),
             shared_base: body.contains("__abstract__ = True") || body.contains("abstract = True"),
+            module: String::new(),
+            base_homes: bases.iter().map(|base| imports.reach(generic_free(base), module).1).collect(),
         };
         match framework {
             Framework::Django => {

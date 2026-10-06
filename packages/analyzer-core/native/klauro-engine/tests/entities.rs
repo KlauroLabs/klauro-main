@@ -166,3 +166,14 @@ fn an_orm_mapped_entity_names_the_mapping_that_makes_it_persisted() {
     assert_eq!(cited("Helper"), None);
     assert_eq!(cited("Department"), Some("__tablename__ = departments"));
 }
+
+#[test]
+fn a_model_is_the_definition_that_reaches_the_orm_base_and_a_namesake_elsewhere_never_stands_for_it() {
+    let held = entities("entities/collision");
+    let mut places: Vec<&str> = held.iter().filter_map(|entity| entity["id"].as_str()).collect();
+    places.sort();
+    assert_eq!(
+        places,
+        vec!["entity:scheduling/models.py:type:CustomSchedule", "entity:shop/models.py:type:Product", "entity:shop/models.py:type:ProductTranslation"]
+    );
+}
