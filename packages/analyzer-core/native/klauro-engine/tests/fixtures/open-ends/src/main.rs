@@ -27,6 +27,12 @@ fn wipe(path: &str) {
 
 #[tauri::command]
 fn ends_in_our_code() -> usize {
+    let held = vendor_held();
+    held.reconcile()
+}
+
+#[tauri::command]
+fn reaches_every_implementer() -> usize {
     let held = pick();
     held.reconcile()
 }
@@ -45,7 +51,7 @@ fn calls_a_name_nothing_here_declares() -> usize {
 #[tauri::command]
 fn changes_and_ends_in_our_code(path: String) -> usize {
     wipe(&path);
-    let held = pick();
+    let held = vendor_held();
     held.reconcile()
 }
 

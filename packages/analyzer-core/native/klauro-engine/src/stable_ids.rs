@@ -119,6 +119,9 @@ pub fn stabilize(facts: &mut FileFacts) {
     for kept in facts.kept.iter_mut() {
         swap(&mut kept.unit);
     }
+    for message in facts.messages.iter_mut() {
+        swap(&mut message.unit);
+    }
     for setting in facts.settings.iter_mut() {
         swap_some(&mut setting.unit);
     }

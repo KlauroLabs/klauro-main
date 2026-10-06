@@ -5,6 +5,7 @@ use tree_sitter::{Node, Tree};
 use crate::language::LanguageSpec;
 use crate::model::*;
 
+mod bounds;
 mod lambdas;
 mod messages;
 mod programs;
@@ -479,6 +480,14 @@ impl<'a> Extractor<'a> {
         None
     }
 
+    fn written_type(&self, node: Node, written: String) -> String {
+        if self.spec.id != "rust" {
+            return written;
+        }
+        let held = bounds::in_scope(self.source, node);
+        if held.is_empty() { written } else { bounds::bounded(&written, &held) }
+    }
+
     fn parameters_in(&self, list: Node) -> Vec<Parameter> {
         let mut parameters = Vec::new();
         let mut cursor = list.walk();
@@ -493,7 +502,8 @@ impl<'a> Extractor<'a> {
                 .child_by_field_name("type")
                 .map(|annotation| self.text(annotation).to_string())
                 .or_else(|| self.trailing_type(parameter))
-                .or_else(|| self.declared_type(parameter));
+                .or_else(|| self.declared_type(parameter))
+                .map(|written| self.written_type(parameter, written));
             parameters.push(Parameter {
                 name,
                 type_annotation,
@@ -557,7 +567,8 @@ impl<'a> Extractor<'a> {
             .find_map(|field| node.child_by_field_name(field))
             .map(|found| self.text(found).trim().to_string())
             .filter(|found| !found.is_empty())
-            .or_else(|| self.trailing_return(node));
+            .or_else(|| self.trailing_return(node))
+            .map(|written| self.written_type(node, written));
         let receiver = self
             .extension_receiver(node)
             .or_else(|| self.extended_parameter(node, &parameters));
@@ -1653,7 +1664,8 @@ impl<'a> Extractor<'a> {
             .or_else(|| node.child_by_field_name("type"))
             .or_else(|| self.typed_child(node))
             .map(|annotation| self.text(annotation).trim().to_string())
-            .or_else(|| self.text_content(node));
+            .or_else(|| self.text_content(node))
+            .map(|written| self.written_type(node, written));
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
             name,
@@ -2495,7 +2507,7 @@ impl<'a> Extractor<'a> {
             .or_else(|| {
                 value
                     .filter(|value| CONSTRUCTS_A_VALUE.contains(&value.kind()))
-                    .and_then(|value| value.child_by_field_name("type").or_else(|| value.child_by_field_name("constructor")))
+                    .and_then(|value| value.child_by_field_name("type").or_else(|| value.child_by_field_name("constructor")).or_else(|| value.child_by_field_name("name")))
                     .and_then(|typed| bare_type(self.text(typed)))
             });
         let from_call = value
@@ -3145,7 +3157,7 @@ static KEEPS_WHAT_IT_RETURNS: &[&str] = &[
     "with", "withContext",
 ];
 static INFERS_ITS_TYPE: &[&str] = &["auto", "dynamic", "let", "val", "var"];
-static CONSTRUCTS_A_VALUE: &[&str] = &["new_expression", "object_creation_expression"];
+static CONSTRUCTS_A_VALUE: &[&str] = &["new_expression", "object_creation_expression", "struct_expression"];
 static HANDS_BACK_ITS_RECEIVER: &[&str] = &[
     "as_mut", "as_ref", "borrow", "borrow_mut", "clone", "deref", "expect", "to_owned", "unwrap", "unwrap_or_default",
 ];

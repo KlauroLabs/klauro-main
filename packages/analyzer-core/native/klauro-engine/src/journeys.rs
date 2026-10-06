@@ -9,7 +9,7 @@ use crate::entry_exit::ExitPoint;
 use crate::model::{EdgeKind, IndexEdge, IndexNode, Via};
 use crate::paths::is_scaffolding;
 
-const HOPS: usize = 3;
+const BETWEEN_REACH: usize = 6;
 const EFFECT_REACH: usize = 6;
 const MOST_CROSSINGS: usize = 6;
 const MOST_BRANCHES: usize = 3;
@@ -150,20 +150,6 @@ impl<'a> Graph<'a> {
     }
 }
 
-fn thinned<'a>(path: Vec<&'a str>) -> Vec<&'a str> {
-    let mut kept: Vec<&str> = Vec::new();
-    let mut at = path.len().saturating_sub(1);
-    loop {
-        kept.push(path[at]);
-        if at == 0 {
-            break;
-        }
-        at = at.saturating_sub(HOPS);
-    }
-    kept.reverse();
-    kept
-}
-
 fn crosses(crossing: &Crossing) -> &'static str {
     crossing.kind
 }
@@ -199,45 +185,25 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    fn successors(&self, at: &'a str, used: &[&Crossing], visited: &[&str]) -> Vec<(u8, usize, &'a Crossing, Vec<&'a str>)> {
-        let reached = self.graph.within(at, HOPS);
-        let home = self.graph.nodes.get(at).map(|node| node.file);
+    fn successors(&self, at: &'a str, used: &[&Crossing], visited: &[&str]) -> Vec<(usize, &'a Crossing, Vec<&'a str>)> {
+        let reached = self.graph.within(at, BETWEEN_REACH);
         let seen = |unit: &str| self.graph.named_unit(unit).is_some_and(|node| visited.contains(&node.id.as_str()));
-        let mut found: Vec<(u8, usize, &Crossing, Vec<&str>)> = Vec::new();
-        for next in self.crossings.iter().copied().filter(|held| !used.contains(held) && !seen(&held.to) && !seen(&held.from)) {
-            if reached.contains_key(next.from.as_str()) {
-                let path = self.graph.path(&reached, next.from.as_str());
-                found.push((0, path.len(), next, path));
-                continue;
-            }
-            for class in [1u8, 2u8] {
-                let nearest = reached
-                    .keys()
-                    .filter(|unit| {
-                        self.graph.nodes.get(*unit).is_some_and(|node| Some(node.file) != home && match class {
-                            1 => node.file == next.from_file,
-                            _ => self.beside(node.file, next.from_file),
-                        })
-                    })
-                    .map(|unit| self.graph.path(&reached, unit))
-                    .min_by(|left, right| (left.len(), left.last()).cmp(&(right.len(), right.last())));
-                if let Some(mut path) = nearest {
-                    path.push(next.from.as_str());
-                    found.push((class, path.len(), next, path));
-                    break;
-                }
-            }
-        }
+        let mut found: Vec<(usize, &Crossing, Vec<&str>)> = self
+            .crossings
+            .iter()
+            .copied()
+            .filter(|held| !used.contains(held) && !seen(&held.to) && !seen(&held.from))
+            .filter(|held| reached.contains_key(held.from.as_str()))
+            .map(|held| {
+                let path = self.graph.path(&reached, held.from.as_str());
+                (path.len(), held, path)
+            })
+            .collect();
         found.sort_by(|left, right| {
-            let key = |held: &(u8, usize, &Crossing, Vec<&str>)| (held.2.kind != "queue", held.0, held.1, held.2.channel.clone(), held.2.from.clone());
+            let key = |held: &(usize, &Crossing, Vec<&str>)| (held.1.kind != "queue", held.0, held.1.channel.clone(), held.1.from.clone());
             key(left).cmp(&key(right))
         });
         found
-    }
-
-    fn beside(&self, left: u32, right: u32) -> bool {
-        let directory = |file: u32| self.graph.files.get(file as usize).map(|path| path.rsplit_once('/').map(|(held, _)| held).unwrap_or(""));
-        directory(left).is_some() && directory(left) == directory(right)
     }
 
     fn passing(&self, unit: &str, via: Option<&'static str>, steps: &mut Vec<Step>) {
@@ -287,9 +253,12 @@ impl<'a> Walk<'a> {
                 break;
             }
             let choices = self.successors(at, &used, &visited);
-            let Some((class, _, next, path)) = choices.into_iter().nth(if used.len() == 1 { branch } else { 0 }) else { break };
-            for unit in &path {
-                self.passing(unit, (class >= 1 && *unit == next.from.as_str()).then_some("queue"), &mut steps);
+            if choices.iter().all(|(_, next, _)| next.kind == "event") && self.graph.effect_near(&self.graph.within(at, EFFECT_REACH)).is_some() {
+                break;
+            }
+            let Some((_, next, path)) = choices.into_iter().nth(if used.len() == 1 { branch } else { 0 }) else { break };
+            for unit in path {
+                self.passing(unit, None, &mut steps);
             }
             if let Some(last) = steps.last_mut() {
                 self.sends(last, next);
@@ -304,7 +273,7 @@ impl<'a> Walk<'a> {
         }
         let reached = self.graph.within(at, EFFECT_REACH);
         if let Some((unit, effect)) = self.graph.effect_near(&reached) {
-            for held in thinned(self.graph.path(&reached, unit)).into_iter().skip(1) {
+            for held in self.graph.path(&reached, unit).into_iter().skip(1) {
                 self.passing(held, None, &mut steps);
             }
             if let Some(last) = steps.last_mut() {
@@ -330,21 +299,6 @@ impl<'a> Walk<'a> {
     }
 }
 
-fn within_reach(graph: &Graph, steps: &[Step]) -> usize {
-    let mut kept = 1;
-    for pair in steps.windows(2) {
-        let (before, after) = (&pair[0], &pair[1]);
-        if after.via.is_none() && graph.within(before.unit.as_str(), HOPS + 1).keys().all(|unit| graph.named_unit(unit).is_none_or(|node| node.id != after.unit)) {
-            let family = |unit: &str| graph.nodes.get(unit).map(|node| node.parent.as_deref());
-            if family(&before.unit) != family(&after.unit) {
-                break;
-            }
-        }
-        kept += 1;
-    }
-    kept
-}
-
 pub fn derive(
     files: &[String],
     nodes: &[IndexNode],
@@ -362,7 +316,7 @@ pub fn derive(
         .collect();
     let mut followed: HashSet<&str> = HashSet::default();
     for crossing in &held {
-        followed.extend(graph.within(crossing.to.as_str(), HOPS).keys().copied().filter(|unit| *unit != crossing.to.as_str()));
+        followed.extend(graph.within(crossing.to.as_str(), BETWEEN_REACH).keys().copied().filter(|unit| *unit != crossing.to.as_str()));
     }
     let walk = &Walk { graph: &graph, crossings: &held };
     let mut journeys: Vec<Journey> = held
@@ -371,10 +325,6 @@ pub fn derive(
         .filter(|crossing| !followed.contains(crossing.from.as_str()))
         .flat_map(|root| (0..MOST_BRANCHES).filter_map(move |branch| walk.extend(root, branch)))
         .collect();
-    for journey in &mut journeys {
-        let kept = within_reach(&graph, &journey.steps);
-        journey.steps.truncate(kept);
-    }
     let noisy = |journey: &Journey| noisy_steps(&graph, set_aside, &journey.steps);
     let reach = |journey: &Journey| {
         let places: HashSet<&str> = journey.steps.iter().filter_map(|step| step.file.split('/').next()).collect();

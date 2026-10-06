@@ -18,6 +18,14 @@ fn a_trail_that_ends_in_our_own_unresolved_code_is_open() {
 }
 
 #[test]
+fn a_call_through_a_trait_object_that_has_implementers_is_not_open() {
+    let index = common::read("open-ends");
+    let found = flow(&index, "reaches_every_implementer");
+    assert_eq!(found["standing"], "reading", "{found}");
+    assert!(found.get("open").is_none(), "{found}");
+}
+
+#[test]
 fn a_trail_that_ends_in_a_known_library_call_is_still_reading() {
     let index = common::read("open-ends");
     let found = flow(&index, "ends_in_a_library");
