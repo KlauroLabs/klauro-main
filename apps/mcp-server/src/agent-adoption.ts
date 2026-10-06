@@ -61,6 +61,7 @@ import {
 import { adaptAgentStartContext } from './agent-start-context-budget';
 import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
 import { isInstalledToolName } from './installed-tool-registry';
+import { TIER_STACK_ANALYZER } from '../../../packages/analyzer-core/src/analyzer/tier-stack/tier-stack-to-cas';
 import { buildOrientationExecutionBrief, buildOrientationValidationPlan, buildTargetlessOrientationContext, isTargetlessOrientationTask, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -5459,15 +5460,15 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     callsLoaded ? coverageGate('call-chains', casCollectionTotal(cas, 'call_chains') ?? 0, minimumCallChainCount(cas, profile)) : { id: 'call-chains', ...projectedLayerEvidence(cas, 'L2', 'Call graph section is not loaded in this bounded projection') },
     callsLoaded ? relationshipDetailGate(cas, methodCalls, profile) : { id: 'relationship-detail', ...projectedLayerEvidence(cas, 'L2', 'Relationship detail is not loaded in this bounded projection') },
     gate('answer-pack', answerPackGaps.length === 0 ? 'pass' : 'warn', answerPackGaps.length === 0 ? 100 : 75, answerPackGaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPackGaps.join('; ')),
-    gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
-    gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms`),
+    gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts${facts === 0 ? emptySectionReason(cas, 'no entry points, exit points, capabilities, or journeys were found to record as facts') : ''}`),
+    gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms${idioms === 0 ? emptySectionReason(cas, 'no convention had enough comparable sites to measure') : ''}`),
     gate(
       'behavioral-invariants',
       invariantGateStatus,
       invariantGateScore,
       (cas.behavioral_invariants?.length || 0) > 0
         ? `${cas.behavioral_invariants?.length || 0} behavior-level invariants, ${invariantGapCount} reported product gaps (${invariantGapSeverity.high || 0} high, ${invariantGapSeverity.medium || 0} medium, ${invariantGapSeverity.low || 0} low)`
-        : 'No behavior-level invariants inferred'
+        : `No behavior-level invariants inferred${emptySectionReason(cas, 'no guarded request surfaces or declared foreign keys were found')}`
     ),
     testGate,
     gate(
@@ -5589,6 +5590,11 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     ],
     test_discovery: opts.testEvidence,
   };
+}
+
+function emptySectionReason(cas: CASOutput, reason: string): string {
+  const fromEngine = (cas.analyzer_contributions || []).some(contribution => contribution.analyzer_id === TIER_STACK_ANALYZER);
+  return fromEngine ? ` (engine analysis: ${reason})` : '';
 }
 
 function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {

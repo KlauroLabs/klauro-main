@@ -4,6 +4,8 @@ import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier
 import * as path from 'path';
 import { seamsOf } from './tier-stack-seams';
 import { temporalStabilityOf } from './tier-stack-history';
+import { analysisFactsOf, idiomsOf, invariantsOf } from './tier-stack-evidence';
+import { buildGraphValidation } from '../core/graph-validation';
 
 import {
   CAS_VERSION,
@@ -765,6 +767,15 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     .digest('hex')
     .slice(0, 16);
 
+  const exit_points = exitPointsOf(index);
+  const entities = entitiesOf(index);
+  const capabilities = capabilitiesOf(index, name);
+  const causal_journeys = causalJourneysOf(index);
+  const paradigm_conformance = conformanceOf(index);
+  const analysis_facts = analysisFactsOf({ nodes, entryPoints: entry_points, exitPoints: exit_points, capabilities: capabilities ?? [], journeys: causal_journeys ?? [] });
+  const idioms = idiomsOf(paradigm_conformance);
+  const invariants = invariantsOf({ conformance: paradigm_conformance, entities });
+
   return {
     cas_version: CAS_VERSION,
     analysis_id,
@@ -777,19 +788,19 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
       technologies: technologiesOf(index, path.basename(index.root)),
     },
     architecture_summary: { ...architectureOf(index, nodes), architectural_patterns: patternsOf(index) },
-    paradigm_conformance: conformanceOf(index),
+    paradigm_conformance,
     principle_violations: violationsOf(index),
     route_table: routesOf(index),
     nodes,
     edges,
     entry_points,
-    exit_points: exitPointsOf(index),
-    entities: entitiesOf(index),
-    capabilities: capabilitiesOf(index, name),
+    exit_points,
+    entities,
+    capabilities,
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
-    causal_journeys: causalJourneysOf(index),
+    causal_journeys,
     communication_seams: seamsOf(index),
     test_suites: suites,
     test_summary: testSummaryOf(suites),
@@ -797,5 +808,16 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     dependencies: dependenciesOf(index),
     analyzer_contributions: [contributionOf(index, nodes, edges, entry_points)],
     progressive_levels: levelsOf(nodes),
+    analysis_facts,
+    validation: buildGraphValidation(nodes, edges, entry_points, exit_points, [], analysis_facts),
+    ...(idioms.idioms.length === 0 ? {} : {
+      codebase_idioms: idioms.idioms,
+      idiom_summary: idioms.summary,
+      ...(idioms.violations.length === 0 ? {} : { idiom_violations: idioms.violations }),
+    }),
+    ...(invariants.invariants.length === 0 ? {} : {
+      behavioral_invariants: invariants.invariants,
+      behavioral_invariant_summary: invariants.summary,
+    }),
   };
 }

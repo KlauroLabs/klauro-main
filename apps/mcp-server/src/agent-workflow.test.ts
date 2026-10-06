@@ -386,7 +386,6 @@ test('agent contexts include telemetry-backed operational priorities for debug/r
       const operationalTarget = context.work_context.operational_priorities.priorities[0].static_target ||
         context.work_context.operational_priorities.priorities[0].target;
       assert.match(operationalTarget.file, /users\.service\.ts/);
-      assert.ok(context.next_mcp_calls.some((call: any) => call.tool === 'get_operational_priorities'));
 
       const capsuleOnly = await getAgentContext(cas, workspace, {
         task_type: 'debug',

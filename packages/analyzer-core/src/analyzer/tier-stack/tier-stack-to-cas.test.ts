@@ -435,3 +435,37 @@ test('the engine journeys reach the stored analysis with their ordered steps, cr
   assert.deepEqual(cas.causal_journeys?.[0].steps.map(step => step.via), [undefined, 'ipc']);
   assert.equal(cas.causal_journeys?.[0].steps[1].effect, 'process:Command::new');
 });
+
+test('the engine analysis carries graph integrity, facts, idioms, and invariants the readiness gates read', () => {
+  const index: TierStackIndex = {
+    ...INDEX,
+    patterns: {
+      conformance: [{ paradigm: 'requests pass a guard', population: 10, following: 7, departing: ['src/order.ts:function:place:12'] }],
+    },
+    conformance: {
+      conventions: [{ convention: 'file-naming', shape: 'kebab-case', population: 12, following: 11, departing: ['src/Order.ts:class:Order:1'] }],
+    },
+  };
+  const cas = tierStackToCas(index);
+  assert.ok(cas.validation?.graph_integrity);
+  assert.equal(cas.validation?.graph_integrity?.total_edges, 2);
+  assert.ok((cas.analysis_facts ?? []).some(fact => fact.fact_type === 'entry' && fact.subject_id === 'entry:place'));
+  assert.ok((cas.analysis_facts ?? []).some(fact => fact.fact_type === 'exit'));
+  const idiomNames = (cas.codebase_idioms ?? []).map(idiom => idiom.name);
+  assert.deepEqual(idiomNames.sort(), ['file-naming', 'requests pass a guard']);
+  const guard = cas.codebase_idioms!.find(idiom => idiom.name === 'requests pass a guard')!;
+  assert.equal(guard.category, 'auth-tenant-scope');
+  assert.equal(guard.provenance?.matching, 7);
+  assert.equal(cas.idiom_summary?.total, 2);
+  const types = (cas.behavioral_invariants ?? []).map(invariant => invariant.invariant_type).sort();
+  assert.deepEqual(types, ['auth-boundary', 'db-constraint']);
+  assert.equal(cas.behavioral_invariant_summary?.total, 2);
+  assert.equal(cas.behavioral_invariant_summary?.gaps.length, 1);
+});
+
+test('an engine analysis with no conformance or key data omits idioms and invariants instead of inventing them', () => {
+  const cas = tierStackToCas({ ...INDEX, comprehension: undefined });
+  assert.equal(cas.codebase_idioms, undefined);
+  assert.equal(cas.behavioral_invariants, undefined);
+  assert.ok(cas.validation?.graph_integrity);
+});

@@ -74,7 +74,7 @@ interface IdiomDraft {
   };
 }
 
-const EMPTY_CATEGORY_COUNTS: Record<CASIdiomCategory, number> = {
+export const EMPTY_CATEGORY_COUNTS: Record<CASIdiomCategory, number> = {
   naming: 0,
   'file-organization': 0,
   'module-boundary': 0,
