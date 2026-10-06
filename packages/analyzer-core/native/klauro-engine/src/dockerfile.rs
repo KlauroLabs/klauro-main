@@ -9,6 +9,8 @@ pub fn is_dockerfile(path: &str) -> bool {
         || lowered.ends_with(".dockerfile")
 }
 
+pub const BUILT_FOR_THE_IMAGE: &str = "COPY --from";
+
 struct Instruction<'a> {
     keyword: String,
     argument: &'a str,
@@ -133,9 +135,11 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                 });
             }
             "COPY" | "ADD" => {
-                if instruction.argument.contains("--from") {
-                    continue;
-                }
+                let from_a_stage = instruction.argument.contains("--from");
+                let role = match from_a_stage {
+                    true => BUILT_FOR_THE_IMAGE,
+                    false => instruction.keyword.as_str(),
+                };
                 for shipped in copied_paths(instruction.argument) {
                     let id = format!("{stage}:ships:{shipped}:{}", instruction.line);
                     facts.nodes.push(declaration(
@@ -145,7 +149,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                         file,
                         instruction.line,
                         Some(stage.clone()),
-                        Some(instruction.keyword.clone()),
+                        Some(role.to_string()),
                     ));
                     facts.edges.push(IndexEdge {
                         via: Via::Structure,

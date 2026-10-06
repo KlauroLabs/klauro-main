@@ -292,17 +292,42 @@ impl<'a> Files<'a> {
     }
 }
 
+fn copied_sources<'a>(files: &Files<'a>, path: &str) -> Vec<&'a str> {
+    files
+        .of(path)
+        .into_iter()
+        .flatten()
+        .filter_map(|stage| files.of(&stage.id))
+        .flatten()
+        .filter(|member| matches!(member.type_annotation.as_deref(), Some("COPY" | "ADD")))
+        .map(|member| member.name.as_str())
+        .collect()
+}
+
+fn build_context(files: &Files, path: &str) -> String {
+    let own = directory_of(path);
+    let conventional = path.rsplit('/').next().is_some_and(|name| name.eq_ignore_ascii_case("dockerfile"));
+    if own.is_empty() || !conventional {
+        return String::new();
+    }
+    let sources = copied_sources(files, path);
+    let within = !sources.is_empty() && sources.iter().all(|source| files.holds(&join(own, source)));
+    if within { own.to_string() } else { String::new() }
+}
+
 fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
     let stages = files.of(path)?;
     let root = context.to_string();
     let mut ships = Vec::new();
     let mut runs = None;
+    let mut started = false;
     for stage in stages {
         let Some(members) = files.of(&stage.id) else { continue };
         let runner = members
             .iter()
             .find(|member| CONTAINER_RUNNERS.contains(&member.name.as_str()));
         if let Some(runner) = runner {
+            started = true;
             runs = runner.type_annotation.as_deref().and_then(program_argument);
         }
         for member in members {
@@ -316,12 +341,15 @@ fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
             }
         }
     }
-    runs.as_ref()?;
     ships.sort();
     ships.dedup();
-    let home = match ships.is_empty() {
-        true => directory_of(path).to_string(),
-        false => common_ancestor(&ships),
+    if runs.is_none() && !(started && !ships.is_empty()) {
+        return None;
+    }
+    let home = match (ships.is_empty(), context.is_empty()) {
+        (true, _) => directory_of(path).to_string(),
+        (false, false) => context.to_string(),
+        (false, true) => common_ancestor(&ships),
     };
     Some(Candidate {
         name: display_name(&home),
@@ -1009,7 +1037,7 @@ pub fn derive(
         let basename = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
         candidates.extend(app_bundles::detect(&index, path, calls, at as u32));
         if crate::dockerfile::is_dockerfile(path) {
-            candidates.extend(container(&index, path, ""));
+            candidates.extend(container(&index, path, &build_context(&index, path)));
             continue;
         }
         if basename.contains("compose") && basename.ends_with(".yml")
@@ -1077,6 +1105,7 @@ pub fn derive(
 
     separate_containers(&mut candidates);
     let mut scope = consolidate(candidates, &index, nodes, edges, entry_points, code, calls);
+    ship_the_programs_containers_run(&mut scope.deployables, &index);
     scope.bundled_entries = bundler_builds
         .iter()
         .filter_map(|build| {
@@ -1115,6 +1144,44 @@ fn follow_a_relative_import(files: &[String], nodes: &[IndexNode], imports: &[Im
     }
     let specifier = &imports.iter().find(|import| import.file == at && import.specifier.starts_with('.'))?.specifier;
     Some(normalize(&format!("{}/{}", directory_of(target), specifier)))
+}
+
+fn programs_of_a_container(files: &Files, path: &str) -> Vec<String> {
+    let mut programs: Vec<String> = Vec::new();
+    for stage in files.of(path).into_iter().flatten() {
+        for member in files.of(&stage.id).into_iter().flatten() {
+            let named = match member.type_annotation.as_deref() {
+                Some(crate::dockerfile::BUILT_FOR_THE_IMAGE) => Some(member.name.clone()),
+                _ if CONTAINER_RUNNERS.contains(&member.name.as_str()) => {
+                    member.type_annotation.as_deref().and_then(program_argument)
+                }
+                _ => None,
+            };
+            if let Some(program) = named.and_then(|held| held.rsplit('/').next().map(str::to_string)) {
+                programs.push(program);
+            }
+        }
+    }
+    programs.sort();
+    programs.dedup();
+    programs
+}
+
+fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &Files) {
+    let containers: Vec<(String, Vec<String>)> = deployables
+        .iter()
+        .flat_map(|unit| unit.declarations.iter())
+        .filter(|found| found.kind == "container")
+        .map(|found| (found.at.clone(), programs_of_a_container(files, &found.at)))
+        .collect();
+    for unit in deployables.iter_mut().filter(|unit| !unit.root.is_empty() && !unit.shipped) {
+        let Some((at, _)) = containers.iter().find(|(_, programs)| programs.contains(&unit.name)) else {
+            continue;
+        };
+        unit.declarations.push(Declaration { declares: Declares::Ship, kind: "container", at: at.clone() });
+        unit.category = Declares::Ship.category();
+        unit.shipped = true;
+    }
 }
 
 fn separate_containers(candidates: &mut [Candidate]) {
