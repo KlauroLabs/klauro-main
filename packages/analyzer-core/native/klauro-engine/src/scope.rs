@@ -804,8 +804,20 @@ static LAUNCHER: &str = "android.intent.category.LAUNCHER";
 static EXECUTABLE_SDKS: &[&str] =
     &["Aspire.AppHost.Sdk", "Microsoft.NET.Sdk.Web", "Microsoft.NET.Sdk.Worker"];
 static EXECUTABLE_OUTPUTS: &[&str] = &["Exe", "WinExe"];
-static EXECUTABLE_PLUGINS: &[&str] = &["application", "com.android.application"];
-static APPLICATION_BLOCKS: &[&str] = &["application", "nativeDistributions"];
+static ORCHESTRATOR_SDKS: &[&str] = &["Aspire.AppHost.Sdk"];
+
+fn orchestrates(files: &Files, manifest: &str) -> bool {
+    (manifest.ends_with(".csproj") || manifest.ends_with(".fsproj"))
+        && files.descendants(manifest).iter().any(|node| {
+            node.type_annotation
+                .as_deref()
+                .is_some_and(|text| ORCHESTRATOR_SDKS.iter().any(|sdk| text.contains(sdk)))
+        })
+}
+static EXECUTABLE_PLUGINS: &[&str] = &["application"];
+static PACKAGED_PLUGINS: &[&str] = &["com.android.application"];
+static PACKAGED_BLOCKS: &[&str] = &["nativeDistributions"];
+static EXECUTABLE_BLOCKS: &[&str] = &["application"];
 
 fn plugin_named(value: &str) -> &str {
     unquote(value.trim().trim_start_matches('(').trim_end_matches(')').trim())
@@ -823,7 +835,7 @@ fn applies_plugin(calls: &[CallFact], file: u32, suffix: &str) -> bool {
 }
 static PACKAGED_ARTIFACTS: &[&str] = &["ear", "war"];
 
-fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Option<&'static str> {
+fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Option<(Declares, &'static str)> {
     if crate::paths::is_test(path) {
         return None;
     }
@@ -833,7 +845,7 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
             .descendants(path)
             .iter()
             .any(|node| node.type_annotation.as_deref().is_some_and(|text| text.contains(LAUNCHER)))
-            .then_some("android-application");
+            .then_some((Declares::Ship, "android-application"));
     }
     if basename.ends_with(".csproj") || basename.ends_with(".fsproj") {
         let document = files.descendants(path);
@@ -849,25 +861,39 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
                     .as_deref()
                     .is_some_and(|text| EXECUTABLE_OUTPUTS.iter().any(|kind| text.contains(kind)))
         });
-        return (sdk || output).then_some("dotnet-executable");
+        if orchestrates(files, path) {
+            return Some((Declares::Ship, "aspire-apphost"));
+        }
+        return (sdk || output).then_some((Declares::Run, "dotnet-executable"));
     }
     if basename.starts_with("build.gradle") {
-        let plugin = calls.iter().any(|call| {
-            call.file == file
-                && call.callee == "id"
-                && call.literals.iter().any(|value| EXECUTABLE_PLUGINS.contains(&plugin_named(value)))
-        });
-        let block = calls
-            .iter()
-            .any(|call| call.file == file && APPLICATION_BLOCKS.contains(&call.callee.as_str()));
-        return (plugin || block || applies_plugin(calls, file, "application")).then_some("gradle-application");
+        let named = |plugins: &[&str]| {
+            calls.iter().any(|call| {
+                call.file == file
+                    && call.callee == "id"
+                    && call.literals.iter().any(|value| plugins.contains(&plugin_named(value)))
+            })
+        };
+        let block = |blocks: &[&str]| calls.iter().any(|call| call.file == file && blocks.contains(&call.callee.as_str()));
+        if named(PACKAGED_PLUGINS) {
+            return Some((Declares::Ship, "android-application"));
+        }
+        let desktop_application = block(EXECUTABLE_BLOCKS)
+            && calls.iter().any(|call| {
+                call.file == file && call.callee == "desktop" && call.receiver.as_deref() == Some("compose")
+            });
+        if block(PACKAGED_BLOCKS) || desktop_application {
+            return Some((Declares::Ship, "native-distribution"));
+        }
+        return (named(EXECUTABLE_PLUGINS) || block(EXECUTABLE_BLOCKS) || applies_plugin(calls, file, "application"))
+            .then_some((Declares::Run, "gradle-application"));
     }
     if basename == "cmakelists.txt" {
         return files
             .descendants(path)
             .iter()
             .any(|node| node.type_annotation.as_deref() == Some("add_executable"))
-            .then_some("cmake-executable");
+            .then_some((Declares::Run, "cmake-executable"));
     }
     if basename == "pom.xml" {
         let document = files.descendants(path);
@@ -879,7 +905,7 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
                         PACKAGED_ARTIFACTS.contains(&text.trim())
                     })
             })
-            .then_some("maven-artifact");
+            .then_some((Declares::Ship, "maven-artifact"));
     }
     None
 }
@@ -1081,9 +1107,9 @@ pub fn derive(
             if basename.starts_with("build.gradle") && applies_plugin(calls, at as u32, "library") {
                 found.declarations.retain(|held| held.declares != Declares::Run);
             }
-            if let Some(kind) = build_target(&index, path, calls, at as u32) {
+            if let Some((declares, kind)) = build_target(&index, path, calls, at as u32) {
                 found.declarations.push(Declaration {
-                    declares: Declares::Ship,
+                    declares,
                     kind,
                     at: path.to_string(),
                 });
@@ -1091,7 +1117,7 @@ pub fn derive(
             candidates.push(found);
             continue;
         }
-        if let Some(kind) = build_target(&index, path, calls, at as u32) {
+        if let Some((declares, kind)) = build_target(&index, path, calls, at as u32) {
             let root = directory_of(path);
             let root = root
                 .strip_suffix("/src/main")
@@ -1102,12 +1128,28 @@ pub fn derive(
                 name: display_name(&root),
                 root,
                 declarations: vec![Declaration {
-                    declares: Declares::Ship,
+                    declares,
                     kind,
                     at: path.to_string(),
                 }],
                 ships: Vec::new(),
                 runs: None,
+            });
+        }
+    }
+
+    let orchestrated: Vec<(String, Vec<String>)> = index
+        .paths
+        .iter()
+        .filter(|path| !crate::paths::is_test(path) && orchestrates(&index, path))
+        .map(|path| (path.to_string(), built_into(&index, path, directory_of(path))))
+        .collect();
+    for (manifest, services) in orchestrated {
+        for candidate in candidates.iter_mut().filter(|candidate| services.contains(&candidate.root)) {
+            candidate.declarations.push(Declaration {
+                declares: Declares::Ship,
+                kind: "orchestrated-service",
+                at: manifest.clone(),
             });
         }
     }
@@ -1253,6 +1295,7 @@ fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &File
         unit.shipped = true;
         attached.push((at_unit, at.clone()));
     }
+    release_the_context_a_container_only_copies(deployables, &containers);
     let mut artifacts: Vec<&String> = attached.iter().map(|(_, at)| at).collect();
     artifacts.sort();
     artifacts.dedup();
@@ -1267,6 +1310,40 @@ fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &File
             .or_else(|| stem_of_the_rest(&group, deployables));
         if let Some(primary) = primary {
             fold_into(deployables, &group, primary);
+        }
+    }
+}
+
+fn release_the_context_a_container_only_copies(deployables: &mut [Deployable], containers: &[(String, Vec<String>, Option<String>)]) {
+    let names: Vec<String> = deployables.iter().map(|unit| unit.name.clone()).collect();
+    let mut released: Vec<String> = Vec::new();
+    for unit in deployables.iter_mut().filter(|unit| unit.declarations.iter().any(|found| found.kind == "package-identity")) {
+        let copied_only = |at: &str| {
+            containers.iter().any(|(held, programs, _)| {
+                held == at
+                    && !programs.is_empty()
+                    && !programs.contains(&unit.name)
+                    && programs.iter().any(|program| program != &unit.name && names.contains(program))
+            })
+        };
+        let before = unit.declarations.len();
+        unit.declarations.retain(|found| found.kind != "container" || !copied_only(&found.at));
+        if unit.declarations.len() == before {
+            continue;
+        }
+        let strongest = unit.declarations.iter().map(|found| found.declares).max();
+        unit.shipped = strongest == Some(Declares::Ship);
+        if let Some(strongest) = strongest {
+            unit.category = strongest.category();
+        }
+        if !unit.shipped {
+            unit.members.clear();
+            released.push(unit.id.clone());
+        }
+    }
+    for unit in deployables.iter_mut() {
+        if unit.bundled_into.as_ref().is_some_and(|owner| released.contains(owner)) {
+            unit.bundled_into = None;
         }
     }
 }

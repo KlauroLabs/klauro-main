@@ -595,27 +595,28 @@ function reasonsFor(capability: TierStackCapability): string[] {
 
 const REASONS_SURFACES = 3;
 
-const SHIPS_AS: Record<string, { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] }> = {
-  'container': { tier: 1, kind: 'container' },
-  'compose-service': { tier: 1, kind: 'compose-service' },
-  'installer': { tier: 1, kind: 'installer' },
-  'package-bin': { tier: 2, kind: 'bin' },
-  'cargo-bin': { tier: 2, kind: 'bin' },
-  'start-script': { tier: 2, kind: 'bin' },
-  'dotnet-executable': { tier: 2, kind: 'bin' },
-  'gradle-application': { tier: 2, kind: 'bin' },
-  'maven-artifact': { tier: 2, kind: 'bin' },
-  'android-application': { tier: 2, kind: 'bin' },
-  'runnable-module': { tier: 2, kind: 'server-entry' },
-  'package-identity': { tier: 3, kind: 'package' },
+const KIND_OF_DECLARATION: Record<string, DeployableEvidence['kind']> = {
+  'container': 'container',
+  'compose-service': 'compose-service',
+  'installer': 'installer',
+  'native-distribution': 'installer',
+  'package-bin': 'bin',
+  'cargo-bin': 'bin',
+  'start-script': 'bin',
+  'dotnet-executable': 'bin',
+  'gradle-application': 'bin',
+  'cmake-executable': 'bin',
+  'maven-artifact': 'bin',
+  'android-application': 'bin',
+  'runnable-module': 'server-entry',
+  'package-identity': 'package',
 };
 
 const TIER_OF_DECLARATION: Record<string, 1 | 2 | 3> = { ship: 1, run: 2, identity: 3 };
 
 function shipsAs(declared: TierStackShipDeclaration): { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] } {
-  const known = SHIPS_AS[declared.kind];
-  const tier = TIER_OF_DECLARATION[declared.declares] ?? known?.tier ?? 3;
-  return { tier, kind: known?.kind ?? (tier === 1 ? 'bin' : 'package') };
+  const tier = TIER_OF_DECLARATION[declared.declares] ?? 3;
+  return { tier, kind: KIND_OF_DECLARATION[declared.kind] ?? (tier === 1 ? 'bin' : 'package') };
 }
 
 function deployablesOf(index: TierStackIndex): DeployableEvidence[] {

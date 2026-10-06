@@ -235,7 +235,7 @@ runs after the bundling merge and demotes a Tier-2/3 "runnable" candidate
 (e.g. a Cargo `[[bin]]` or a `main()`) to `deployable:false` UNLESS: (a) it
 has its own Tier-1 ship artifact, (b) a Tier-1 artifact elsewhere names it in
 `ships_paths` (it's a bundle member), or (c) it's the sole runnable in the
-workspace (nothing else could possibly be "the" deployable). Otherwise it's
+workspace (nothing else could possibly be "the" deployable). The gate applies only to a repository that has a Tier-1 ship artifact: a repository with none ships through its runnables, so build targets that only produce an executable (a CMake `add_executable`, a .NET or Gradle application) are each a deployable. A packaged output (an APK from an Android application module, a war or ear, a Compose desktop distribution) is a Tier-1 ship artifact in its own right. Otherwise it's
 tagged `boundary_evidence: ['runnable-not-shipped:no-tier1-artifact-references-it', ...]`.
 Tier-4 (pure folder-heuristic) candidates are exempt from the gate — gating
 them would punish absence of evidence rather than act on positive evidence.

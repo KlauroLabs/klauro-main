@@ -10682,7 +10682,8 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         || (!app.path_hint && !hasSpecificSibling ? evidenceByRoot.get('.') : undefined)
         || evidenceByRoot.get(rootPath);
       const evidence = exactRootEvidence
-        || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)));
+        || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)))
+        || (rootPath ? evidenceByRoot.get('') : undefined);
       if (evidence) {
         resolutions.set(app.id, {
           rootPath: evidence.root_path,
@@ -11038,6 +11039,7 @@ function applyShippedGate(
   });
 
   if (runnableApps.length <= 1) return;
+  if (!appsForRepo.some(app => resolutions.get(app.id)?.tier === 1)) return;
 
   for (const app of runnableApps) {
     const resolution = resolutions.get(app.id)!;
