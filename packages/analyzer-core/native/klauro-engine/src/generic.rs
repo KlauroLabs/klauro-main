@@ -6,6 +6,7 @@ use crate::language::LanguageSpec;
 use crate::model::*;
 
 mod bounds;
+mod django_routes;
 mod ktor_routes;
 mod lambdas;
 mod messages;
@@ -2930,6 +2931,7 @@ impl<'a> Extractor<'a> {
                 true => Some(self.swift_path(Some(arguments))),
                 false => direct,
             };
+            let direct = receiver.is_none().then(|| self.django_label(&callee, &children)).flatten().or(direct);
             let scoped = REQUEST_METHODS
                 .binary_search(&callee.to_ascii_lowercase().as_str())
                 .ok()
@@ -2963,6 +2965,12 @@ impl<'a> Extractor<'a> {
                     }
                     if let Some(handler) = self.handled_inline(*argument) {
                         self.labelled.insert(handler.id(), (registrar.clone(), label.clone()));
+                        continue;
+                    }
+                    if receiver.is_none()
+                        && let Some(view) = self.django_view(*argument, &callee)
+                    {
+                        handlers.push((view, *argument));
                         continue;
                     }
                     let chained = self.verb_chain(*argument);

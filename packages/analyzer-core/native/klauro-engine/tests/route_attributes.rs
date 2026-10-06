@@ -91,3 +91,11 @@ fn a_get_on_a_map_is_no_ktor_route() {
     assert!(!found.iter().any(|(_, path, _)| path.contains("key")), "{found:?}");
     assert_eq!(found.len(), 4, "{found:?}");
 }
+
+#[test]
+fn django_patterns_serve_normalised_paths_to_the_views_they_wrap() {
+    let found = routes("django_routes");
+    assert!(found.iter().any(|(_, path, handler)| path == "/cart/" && handler.contains("CartView")), "a wrapped class-based view is the handler: {found:?}");
+    assert!(found.iter().any(|(_, path, handler)| path == "/invoices/{number}/" && handler.ends_with("invoice")), "{found:?}");
+    assert!(found.iter().any(|(_, path, handler)| path == "/checkout/{order_id}/" && handler.ends_with("checkout")), "{found:?}");
+}
