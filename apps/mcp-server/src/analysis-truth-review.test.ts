@@ -17,7 +17,7 @@ test('truth review preserves named terminality and source-backed flow evidence',
     analysis_errors: [],
     entities: [],
     capabilities: [],
-    user_journeys: [],
+    entry_point_flows: [],
     flows: [
       {
         flow_id: 'auth-flow', name: 'Sign in', intent: 'Authenticate', entry_point: 'entry-auth', capability_id: 'auth-cap', entities: [],

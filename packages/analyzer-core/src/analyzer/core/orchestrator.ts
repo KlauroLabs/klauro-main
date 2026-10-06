@@ -36,7 +36,7 @@ import {
   ChangeRiskFactor,
   CASChangeRiskSummary,
   CASDataEntity,
-  CASUserJourney,
+  CASEntryPointFlow,
   CASDescriptionGeneration,
   CASDataSummary,
   CASDataEntityKind,
@@ -166,7 +166,7 @@ import {
   stableAnalyzerCacheIdentity,
 } from './analyzer-contribution-cache';
 import { degradedComprehensionRefreshDecision, isComprehensionInertPrivateAddition, removeTestEntryPoints, shouldReuseComprehensionForInertPrivateAddition } from './analysis-comprehension-surface';
-import { USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { USER_FACING_ENTRY_TYPES } from './entry-point-flow-builder';
 import { buildComprehensionGraph } from './comprehension-graph';
 import { productTextCorroboratesCapability } from './capability-evidence-language';
 import { extractProductDocumentFraming } from './product-document-framing';
@@ -1357,7 +1357,7 @@ export class AnalyzerOrchestrator {
     });
     const flowsForJourneys = comprehensionGraph.flows;
     this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    let userJourneyResult = comprehensionGraph.journeyResult;
+    let entryPointFlowResult = comprehensionGraph.journeyResult;
     const paradigmConformance = buildParadigmConformance({
       nodes: allNodes,
       edges: allEdges,
@@ -1372,10 +1372,10 @@ export class AnalyzerOrchestrator {
       exitPoints: allExitPoints,
     });
     let dataLineage = comprehensionGraph.dataLineage;
-    logTiming('pp_userJourneys', phaseStart);
+    logTiming('pp_entryPointFlows', phaseStart);
     await yieldToEventLoop();
-    if (allBehaviors.length === 0 && userJourneyResult.journeys.length > 0) {
-      allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(userJourneyResult.journeys));
+    if (allBehaviors.length === 0 && entryPointFlowResult.entryPointFlows.length > 0) {
+      allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(entryPointFlowResult.entryPointFlows));
     }
     phaseStart = startPhase();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
@@ -1387,7 +1387,7 @@ export class AnalyzerOrchestrator {
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
     const comprehensionJourneys = this.filterPrimaryProductJourneys(
-      userJourneyResult.journeys, allEntryPoints, allNodes, projectPath
+      entryPointFlowResult.entryPointFlows, allEntryPoints, allNodes, projectPath
     );
     await yieldToEventLoop();
     const comprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, allNodes, projectPath);
@@ -1560,7 +1560,7 @@ export class AnalyzerOrchestrator {
       allEntryPoints,
       allExitPoints,
       externalServices,
-      userJourneyResult.journeys,
+      entryPointFlowResult.entryPointFlows,
       systemCapabilities,
       runtimeStaticLinks,
       repositoryLinks,
@@ -1604,7 +1604,7 @@ export class AnalyzerOrchestrator {
       callChains, dataEntities, capabilities: canonicalSystemCapabilities, behaviorSurfaces,
       changeRisks: enhancedChangeRisks, nodeLookup: this.getNodeLookup(allNodes),
     });
-    userJourneyResult = finalizedComprehensionGraph.journeyResult;
+    entryPointFlowResult = finalizedComprehensionGraph.journeyResult;
     dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
@@ -1803,7 +1803,7 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-    output.product_map = buildProductMap(output, userJourneyResult);
+    output.product_map = buildProductMap(output, entryPointFlowResult);
     applyCapabilityCatalogStatus(output);
     phaseStart = startPhase();
     await this.applyEmbeddingPhase(output, projectPath);
@@ -2647,7 +2647,7 @@ export class AnalyzerOrchestrator {
     });
     const flowsForJourneys = comprehensionGraph.flows;
     this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    let userJourneyResult = comprehensionGraph.journeyResult;
+    let entryPointFlowResult = comprehensionGraph.journeyResult;
     const paradigmConformance = buildParadigmConformance({
       nodes,
       edges,
@@ -2692,7 +2692,7 @@ export class AnalyzerOrchestrator {
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
     const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
-      userJourneyResult.journeys, entryPoints, nodes, projectPath
+      entryPointFlowResult.entryPointFlows, entryPoints, nodes, projectPath
     );
     const incrComprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, nodes, projectPath);
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
@@ -2729,7 +2729,7 @@ export class AnalyzerOrchestrator {
       incrComprehensionDataEntities,
       String(enhancedSystemPurpose.artifact_type || 'app'),
       incrProjectTextSignal,
-      { entryPoints, nodes, userJourneys: incrComprehensionJourneys },
+      { entryPoints, nodes, entryPointFlows: incrComprehensionJourneys },
     );
     const incrementalNarrativeCandidates = selectCapabilityCatalogPromptCandidates(
       this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionJourneys),
@@ -2826,7 +2826,7 @@ export class AnalyzerOrchestrator {
       entryPoints,
       exitPoints,
       externalServices,
-      userJourneyResult.journeys,
+      entryPointFlowResult.entryPointFlows,
       systemCapabilities,
       runtimeStaticLinks,
       repositoryLinks,
@@ -2865,7 +2865,7 @@ export class AnalyzerOrchestrator {
       capabilities: systemCapabilities, behaviorSurfaces, changeRisks: enhancedChangeRisks,
       nodeLookup: this.getNodeLookup(nodes),
     });
-    userJourneyResult = finalizedComprehensionGraph.journeyResult;
+    entryPointFlowResult = finalizedComprehensionGraph.journeyResult;
     dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
@@ -6494,11 +6494,11 @@ export class AnalyzerOrchestrator {
   }
 
   private filterPrimaryProductJourneys(
-    journeys: CASUserJourney[],
+    journeys: CASEntryPointFlow[],
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
     projectPath: string
-  ): CASUserJourney[] {
+  ): CASEntryPointFlow[] {
     if (journeys.length === 0) return journeys;
     const entryPointById = new Map(entryPoints.map(entryPoint => [entryPoint.id, entryPoint]));
     const productEntryPointIds = new Set(
@@ -7878,7 +7878,7 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
-  private synthesizeBehaviorsFromJourneys(journeys: CASUserJourney[]): CASBehavior[] {
+  private synthesizeBehaviorsFromJourneys(journeys: CASEntryPointFlow[]): CASBehavior[] {
     return journeys.slice(0, 100).map(journey => {
       const steps = (journey.steps || []).slice(0, 24);
       const flow = steps.slice(0, -1).map((step, i) => ({
@@ -7890,14 +7890,14 @@ export class AnalyzerOrchestrator {
       return {
         id: `behavior_${journey.id}`,
         name: journey.name,
-        description: `${journey.journey_kind} behavior from ${journey.entry?.name || 'entry'}${writes.length ? ` writing ${writes.slice(0, 3).join(', ')}` : ''}.`,
+        description: `${journey.flow_kind} behavior from ${journey.entry?.name || 'entry'}${writes.length ? ` writing ${writes.slice(0, 3).join(', ')}` : ''}.`,
         nodes: steps.map(step => step.node_id),
         flow,
         metadata: {
-          journey_kind: journey.journey_kind,
+          flow_kind: journey.flow_kind,
           criticality: journey.criticality,
           entry_point_id: journey.entry_point_id,
-          derived_from: 'user_journey',
+          derived_from: 'entry_point_flow',
         },
       };
     });
@@ -8172,7 +8172,7 @@ export class AnalyzerOrchestrator {
   }
 
   private buildJourneyTerminologyTokens(
-    userJourneys: CASUserJourney[],
+    entryPointFlows: CASEntryPointFlow[],
     projectTextSignal?: ProjectTextSignal,
   ): Set<string> {
     const journeyTokens = new Set<string>();
@@ -8185,7 +8185,7 @@ export class AnalyzerOrchestrator {
         if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
       }
     };
-    for (const journey of userJourneys) addFromText(journey.name || '');
+    for (const journey of entryPointFlows) addFromText(journey.name || '');
     if (projectTextSignal) {
       for (const concept of projectTextSignal.concepts || []) addFromText(concept);
       addFromText(projectTextSignal.summary || '');
@@ -8209,9 +8209,9 @@ export class AnalyzerOrchestrator {
 
   private rankCatalogPromptCandidates(
     candidates: SystemCapability[],
-    userJourneys: CASUserJourney[],
+    entryPointFlows: CASEntryPointFlow[],
   ): SystemCapability[] {
-    const journeyTokens = this.buildJourneyTerminologyTokens(userJourneys);
+    const journeyTokens = this.buildJourneyTerminologyTokens(entryPointFlows);
     const terminality = this.catalogCandidateTerminality(candidates);
     const scored = candidates.map(candidate => {
       const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
@@ -8254,7 +8254,7 @@ export class AnalyzerOrchestrator {
     dataEntities?: CASDataEntity[],
     artifactType = 'app',
     projectTextSignal?: ProjectTextSignal,
-    context: { entryPoints?: CASEntryPoint[]; nodes?: CASNode[]; userJourneys?: CASUserJourney[] } = {},
+    context: { entryPoints?: CASEntryPoint[]; nodes?: CASNode[]; entryPointFlows?: CASEntryPointFlow[] } = {},
   ): SystemCapability[] {
     return selectCatalogEvidenceCandidates(candidates, behaviorSurfaces, dataEntities, artifactType, projectTextSignal, context);
   }
@@ -8352,7 +8352,7 @@ export class AnalyzerOrchestrator {
   private async aiExtractCapabilityCatalog(input: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
-    frameworks: string[]; userJourneys: CASUserJourney[];
+    frameworks: string[]; entryPointFlows: CASEntryPointFlow[];
     dataEntities: CASDataEntity[]; candidateCapabilities: SystemCapability[];
     behaviorSurfaces?: SystemCapability[]; externalServices: string[];
     flowGraph: CASFlowGraph; projectTextSignal?: ProjectTextSignal;
@@ -8374,9 +8374,9 @@ export class AnalyzerOrchestrator {
       ...(input.candidateCapabilities || []),
       ...(input.behaviorSurfaces || []),
     ].flatMap(candidate => candidate.related_entities || []));
-    const journeys = (input.userJourneys || [])
+    const journeys = (input.entryPointFlows || [])
       .filter(journey => !targetedRepair || targetedEntryPointIds.has(journey.entry_point_id))
-      .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
+      .filter(journey => journey.flow_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
       .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
       .slice(0, 12)
       .map(journey => ({
@@ -8391,13 +8391,13 @@ export class AnalyzerOrchestrator {
       input.dataEntities,
       artifactType,
       input.projectTextSignal,
-      { entryPoints: input.entryPoints, nodes: input.nodes, userJourneys: input.userJourneys },
+      { entryPoints: input.entryPoints, nodes: input.nodes, entryPointFlows: input.entryPointFlows },
     );
     const proposalCandidateIds = new Set((input.requiredOutcomeRequirements || [])
       .flatMap(requirement => requirement.candidateIds));
     const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking)
       .filter(candidate => proposalCandidateIds.has(candidate.id)); const promptDataEntities = targetedRepair ? (input.dataEntities || []).filter(entity => targetedEntityIds.has(entity.id)) : input.dataEntities || []; const entities = catalogPromptEntities(promptDataEntities, candidatePoolForRanking);
-    const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
+    const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.entryPointFlows || []);
     const requiredBehaviorCandidateAreas = requiredCandidatePool
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredCandidatePool);
@@ -8484,7 +8484,7 @@ export class AnalyzerOrchestrator {
         },
       };
       const budgetedContexts = fitCapabilityCatalogContexts(additionalContextWithoutFacts, {
-        user_journeys: journeys, entities,
+        entry_point_flows: journeys, entities,
         candidate_route_areas: input.targetedRepairFacts?.map(fact => ({ ...fact, declared_contracts: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.declared_contracts, observed_operations: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.observed_operations })) || candidateAreaFacts,
         required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
@@ -8622,7 +8622,7 @@ export class AnalyzerOrchestrator {
       ...candidateAreas,
       ...validationCandidates.flatMap(capabilityOperationEvidenceTexts),
       ...input.dataEntities.map(entity => entity.name),
-      ...(input.userJourneys || []).map(journey => journey.name),
+      ...(input.entryPointFlows || []).map(journey => journey.name),
       String(purpose.primary_domain || ''),
       ...(purpose.core_concepts || []),
       String(topDownSignals.product_title || ''),
@@ -9163,7 +9163,7 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     externalServices: string[] = [],
-    userJourneys: CASUserJourney[] = [],
+    entryPointFlows: CASEntryPointFlow[] = [],
     outcomeRequirements: readonly CapabilityCatalogOutcomeRequirement[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
@@ -9238,7 +9238,7 @@ export class AnalyzerOrchestrator {
       dataEntities,
       libraryNames,
       [...capabilityCatalogProductTerms(purpose, projectTextSignal), ...externalServices],
-      { productText: projectTextSignal, userJourneys, entryPoints },
+      { productText: projectTextSignal, entryPointFlows, entryPoints },
     );
     for (const rejection of audienceEvaluation.rejections) {
       if (rejection.target === 'name') {
@@ -9575,7 +9575,7 @@ export class AnalyzerOrchestrator {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
     frameworks: string[];
-    userJourneys: CASUserJourney[];
+    entryPointFlows: CASEntryPointFlow[];
     dataEntities: CASDataEntity[];
     candidateSnapshot: SystemCapability[];
     behaviorSurfaces: SystemCapability[];
@@ -9597,7 +9597,7 @@ export class AnalyzerOrchestrator {
       args.dataEntities,
       artifactType,
       args.projectTextSignal,
-      { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
+      { entryPoints: args.entryPoints, nodes: args.nodes, entryPointFlows: args.entryPointFlows },
     );
     const productOutcomeEvidenceCandidateIds = new Set(evidenceCandidates
       .filter(candidate => candidate.evidence_role === 'product-outcome')
@@ -9645,7 +9645,7 @@ export class AnalyzerOrchestrator {
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const completeLifecycleCandidateIds = new Set(requiredEvidenceCandidates.map(candidate => candidate.id));
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities); const validateDeterministicAtomic = (recovered: SystemCapability): boolean => { const deterministicRouteTerms = (recovered.criticality_factors || []).includes('catalog-deterministic-atomic-closure') &&
       (recovered.criticality_factors || []).includes('catalog-deterministic-route-lineage')
-      ? recovered.related_domains || [] : []; const audience = evaluateCapabilityCatalogAudience([recovered], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...deterministicRouteTerms, ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints, artifactType }); const target = this.capabilityDescriptionTarget(recovered, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement), ...deterministicRouteTerms].filter((value): value is string => Boolean(value)))); const publishabilityFailure = this.capabilityPublishabilityFailure(recovered); const elementValidation = this.validateElementDescription(recovered.description || '', target); if (process.env.KLAURO_DEBUG_CATALOG && (audience.accepted.length !== 1 || publishabilityFailure || !elementValidation.ok)) writeAnalyzerStatus('[catalog-debug] deterministic atomic validation:', { name: recovered.name, description: recovered.description, candidates: (recovered.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')), audience_rejections: audience.rejections, publishability_failure: publishabilityFailure, element_reason: elementValidation.reason, offending_terms: elementValidation.offendingTerms, target }); return audience.accepted.length === 1 && !publishabilityFailure && elementValidation.ok; }; const baselineAtomicClosures: SystemCapability[] = [];
+      ? recovered.related_domains || [] : []; const audience = evaluateCapabilityCatalogAudience([recovered], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...deterministicRouteTerms, ...args.externalServices], { productText: args.projectTextSignal, entryPointFlows: args.entryPointFlows, entryPoints: args.entryPoints, artifactType }); const target = this.capabilityDescriptionTarget(recovered, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement), ...deterministicRouteTerms].filter((value): value is string => Boolean(value)))); const publishabilityFailure = this.capabilityPublishabilityFailure(recovered); const elementValidation = this.validateElementDescription(recovered.description || '', target); if (process.env.KLAURO_DEBUG_CATALOG && (audience.accepted.length !== 1 || publishabilityFailure || !elementValidation.ok)) writeAnalyzerStatus('[catalog-debug] deterministic atomic validation:', { name: recovered.name, description: recovered.description, candidates: (recovered.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')), audience_rejections: audience.rejections, publishability_failure: publishabilityFailure, element_reason: elementValidation.reason, offending_terms: elementValidation.offendingTerms, target }); return audience.accepted.length === 1 && !publishabilityFailure && elementValidation.ok; }; const baselineAtomicClosures: SystemCapability[] = [];
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
@@ -9696,7 +9696,7 @@ export class AnalyzerOrchestrator {
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
-          userJourneys: targetedRepair ? args.userJourneys.filter(journey => batchEntryPointIds.has(journey.entry_point_id)) : args.userJourneys, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
+          entryPointFlows: targetedRepair ? args.entryPointFlows.filter(journey => batchEntryPointIds.has(journey.entry_point_id)) : args.entryPointFlows, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
           candidateCapabilities: targetedRepair ? evidenceCandidates.filter(candidate => batchIds.has(candidate.id)) : evidenceCandidates.filter(candidate => !candidate.id.startsWith('operation-obligation:') && !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view')),
           behaviorSurfaces: evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface' && (!targetedRepair || batchIds.has(candidate.id))),
           externalServices: targetedRepair ? [] : args.externalServices,
@@ -9722,10 +9722,10 @@ export class AnalyzerOrchestrator {
               validated: batchExtracted, attempt: repairAttempts, identity: mode.identity,
               attemptedFallbackIdentityIds: deterministicFallbackAttemptedLifecycleKeys,
               pendingEvidenceIdentityByCandidateId, evidenceCandidates,
-              audience: groundedCapabilityAudience(mode.identity, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType), firstPartyTexts: firstPartyRepairTexts,
+              audience: groundedCapabilityAudience(mode.identity, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType), firstPartyTexts: firstPartyRepairTexts,
               allowNameRepair: repairName,
               validate: capability => {
-                const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints, artifactType });
+                const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, entryPointFlows: args.entryPointFlows, entryPoints: args.entryPoints, artifactType });
                 const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints);
                 target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement)].filter((value): value is string => Boolean(value))));
                 const publishabilityFailure = this.capabilityPublishabilityFailure(capability);
@@ -9766,7 +9766,7 @@ export class AnalyzerOrchestrator {
       const actionEvidenceDescriptionsByLifecycleKey = new Map(extracted
         .filter(capability => Boolean(capability.description))
         .map(capability => [capabilityCatalogRepairLifecycleKey(capability), capability.description as string]));
-      const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints, artifactType });
+      const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, entryPointFlows: args.entryPointFlows, entryPoints: args.entryPoints, artifactType });
       const audienceRejectionByCapabilityId = new Map(audienceEvaluation.rejections
         .filter(rejection => Boolean(rejection.missingAudience))
         .map(rejection => [rejection.capabilityId, rejection.missingAudience as string]));
@@ -9789,7 +9789,7 @@ export class AnalyzerOrchestrator {
         if (rejection.target === 'name') stageRejectedCapabilityNameRepair({
           capability: rejected, reason: audienceFailure, repairableCandidateIds: repairableProposalCandidateIds,
           evidenceCandidates, registry: pendingEvidenceIdentityByCandidateId,
-          audience: groundedCapabilityAudience(rejected, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType),
+          audience: groundedCapabilityAudience(rejected, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType),
         });
         for (const candidateId of (rejected.criticality_factors || [])
           .filter(factor => factor.startsWith('catalog-candidate:'))
@@ -9802,7 +9802,7 @@ export class AnalyzerOrchestrator {
         deterministicCapabilityDescriptionFallback({
           identity,
           evidenceCandidates,
-          audience: audienceRejectionByCapabilityId.get(identity.id) || groundedCapabilityAudience(identity, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType),
+          audience: audienceRejectionByCapabilityId.get(identity.id) || groundedCapabilityAudience(identity, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType),
           firstPartyTexts: [
             args.projectTextSignal.productDocTitle,
             args.projectTextSignal.productDocSummary,
@@ -9813,11 +9813,11 @@ export class AnalyzerOrchestrator {
         }) || identity);
       const audiencePrepared = [...audienceEvaluation.accepted, ...immediatelyRepairedDescriptions];
       const initiallyReconciledCandidates = audiencePrepared.length > 0
-        ? this.reconcileCatalogedCapabilities(audiencePrepared, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices, args.userJourneys, requiredOutcomes)
+        ? this.reconcileCatalogedCapabilities(audiencePrepared, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices, args.entryPointFlows, requiredOutcomes)
         : [];
       const postSynthesisGroundedCandidateIds = new Set([...classifyCapabilityEvidence(
         initiallyReconciledCandidates, args.dataEntities, args.projectTextSignal,
-        { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
+        { entryPoints: args.entryPoints, nodes: args.nodes, entryPointFlows: args.entryPointFlows },
       ).filter(capability => capability.evidence_role === 'product-outcome').flatMap(capability =>
         (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:'))
           .map(factor => factor.slice('catalog-candidate:'.length))), ...initiallyReconciledCandidates.flatMap(capability => (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length))).filter(candidateId => independentlyGroundedProductOutcomeIds.has(candidateId))]);
@@ -9861,13 +9861,13 @@ export class AnalyzerOrchestrator {
           ...[...productOutcomeEvidenceCandidateIds].map(candidateId => [candidateId, `product-outcome:${candidateId}`] as const),
         ]),
         descriptionFailureByCapabilityId, isPublishable: capability => this.isPublishableCapability(capability),
-        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType),
+        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType),
         recordRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, promotedIdentityIds: promotedEvidenceIdentityIds, promotedCandidateIds: promotedEvidenceCandidateIds, promotedCapabilitiesByCandidateId: promotedEvidenceByCandidateId, stagedCandidateIds: stagedEvidenceCandidateIds,
       }); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('stage-promotion', [...cycleReconciled, ...[...pendingEvidenceIdentityByCandidateId.values()].map(entry => entry.identity)]);
       const exactEvidenceCandidateId = (capability: SystemCapability): string | undefined => { const citations = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length)); return citations.length === 1 ? citations[0] : undefined; }; const promotedEvidenceIdentities = [...promotedEvidenceByCandidateId.values()]; const publishableCycleReconciled = cycleReconciled.filter(capability => { const candidateId = exactEvidenceCandidateId(capability); return !candidateId || (!stagedEvidenceCandidateIds.has(candidateId) && !promotedEvidenceCandidateIds.has(candidateId)); });
       const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, publishableCycleReconciled, requiredOutcomes, pendingRequirementIdsByLifecycleKey, new Set([...operationObligationViews.scopes.keys(), ...aggregateOperationObligationViews.scopes.keys()])) : { existing: reconciled, incoming: publishableCycleReconciled }; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('supersession', [...superseded.existing, ...superseded.incoming]); const mergedRepairResults = targetedRepair ? mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming, evidenceRepairCandidateIdsForCycle, evidenceCandidates, descriptionRepairLifecycleKeysForCycle, postSynthesisGroundedCandidateIds) : publishableCycleReconciled; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('repair-merge', mergedRepairResults); const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName([...mergedRepairResults, ...promotedEvidenceIdentities], true) : runningIndependentBroadConfirmation ? this.dedupeSystemCapabilitiesByName([...reconciled, ...publishableCycleReconciled], true) : publishableCycleReconciled; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('exact-name-dedupe', combinedReconciled);
       const behaviorCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds, boundReconciledCandidates); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('behavior-merge', behaviorCompleteReconciled);
-      const groundedEntityReconciled = mergeGroundedEntityEvidenceFamilies(behaviorCompleteReconciled, evidenceCandidates, [...requiredEntityCandidateGroups, ...distinctFamilyCandidateGroups]); const uncoveredBaselineCandidates = baselineAtomicClosures.filter(closure => uncoveredRequiredCapabilityOperations(closure, groundedEntityReconciled, operationCoverageContext).length > 0); const uncoveredBaselineAtomicClosures = withoutSubsumedDeterministicAtomicClosures(uncoveredBaselineCandidates, requiredEntityCandidateGroups, [...groundedEntityReconciled, ...uncoveredBaselineCandidates], operationCoverageContext); const entityMergedReconciled = this.dedupeSystemCapabilitiesByName([...groundedEntityReconciled, ...uncoveredBaselineAtomicClosures], true); const preliminaryOperationCoverage = evaluateCapabilityCatalogOperationCoverage(entityMergedReconciled, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); const uncoveredAggregateClosureIds = [...uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, preliminaryOperationCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext).values()].flat(); const rawAtomicClosures = validatedDeterministicAtomicClosures({ candidateIds: [...preliminaryOperationCoverage.uncoveredCandidateIds, ...uncoveredAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }); const atomicClosures = withoutSubsumedDeterministicAtomicClosures(rawAtomicClosures, requiredEntityCandidateGroups, [...entityMergedReconciled, ...rawAtomicClosures], operationCoverageContext); const operationCandidates = withoutSubsumedDeterministicAtomicClosures([...entityMergedReconciled, ...atomicClosures], requiredEntityCandidateGroups, [...entityMergedReconciled, ...atomicClosures], operationCoverageContext); const operationCoverage = evaluateCapabilityCatalogOperationCoverage(operationCandidates, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); let evidenceCompleteReconciled = bindAtomicallySatisfiedCatalogOutcomeRequirements(operationCoverage.capabilities, requiredOutcomes, operationCoverage.fullyCoveredAggregateCandidateIds, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, operationCoverage.publishableCapabilities); evidenceCompleteReconciled = recoverGroundedAuthoredOutcomeCapabilities(evidenceCompleteReconciled, groundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, behaviorCompleteReconciled); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('entity-merge', evidenceCompleteReconciled);
+      const groundedEntityReconciled = mergeGroundedEntityEvidenceFamilies(behaviorCompleteReconciled, evidenceCandidates, [...requiredEntityCandidateGroups, ...distinctFamilyCandidateGroups]); const uncoveredBaselineCandidates = baselineAtomicClosures.filter(closure => uncoveredRequiredCapabilityOperations(closure, groundedEntityReconciled, operationCoverageContext).length > 0); const uncoveredBaselineAtomicClosures = withoutSubsumedDeterministicAtomicClosures(uncoveredBaselineCandidates, requiredEntityCandidateGroups, [...groundedEntityReconciled, ...uncoveredBaselineCandidates], operationCoverageContext); const entityMergedReconciled = this.dedupeSystemCapabilitiesByName([...groundedEntityReconciled, ...uncoveredBaselineAtomicClosures], true); const preliminaryOperationCoverage = evaluateCapabilityCatalogOperationCoverage(entityMergedReconciled, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); const uncoveredAggregateClosureIds = [...uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, preliminaryOperationCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext).values()].flat(); const rawAtomicClosures = validatedDeterministicAtomicClosures({ candidateIds: [...preliminaryOperationCoverage.uncoveredCandidateIds, ...uncoveredAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }); const atomicClosures = withoutSubsumedDeterministicAtomicClosures(rawAtomicClosures, requiredEntityCandidateGroups, [...entityMergedReconciled, ...rawAtomicClosures], operationCoverageContext); const operationCandidates = withoutSubsumedDeterministicAtomicClosures([...entityMergedReconciled, ...atomicClosures], requiredEntityCandidateGroups, [...entityMergedReconciled, ...atomicClosures], operationCoverageContext); const operationCoverage = evaluateCapabilityCatalogOperationCoverage(operationCandidates, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); let evidenceCompleteReconciled = bindAtomicallySatisfiedCatalogOutcomeRequirements(operationCoverage.capabilities, requiredOutcomes, operationCoverage.fullyCoveredAggregateCandidateIds, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, operationCoverage.publishableCapabilities); evidenceCompleteReconciled = recoverGroundedAuthoredOutcomeCapabilities(evidenceCompleteReconciled, groundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, behaviorCompleteReconciled); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('entity-merge', evidenceCompleteReconciled);
       const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleUncoveredBehaviorCandidateIds = operationCoverage.uncoveredCandidateIds; if (process.env.KLAURO_DEBUG_CATALOG) { debugOperationProvenance('operation-coverage', evidenceCompleteReconciled); writeAnalyzerStatus('[catalog-debug] operation uncovered:', cycleUncoveredBehaviorCandidateIds); }
       const cyclePublishedCandidateIds = new Set(evidenceCompleteReconciled.flatMap(capability =>
@@ -9974,9 +9974,9 @@ export class AnalyzerOrchestrator {
       const deadlineDescriptionReconciled = resolvePendingCapabilityDescriptionsWithoutProvider({
         capabilities: reconciled, pendingEvidenceIdentityByCandidateId, evidenceCandidates,
         firstPartyTexts: deadlineFirstPartyTexts,
-        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType),
+        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType),
         validate: capability => {
-          const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints, artifactType });
+          const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, entryPointFlows: args.entryPointFlows, entryPoints: args.entryPoints, artifactType });
           const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints);
           target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement)].filter((value): value is string => Boolean(value))));
           const publishabilityFailure = this.capabilityPublishabilityFailure(capability);
@@ -10004,8 +10004,8 @@ export class AnalyzerOrchestrator {
       const deadlineAggregateClosureIdsByParent = uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, deadlinePreliminaryCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext);
       const deadlineAggregateClosureIds = [...deadlineAggregateClosureIdsByParent.values()].flat(); const deadlineMissingEvidenceCandidateIds = capabilityCatalogRepairCandidateIds(deadlineSeedReconciled, deadlinePreliminaryCoverage.uncoveredCandidateIds, requiredEntityCandidateGroups, new Set(), distinctFamilyCandidateGroups, deadlinePreliminaryCoverage.fullyCoveredAggregateCandidateIds);
       const deadlineRawAtomicClosures = [
-        ...validatedDeterministicAtomicClosures({ candidateIds: [...deadlineMissingEvidenceCandidateIds, ...deadlineAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }),
-        ...validatedDeterministicGroupedOperationClosures({ uncoveredIdsByParent: deadlineAggregateClosureIdsByParent, scopes: aggregateOperationObligationViews.scopes, evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), validate: validateDeterministicAtomic }),
+        ...validatedDeterministicAtomicClosures({ candidateIds: [...deadlineMissingEvidenceCandidateIds, ...deadlineAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }),
+        ...validatedDeterministicGroupedOperationClosures({ uncoveredIdsByParent: deadlineAggregateClosureIdsByParent, scopes: aggregateOperationObligationViews.scopes, evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.entryPointFlows, args.entryPoints, artifactType), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), validate: validateDeterministicAtomic }),
       ];
       if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] deadline deterministic candidates:', { preliminary_uncovered: deadlinePreliminaryCoverage.uncoveredCandidateIds, aggregate_obligations: deadlineAggregateClosureIds, closure_names: deadlineRawAtomicClosures.map(capability => capability.name) });
       const deadlineAtomicClosures = withoutSubsumedDeterministicAtomicClosures(deadlineRawAtomicClosures, requiredEntityCandidateGroups, [...deadlineSeedReconciled, ...deadlineRawAtomicClosures], operationCoverageContext);
@@ -10173,7 +10173,7 @@ export class AnalyzerOrchestrator {
 
   private filterIsolatedUncorroboratedCandidates(
     candidates: SystemCapability[],
-    userJourneys: CASUserJourney[],
+    entryPointFlows: CASEntryPointFlow[],
     projectTextSignal?: ProjectTextSignal,
   ): SystemCapability[] {
     const inScope = (candidate: SystemCapability) =>
@@ -10195,7 +10195,7 @@ export class AnalyzerOrchestrator {
         return false;
       });
     };
-    const domainTokens = this.buildJourneyTerminologyTokens(userJourneys, projectTextSignal);
+    const domainTokens = this.buildJourneyTerminologyTokens(entryPointFlows, projectTextSignal);
     return candidates.filter(candidate => {
       if (!inScope(candidate)) return true;
       if (hasCrossCandidateReference(candidate)) return true;
@@ -10218,7 +10218,7 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     dataEntities: CASDataEntity[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
-    userJourneys: CASUserJourney[] = [],
+    entryPointFlows: CASEntryPointFlow[] = [],
     deployableCount?: number,
     nodes: CASNode[] = [],
     edges: CASEdge[] = [],
@@ -10261,7 +10261,7 @@ export class AnalyzerOrchestrator {
 
     const candidateSnapshot = this.filterIsolatedUncorroboratedCandidates(
       systemCapabilities.map(capability => ({ ...capability })),
-      userJourneys,
+      entryPointFlows,
       projectTextSignal,
     );
     const artifactTypeHint = String(enhancedSystemPurpose.artifact_type || 'app');
@@ -10271,10 +10271,10 @@ export class AnalyzerOrchestrator {
       dataEntities,
       artifactTypeHint,
       projectTextSignal,
-      { entryPoints, nodes, userJourneys },
+      { entryPoints, nodes, entryPointFlows },
     );
     const narrativeCandidateSnapshot = selectCapabilityCatalogPromptCandidates(
-      this.rankCatalogPromptCandidates(descriptionEvidenceCandidates, userJourneys),
+      this.rankCatalogPromptCandidates(descriptionEvidenceCandidates, entryPointFlows),
       catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(descriptionEvidenceCandidates)),
     );
     const aiInputFingerprint = this.hashAIInterpretationRefreshFingerprint(
@@ -10292,7 +10292,7 @@ export class AnalyzerOrchestrator {
     const catalogHardDeadlineAt = Date.now() + CATALOG_HARD_DEADLINE_MS;
     let acceptedCatalogInterpretationRaw = '';
     const capabilityCatalogPromise = systemCapabilities.length > 0 ||
-      userJourneys.length > 0 ||
+      entryPointFlows.length > 0 ||
       dataEntities.length > 0 ||
       entryPoints.length > 0 ||
       (flowGraph.capability_candidates?.length || 0) > 0
@@ -10300,7 +10300,7 @@ export class AnalyzerOrchestrator {
         systemName,
         enhancedSystemPurpose,
         frameworks,
-        userJourneys,
+        entryPointFlows,
         dataEntities,
         candidateSnapshot,
         behaviorSurfaces,
@@ -10335,7 +10335,7 @@ export class AnalyzerOrchestrator {
       projectTextSignal,
       dataEntities,
       projectTextSignal.manifestDescription || '',
-      userJourneys
+      entryPointFlows
     );
     const artifactType = String(enhancedSystemPurpose.artifact_type || structuralFacts.artifactType || artifactTypeHint);
     if (artifactType === 'infrastructure') {
@@ -10403,7 +10403,7 @@ export class AnalyzerOrchestrator {
       externalServices: externalServices.length,
       dataEntities: dataEntities.length,
       systemCapabilities: systemCapabilities.length,
-      userJourneys: userJourneys.length,
+      entryPointFlows: entryPointFlows.length,
       capabilityTargets: 0,
       unanalyzedLanguages: unanalyzedLanguages.length,
       hasProjectText: Boolean(projectTextSignal.manifestDescription || projectTextSignal.summary),
@@ -10440,7 +10440,7 @@ export class AnalyzerOrchestrator {
       edges,
       allCapabilitiesForEvidence: systemCapabilities,
       entryPoints,
-      userJourneys,
+      entryPointFlows,
       preferredBatchSize: 1, capabilityEntityEvidence: dataEntities,
       requiredOutcomeRequirements: requiredOutcomes,
     });
@@ -10872,7 +10872,7 @@ export class AnalyzerOrchestrator {
         includeEntities: false,
         nodes,
         edges,
-        allCapabilitiesForEvidence: systemCapabilities, userJourneys, capabilityEntityEvidence: dataEntities, entryPoints,
+        allCapabilitiesForEvidence: systemCapabilities, entryPointFlows, capabilityEntityEvidence: dataEntities, entryPoints,
         requiredOutcomeRequirements: requiredOutcomes,
       });
       const unresolvedAfterRepair = unresolvedCapabilities.filter(capability => {
@@ -11280,7 +11280,7 @@ export class AnalyzerOrchestrator {
       nodes?: CASNode[];
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
-      userJourneys?: CASUserJourney[];
+      entryPointFlows?: CASEntryPointFlow[];
       preferredBatchSize?: number; capabilityEntityEvidence?: CASDataEntity[];
       requiredOutcomeRequirements?: readonly CapabilityCatalogOutcomeRequirement[];
       entryPoints?: CASEntryPoint[];
@@ -11300,7 +11300,7 @@ export class AnalyzerOrchestrator {
     const entityTargetContext = context.includeEntities ? {
       relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || [], entities),
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
-      journeysByEntityName: this.buildJourneysByEntityName(context.userJourneys || []),
+      journeysByEntityName: this.buildJourneysByEntityName(context.entryPointFlows || []),
     } : undefined;
     const entityTargets = context.includeEntities
       ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext))
@@ -11772,7 +11772,7 @@ export class AnalyzerOrchestrator {
     return byEntityId;
   }
 
-  private buildJourneysByEntityName(journeys: CASUserJourney[]): Map<string, string[]> {
+  private buildJourneysByEntityName(journeys: CASEntryPointFlow[]): Map<string, string[]> {
     const byEntityName = new Map<string, string[]>();
     const add = (entityName: string | undefined, journeyName: string) => {
       const key = String(entityName || '').toLowerCase().trim();
@@ -12019,7 +12019,7 @@ export class AnalyzerOrchestrator {
     if (phase === 'pp_embeddingAndFinalize' || phase === 'pp_finalMetadata') return 'semantic-runtime-context';
     if ([
       'pp_capabilities', 'pp_domainConcepts', 'pp_dataEntities', 'pp_dataSummary', 'pp_securityBoundaries',
-      'pp_securitySummary', 'pp_flowSummary', 'pp_flowCoverage', 'pp_workflows', 'pp_userJourneys',
+      'pp_securitySummary', 'pp_flowSummary', 'pp_flowCoverage', 'pp_workflows', 'pp_entryPointFlows',
       'pp_enhanceRisks', 'pp_testData', 'pp_buildIntents', 'pp_gitAnalysis', 'pp_dependencyManifest',
       'pp_detectPatterns', 'pp_traceability', 'pp_entryPointContractCapability', 'pp_methodCalls',
       'pp_callGraph', 'pp_flowGraph', 'pp_reachabilityIndex', 'pp_structuralImportance',
@@ -13375,7 +13375,7 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     dataEntities: CASDataEntity[] = [],
     manifestDescription = '',
-    userJourneys: CASUserJourney[] = []
+    entryPointFlows: CASEntryPointFlow[] = []
   ): Record<string, unknown> {
     const entityKindByName = new Map(dataEntities.map(entity => [entity.name.toLowerCase(), entity.kind]));
     const isOutputShapedTerminal = (name: string): boolean => {
@@ -13420,8 +13420,8 @@ export class AnalyzerOrchestrator {
         manifestDescriptionInstruction: 'manifestDescription is the repo\'s own one-line self-description from its package manifest. Treat it as authoritative product framing when it is consistent with the structural facts.',
       }
       : {};
-    const productBehaviorPaths = (userJourneys || [])
-      .filter(journey => journey.journey_kind === 'user-facing' || (journey.terminal_entities?.length || 0) > 0)
+    const productBehaviorPaths = (entryPointFlows || [])
+      .filter(journey => journey.flow_kind === 'user-facing' || (journey.terminal_entities?.length || 0) > 0)
       .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
       .map(journey => {
         const businessSteps = (journey.steps || [])
@@ -23721,7 +23721,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
     externalServices: CASExternalService[],
-    journeys: CASUserJourney[],
+    journeys: CASEntryPointFlow[],
     capabilities: SystemCapability[],
     runtimeLinks: CASRuntimeStaticLink[],
     repositoryLinks: CASCrossRepositoryLink[],
@@ -23833,7 +23833,7 @@ export class AnalyzerOrchestrator {
         subject_type: 'journey',
         subject_id: journey.id,
         fact_type: 'journey',
-        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.journey_kind} journey`,
+        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.flow_kind} journey`,
         confidence: 0.75,
         produced_by: analyzerName,
         evidence

@@ -242,7 +242,7 @@ test('packing does not trade shared evidence away to fit another candidate', () 
   const candidates = Array.from({ length: 30 }, (_, index) => candidate(index + 1000));
   const facts = {
     candidate_route_areas: candidates,
-    user_journeys: [{ name: 'Inspect a record without mutation', writes: [], terminal: ['Record:read'] }],
+    entry_point_flows: [{ name: 'Inspect a record without mutation', writes: [], terminal: ['Record:read'] }],
     entities: [{ name: 'Record', fields: ['status', 'origin'] }],
     external_services: ['Audit receiver'],
     top_down_signals: { product_overview: 'Inspection returns records without changing stored data.' },
@@ -252,7 +252,7 @@ test('packing does not trade shared evidence away to fit another candidate', () 
   }, env).context.facts;
   const batches = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, facts, env);
   for (const batch of batches) {
-    for (const key of ['user_journeys', 'entities', 'external_services', 'top_down_signals']) {
+    for (const key of ['entry_point_flows', 'entities', 'external_services', 'top_down_signals']) {
       expect(batch.context.facts[key]).toEqual(shared[key]);
     }
     expect(batch.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget(env));

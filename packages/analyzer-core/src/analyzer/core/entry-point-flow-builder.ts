@@ -7,10 +7,10 @@ import {
   CASCallChain,
   CASDataEntity,
   CASChangeRisk,
-  CASUserJourney,
-  CASUserJourneyStep,
-  CASUserJourneySummary,
-  CASUserJourneyTerminalEntity, ENTRY_POINT_TYPES, ENTRY_POINT_TYPE_REACH,
+  CASEntryPointFlow,
+  CASEntryPointFlowStep,
+  CASEntryPointFlowSummary,
+  CASEntryPointFlowTerminalEntity, ENTRY_POINT_TYPES, ENTRY_POINT_TYPE_REACH,
 } from '../../types/cas.types';
 import { isGuardEnforcementEdge } from './guard-relationships';
 import { classifyGuardKind } from './guard-classification';
@@ -20,7 +20,7 @@ import { isLanguageBuiltinExitPoint } from './language-builtins';
 import { hasUnresolvedDependencyEffect, type TerminalEffects } from './exit-point-effects';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 
-export interface UserJourneyInput {
+export interface EntryPointFlowInput {
   nodes: CASNode[]; nodeLookup?: Map<string, CASNode>;
   edges: CASEdge[];
   entryPoints: CASEntryPoint[];
@@ -31,13 +31,13 @@ export interface UserJourneyInput {
   flows?: FlowConcept[];
 }
 
-export interface UserJourneyOptions {
-  maxJourneys?: number;
+export interface EntryPointFlowOptions {
+  maxEntryPointFlows?: number;
 }
 
-export interface UserJourneyResult {
-  journeys: CASUserJourney[];
-  summary: CASUserJourneySummary;
+export interface EntryPointFlowResult {
+  entryPointFlows: CASEntryPointFlow[];
+  summary: CASEntryPointFlowSummary;
 }
 
 const TEST_EDGE_TYPES = new Set(['tests', 'covers']);
@@ -70,7 +70,7 @@ const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);
 const EXTERNAL_ENTRY_NODE_TYPES: Partial<Record<CASEntryPoint['type'], RegExp>> = { event: /(^|[_\s])(page|route|api_route|view|component|widget|screen)([_\s]|$)/, message: /(^|[_\s])(tool|tool_endpoint)([_\s]|$)/ };
 const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
 function isOperationalScriptEntry(file: string | undefined): boolean { return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || '')); }
-function isUserFacingEntry(entryPoint: CASEntryPoint, graph: JourneyGraph): boolean {
+function isUserFacingEntry(entryPoint: CASEntryPoint, graph: EntryPointFlowGraph): boolean {
   if (entryPoint.interaction_reach === 'internal') return false;
   if (entryPoint.interaction_reach === 'external') return true;
   if (USER_FACING_ENTRY_TYPES.has(entryPoint.type)) return true;
@@ -170,7 +170,7 @@ interface EntityAccess {
   access: EntityAccessKind;
 }
 
-interface JourneyGraph {
+interface EntryPointFlowGraph {
   nodesById: Map<string, CASNode>;
   traversalBySource: Map<string, CASEdge[]>;
   containsBySource: Map<string, string[]>;
@@ -188,9 +188,9 @@ interface JourneyGraph {
   initialStatesByOwnerKey: Map<string, string[]>;
 }
 
-export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyOptions = {}): UserJourneyResult {
-  const maxJourneys = options.maxJourneys;
-  const graph = buildJourneyGraph(input);
+export function buildEntryPointFlows(input: EntryPointFlowInput, options: EntryPointFlowOptions = {}): EntryPointFlowResult {
+  const maxEntryPointFlows = options.maxEntryPointFlows;
+  const graph = buildEntryPointFlowGraph(input);
 
   const chainsByEntryPointId = new Map<string, CASCallChain[]>();
   const chainsByEntryNodeId = new Map<string, CASCallChain[]>();
@@ -237,7 +237,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
   const entryPointIsHandlerOrSource = (entryPoint: CASEntryPoint, nodeId: string) =>
     entryPoint.source_node === nodeId || entryPoint.handler?.node_id === nodeId;
 
-  const determineLayer = (node: CASNode, entryPoint: CASEntryPoint): CASUserJourneyStep['layer'] => {
+  const determineLayer = (node: CASNode, entryPoint: CASEntryPoint): CASEntryPointFlowStep['layer'] => {
     const text = `${node.type} ${(node.subcategories || []).join(' ')} ${node.category || ''}`.toLowerCase();
     if (DATA_LAYER_TYPES.test(text)) return 'data';
     if (INFRA_LAYER_TYPES.test(text)) return 'infrastructure';
@@ -253,7 +253,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     return 'business';
   };
 
-  const built: Array<{ journey: CASUserJourney; entryPoint: CASEntryPoint }> = [];
+  const built: Array<{ entryPointFlow: CASEntryPointFlow; entryPoint: CASEntryPoint }> = [];
 
   const sortedEntryPoints = [...input.entryPoints].sort((a, b) => a.id.localeCompare(b.id));
 
@@ -272,7 +272,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     const pathNodeIds = collectPathNodeIds(entryPoint, chains, graph);
     if (pathNodeIds.size === 0) continue;
 
-    const steps: CASUserJourneyStep[] = [];
+    const steps: CASEntryPointFlowStep[] = [];
     const seenStepKeys = new Set<string>();
     for (const [nodeId, depth] of pathNodeIds) {
       const node = graph.nodesById.get(nodeId);
@@ -308,7 +308,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim());
 
     const unshipped = unshippedRoleOf(entryPoint);
-    const journeyKind: CASUserJourney['journey_kind'] = unshipped ? 'system' : (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
+    const entryPointFlowKind: CASEntryPointFlow['flow_kind'] = unshipped ? 'system' : (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
       : (isUserFacingEntry(entryPoint, graph) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli && !isStructuralExecutableCliEntry(entryPoint))
         ? 'user-facing'
@@ -320,14 +320,14 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       ? dedupeCapabilityRelationships(matchingFlows.flatMap(flow => flow.capability_relationships || []))
       : undefined;
 
-    const criticality = unshipped ? 'low' : scoreCriticality(effects, securityBoundaries.length, journeyKind, chains);
+    const criticality = unshipped ? 'low' : scoreCriticality(effects, securityBoundaries.length, entryPointFlowKind, chains);
 
     built.push({
       entryPoint,
-      journey: {
-        id: `journey_${entryPoint.id}`,
-        name: matchingFlows?.length ? matchingFlows[0].name : buildJourneyName(entryPoint, effects),
-        journey_kind: journeyKind,
+      entryPointFlow: {
+        id: `entry_point_flow_${entryPoint.id}`,
+        name: matchingFlows?.length ? matchingFlows[0].name : buildEntryPointFlowName(entryPoint, effects),
+        flow_kind: entryPointFlowKind,
         entry_point_id: entryPoint.id,
         entry: {
           type: entryPoint.type,
@@ -359,10 +359,10 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     });
   }
 
-  disambiguateJourneyNames(built);
+  disambiguateEntryPointFlowNames(built);
 
-  const journeys = built.map(item => item.journey);
-  journeys.sort((a, b) =>
+  const entryPointFlows = built.map(item => item.entryPointFlow);
+  entryPointFlows.sort((a, b) =>
     CRITICALITY_ORDER[a.criticality] - CRITICALITY_ORDER[b.criticality] ||
     (b.capability_relationships?.length || 0) - (a.capability_relationships?.length || 0) ||
     b.terminal_effects.entities_written.length - a.terminal_effects.entities_written.length ||
@@ -370,62 +370,62 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     a.id.localeCompare(b.id)
   );
 
-  const byKind: CASUserJourneySummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
-  for (const journey of journeys) {
-    byKind[journey.journey_kind] += 1;
+  const byKind: CASEntryPointFlowSummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
+  for (const entryPointFlow of entryPointFlows) {
+    byKind[entryPointFlow.flow_kind] += 1;
   }
 
-  const included = selectIncludedJourneys(journeys, maxJourneys);
+  const included = selectIncludedEntryPointFlows(entryPointFlows, maxEntryPointFlows);
 
   return {
-    journeys: included,
+    entryPointFlows: included,
     summary: {
-      total_discovered: journeys.length,
+      total_discovered: entryPointFlows.length,
       included: included.length,
       by_kind: byKind,
     },
   };
 }
 
-function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys?: number): CASUserJourney[] {
-  if (maxJourneys === undefined || maxJourneys <= 0) return sortedJourneys;
-  if (sortedJourneys.length <= maxJourneys) return sortedJourneys;
+function selectIncludedEntryPointFlows(sortedEntryPointFlows: CASEntryPointFlow[], maxEntryPointFlows?: number): CASEntryPointFlow[] {
+  if (maxEntryPointFlows === undefined || maxEntryPointFlows <= 0) return sortedEntryPointFlows;
+  if (sortedEntryPointFlows.length <= maxEntryPointFlows) return sortedEntryPointFlows;
 
   const rankById = new Map<string, number>();
-  sortedJourneys.forEach((journey, index) => rankById.set(journey.id, index));
+  sortedEntryPointFlows.forEach((entryPointFlow, index) => rankById.set(entryPointFlow.id, index));
 
   const includedIds = new Set<string>();
-  const included: CASUserJourney[] = [];
-  const include = (journey: CASUserJourney) => {
-    if (included.length >= maxJourneys || includedIds.has(journey.id)) return;
-    includedIds.add(journey.id);
-    included.push(journey);
+  const included: CASEntryPointFlow[] = [];
+  const include = (entryPointFlow: CASEntryPointFlow) => {
+    if (included.length >= maxEntryPointFlows || includedIds.has(entryPointFlow.id)) return;
+    includedIds.add(entryPointFlow.id);
+    included.push(entryPointFlow);
   };
 
-  const representedKinds = new Set<CASUserJourney['journey_kind']>();
-  for (const journey of sortedJourneys) {
-    if (representedKinds.has(journey.journey_kind)) continue;
-    representedKinds.add(journey.journey_kind);
-    include(journey);
+  const representedKinds = new Set<CASEntryPointFlow['flow_kind']>();
+  for (const entryPointFlow of sortedEntryPointFlows) {
+    if (representedKinds.has(entryPointFlow.flow_kind)) continue;
+    representedKinds.add(entryPointFlow.flow_kind);
+    include(entryPointFlow);
   }
 
   const representedSurfaces = new Set<string>();
-  for (const journey of sortedJourneys) {
-    const surface = `${journey.journey_kind}:${journey.entry.type}`;
+  for (const entryPointFlow of sortedEntryPointFlows) {
+    const surface = `${entryPointFlow.flow_kind}:${entryPointFlow.entry.type}`;
     if (representedSurfaces.has(surface)) continue;
     representedSurfaces.add(surface);
-    include(journey);
+    include(entryPointFlow);
   }
 
-  for (const journey of sortedJourneys) {
-    include(journey);
+  for (const entryPointFlow of sortedEntryPointFlows) {
+    include(entryPointFlow);
   }
 
   included.sort((a, b) => (rankById.get(a.id)! - rankById.get(b.id)!));
-  return included.slice(0, maxJourneys);
+  return included.slice(0, maxEntryPointFlows);
 }
 
-function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
+function buildEntryPointFlowGraph(input: EntryPointFlowInput): EntryPointFlowGraph {
   const nodesById = input.nodeLookup ?? new Map(input.nodes.map(node => [node.id, node]));
 
   const traversalBySource = new Map<string, CASEdge[]>();
@@ -541,7 +541,7 @@ function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
   };
 }
 
-function isLowConfidenceTarget(node: CASNode, graph: JourneyGraph): boolean {
+function isLowConfidenceTarget(node: CASNode, graph: EntryPointFlowGraph): boolean {
   if (!METHOD_LIKE_TYPES.test(node.type)) return false;
   const nameKey = node.name.toLowerCase();
   if (JUNK_CALL_TARGET_NAMES.has(nameKey)) return true;
@@ -556,7 +556,7 @@ function aliasKey(node: CASNode): string | undefined {
   return `${basename.toLowerCase()}::${node.name.toLowerCase()}`;
 }
 
-function nodeAliases(nodeId: string, graph: JourneyGraph): string[] {
+function nodeAliases(nodeId: string, graph: EntryPointFlowGraph): string[] {
   const cached = graph.aliasCache.get(nodeId);
   if (cached) return cached;
   const node = graph.nodesById.get(nodeId);
@@ -583,9 +583,9 @@ function nodeAliases(nodeId: string, graph: JourneyGraph): string[] {
 
 function dedupeCapabilityRelationships(
   relationships: NonNullable<FlowConcept['capability_relationships']>
-): NonNullable<CASUserJourney['capability_relationships']> {
+): NonNullable<CASEntryPointFlow['capability_relationships']> {
   const seen = new Set<string>();
-  const out: NonNullable<CASUserJourney['capability_relationships']> = [];
+  const out: NonNullable<CASEntryPointFlow['capability_relationships']> = [];
   for (const rel of relationships) {
     if (seen.has(rel.capability_id)) continue;
     seen.add(rel.capability_id);
@@ -608,7 +608,7 @@ function dedupeChains(chains: CASCallChain[]): CASCallChain[] {
 function collectPathNodeIds(
   entryPoint: CASEntryPoint,
   chains: CASCallChain[],
-  graph: JourneyGraph
+  graph: EntryPointFlowGraph
 ): Map<string, number> {
   const pathNodeIds = new Map<string, number>();
   const addNode = (nodeId: string | undefined, depth: number) => {
@@ -682,7 +682,7 @@ function collectPathNodeIds(
   return pathNodeIds;
 }
 
-function stateMachineEntryStates(nodeId: string, graph: JourneyGraph): string[] {
+function stateMachineEntryStates(nodeId: string, graph: EntryPointFlowGraph): string[] {
   const node = graph.nodesById.get(nodeId);
   if (!node || !node.name) return [];
   if (!ENTITY_NODE_TYPES.test(node.type) && node.type !== 'class') return [];
@@ -712,7 +712,7 @@ function collectTerminalEffects(
   entryPoint: CASEntryPoint,
   pathNodeIds: Map<string, number>,
   chains: CASCallChain[],
-  graph: JourneyGraph
+  graph: EntryPointFlowGraph
 ): TerminalEffects {
   const externalServices = new Set<string>();
   const messagesEmitted = new Set<string>();
@@ -844,7 +844,7 @@ function collectTerminalEffects(
   });
 
   const seenEntities = new Set<string>();
-  const terminalEntities: CASUserJourneyTerminalEntity[] = [];
+  const terminalEntities: CASEntryPointFlowTerminalEntity[] = [];
   const entitiesWritten = new Set<string>();
   const entitiesRead = new Set<string>();
   for (const candidate of candidates) {
@@ -891,7 +891,7 @@ function collectTerminalEffects(
   };
 }
 
-function entityNodeFor(nodeId: string, graph: JourneyGraph): string | undefined {
+function entityNodeFor(nodeId: string, graph: EntryPointFlowGraph): string | undefined {
   const node = graph.nodesById.get(nodeId);
   if (!node) return undefined;
   if (isEntityNode(node, graph)) return nodeId;
@@ -902,7 +902,7 @@ function entityNodeFor(nodeId: string, graph: JourneyGraph): string | undefined 
   return undefined;
 }
 
-function isEntityNode(node: CASNode, graph: JourneyGraph): boolean {
+function isEntityNode(node: CASNode, graph: EntryPointFlowGraph): boolean {
   if (ENTITY_NODE_TYPES.test(node.type)) return true;
   if (node.type === 'class' && matchEntityByName(node.name, graph.entitiesByKey) !== undefined) return true;
   return false;
@@ -911,7 +911,7 @@ function isEntityNode(node: CASNode, graph: JourneyGraph): boolean {
 function deepestMeaningfulNode(
   entryPoint: CASEntryPoint,
   pathNodeIds: Map<string, number>,
-  graph: JourneyGraph
+  graph: EntryPointFlowGraph
 ): CASNode | undefined {
   let best: { node: CASNode; depth: number } | undefined;
   for (const [nodeId, depth] of pathNodeIds) {
@@ -1051,8 +1051,8 @@ function collectSecurityBoundaries(
   pathNodeIds: Map<string, number>,
   guardEdgesByNode: Map<string, CASEdge[]>,
   nodesById: Map<string, CASNode>
-): CASUserJourney['security_boundaries'] {
-  const boundaries = new Map<string, CASUserJourney['security_boundaries'][number]>();
+): CASEntryPointFlow['security_boundaries'] {
+  const boundaries = new Map<string, CASEntryPointFlow['security_boundaries'][number]>();
 
   const entryGuards = entryPointGuards(entryPoint);
   for (const guard of entryGuards) {
@@ -1101,8 +1101,8 @@ function collectTestsCovering(
 function maxRiskOnPath(
   pathNodeIds: Map<string, number>,
   riskByNode: Map<string, CASChangeRisk>
-): CASUserJourney['risk'] {
-  let max: CASUserJourney['risk'];
+): CASEntryPointFlow['risk'] {
+  let max: CASEntryPointFlow['risk'];
   for (const nodeId of pathNodeIds.keys()) {
     const risk = riskByNode.get(nodeId);
     if (!risk) continue;
@@ -1116,16 +1116,16 @@ function maxRiskOnPath(
 function scoreCriticality(
   effects: TerminalEffects,
   boundaryCount: number,
-  journeyKind: CASUserJourney['journey_kind'],
+  entryPointFlowKind: CASEntryPointFlow['flow_kind'],
   chains: CASCallChain[]
-): CASUserJourney['criticality'] {
+): CASEntryPointFlow['criticality'] {
   let score = 0;
   score += Math.min(effects.entitiesWritten.length, 3) * 3;
   score += Math.min(effects.entitiesRead.length, 3);
   score += Math.min(effects.externalServices.length, 2) * 2;
   score += Math.min(effects.messagesEmitted.length, 2) * 2;
   if (boundaryCount > 0) score += 2;
-  if (journeyKind === 'user-facing') score += 1;
+  if (entryPointFlowKind === 'user-facing') score += 1;
   for (const chain of chains) {
     if (chain.criticality === 'critical') score += 3;
     else if (chain.criticality === 'high') score += 2;
@@ -1137,33 +1137,33 @@ function scoreCriticality(
   return 'low';
 }
 
-function disambiguateJourneyNames(built: Array<{ journey: CASUserJourney; entryPoint: CASEntryPoint }>): void {
+function disambiguateEntryPointFlowNames(built: Array<{ entryPointFlow: CASEntryPointFlow; entryPoint: CASEntryPoint }>): void {
   const counts = new Map<string, number>();
-  for (const { journey } of built) {
-    counts.set(journey.name, (counts.get(journey.name) || 0) + 1);
+  for (const { entryPointFlow } of built) {
+    counts.set(entryPointFlow.name, (counts.get(entryPointFlow.name) || 0) + 1);
   }
 
   const assigned = new Set<string>();
   for (const item of built) {
-    let name = item.journey.name;
+    let name = item.entryPointFlow.name;
     if ((counts.get(name) || 0) > 1 || assigned.has(name)) {
       const MAX_DEPTH = 3;
       let widened = '';
       for (let depth = 1; depth <= MAX_DEPTH; depth += 1) {
-        widened = `${name} (${journeyDiscriminator(item.entryPoint, depth)})`;
+        widened = `${name} (${entryPointFlowDiscriminator(item.entryPoint, depth)})`;
         if (!assigned.has(widened)) break;
       }
       name = widened;
     }
     if (assigned.has(name)) {
-      name = `${item.journey.name} (${journeyDiscriminator(item.entryPoint)}, ${item.entryPoint.id})`;
+      name = `${item.entryPointFlow.name} (${entryPointFlowDiscriminator(item.entryPoint)}, ${item.entryPoint.id})`;
     }
     assigned.add(name);
-    item.journey.name = name;
+    item.entryPointFlow.name = name;
   }
 }
 
-function journeyDiscriminator(entryPoint: CASEntryPoint, depth = 1): string {
+function entryPointFlowDiscriminator(entryPoint: CASEntryPoint, depth = 1): string {
   const method = entryPoint.trigger?.method?.toUpperCase();
   const path = entryPoint.trigger?.path;
   if (method && path) return `${method} ${path}`;
@@ -1197,7 +1197,7 @@ export function discriminatorLabel(raw: string | undefined, depth = 1): string {
   return label || value;
 }
 
-function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
+function buildEntryPointFlowName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
   const action = describeEntryAction(entryPoint, effects);
   const outcome = describeTerminalOutcome(effects);
   const name = (!outcome || outcome === 'main') ? action : `${action} -> ${outcome}`;

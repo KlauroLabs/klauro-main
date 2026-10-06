@@ -351,6 +351,7 @@ export function resolveToolProfile(): ToolProfile {
 
 export const PILLAR_TOOL_NAMES = [
   'get_user_journeys',
+  'get_entry_point_flows',
   'get_paradigm_conformance',
   'get_data_lineage',
   'diff_behavior',
@@ -378,6 +379,7 @@ export const CORE_TOOL_NAMES = [
   'validate_agent_change',
   'get_product_map',
   'get_user_journeys',
+  'get_entry_point_flows',
   'run_answer_pack',
   'get_server_version',
 ];
@@ -4898,20 +4900,41 @@ function registerTools(server: McpServer) {
     'get_user_journeys',
     {
       title: 'Get User Journeys',
-      description: 'Deterministic end-to-end user journeys — a DERIVED VIEW over Flows (get_flow_concepts), not an independently built structure: each journey is the user-facing subset of the flow set, presented from the entry point a real user/caller reaches (docs/cas/SPECIFICATION.md §0). A journey only exists when a flow projection can actually be derived for it; mechanism-shaped entries (an operational script, a scheduled job, a middleware/plumbing path) never produce one — no placeholder journeys. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created") and, when derivable, the capability_relationships it inherits directly from its underlying flow (the same evidence flows_to_capabilities measures). With journey_id: returns full journey detail with steps, security boundaries, and covering tests. Without: returns paginated journey summaries with a human-readable title/headline and the compact step chain (node_id, name, layer, depth) per journey, so no 2nd call is needed just to see the steps. Set include_steps false to drop the step chain from the list for very large listings. Use format markdown for a readable journey brief.',
+      description: 'Cross-boundary journeys: end-to-end user actions that chain flows across program boundaries (the engine journeys), each with ordered steps and the boundary crossings between them. A journey is not a flow: one program\'s entry point followed to its effects is an entry-point flow (get_entry_point_flows). Returns an empty list with a notice when the analysis has no journeys.',
       inputSchema: {
         path: z.string().describe('Project path'),
         journey_id: z.string().optional().describe('Specific journey ID for full detail'),
-        kind: z.enum(['user-facing', 'system', 'scheduled']).optional().describe('Filter by journey kind'),
+        kind: z.string().optional().describe("Use 'representative' to list only representative journeys"),
         limit: z.number().optional().describe('Max results when listing (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
-        format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown' for a human-readable journey brief"),
-        include_steps: z.boolean().optional().describe('Include the compact step chain (node_id, name, layer, depth) per journey in the list form (default true)'),
+        format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown'"),
+        include_steps: z.boolean().optional().describe('Include the ordered steps per journey (default true)'),
       } as any,
     } as any,
     async ({ path, journey_id, kind, limit, offset, format, include_steps }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getUserJourneys(cas, { journeyId: journey_id, kind, limit, offset, format, includeSteps: include_steps }));
+    })
+  );
+
+  server.registerTool(
+    'get_entry_point_flows',
+    {
+      title: 'Get Entry-point Flows',
+      description: 'Deterministic end-to-end entry-point flows — a DERIVED VIEW over Flows (get_flow_concepts), not an independently built structure: each journey is the user-facing subset of the flow set, presented from the entry point a real user/caller reaches (docs/cas/SPECIFICATION.md §0). A journey only exists when a flow projection can actually be derived for it; mechanism-shaped entries (an operational script, a scheduled job, a middleware/plumbing path) never produce one — no placeholder journeys. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created") and, when derivable, the capability_relationships it inherits directly from its underlying flow (the same evidence flows_to_capabilities measures). With flow_id: returns full journey detail with steps, security boundaries, and covering tests. Without: returns paginated journey summaries with a human-readable title/headline and the compact step chain (node_id, name, layer, depth) per entry-point flow, so no 2nd call is needed just to see the steps. Set include_steps false to drop the step chain from the list for very large listings. Use format markdown for a readable entry-point flow brief.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        flow_id: z.string().optional().describe('Specific entry-point flow ID for full detail'),
+        kind: z.enum(['user-facing', 'system', 'scheduled']).optional().describe('Filter by entry-point flow kind'),
+        limit: z.number().optional().describe('Max results when listing (default 25)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+        format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown' for a human-readable entry-point flow brief"),
+        include_steps: z.boolean().optional().describe('Include the compact step chain (node_id, name, layer, depth) per entry-point flow in the list form (default true)'),
+      } as any,
+    } as any,
+    async ({ path, flow_id, kind, limit, offset, format, include_steps }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getEntryPointFlows(cas, { flowId: flow_id, kind, limit, offset, format, includeSteps: include_steps }));
     })
   );
 
@@ -4972,7 +4995,7 @@ function registerTools(server: McpServer) {
     'get_data_lineage',
     {
       title: 'Get Data Lineage',
-      description: 'Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first). With entity_id (or entity, an alias that also matches by display name, case-insensitively): returns full lineage detail for one entity, or an explicit not-found error naming known entities if it does not resolve. Without either: returns ranked summaries.',
+      description: 'Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which entry-point flows carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first). With entity_id (or entity, an alias that also matches by display name, case-insensitively): returns full lineage detail for one entity, or an explicit not-found error naming known entities if it does not resolve. Without either: returns ranked summaries.',
       inputSchema: {
         path: z.string().describe('Project path'),
         entity_id: z.string().optional().describe('Specific data entity ID for full lineage detail'),
@@ -5008,7 +5031,7 @@ function registerTools(server: McpServer) {
     'get_product_map',
     {
       title: 'Get Product Map',
-      description: 'What this codebase actually does, in one call — read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the user journeys and entities they serve, sensitive data and exposure highlights, conventions with open deviations, health (tests, implementation gaps, top risks), and — when the repo carries infra-as-code — a runtime_topology section describing, per deployable, what ships it, the ports/services it exposes, the routes it serves, and the channels/databases/storage it provisions; each with coverage caveats so you know what the analysis is sure about. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
+      description: 'What this codebase actually does, in one call — read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the entry-point flows and entities they serve, sensitive data and exposure highlights, conventions with open deviations, health (tests, implementation gaps, top risks), and — when the repo carries infra-as-code — a runtime_topology section describing, per deployable, what ships it, the ports/services it exposes, the routes it serves, and the channels/databases/storage it provisions; each with coverage caveats so you know what the analysis is sure about. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
       inputSchema: {
         path: z.string().describe('Project path'),
         section: z.enum(['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'runtime_topology', 'coverage_caveats']).optional().describe('Return only one section of the map'),

@@ -916,7 +916,7 @@ export interface CachingInfo {
 
 export interface UserBehaviorInfo {
   primaryAction: string;
-  userJourney: string[];
+  entryPointFlow: string[];
   conversionRate?: number;
   frequentErrors: string[];
 }

@@ -987,17 +987,17 @@ it('derives a generic user audience only from a matching user-facing journey', (
   const feed = capability('Read articles from the feed', 'Articles are listed without requiring manual refresh.');
   feed.operations = [{ entry_point_id: 'feed', entry_point_type: 'http', action: 'List' }];
   const journey = {
-    id: 'journey-feed', name: 'Read feed', journey_kind: 'user-facing' as const, entry_point_id: 'feed',
+    id: 'journey-feed', name: 'Read feed', flow_kind: 'user-facing' as const, entry_point_id: 'feed',
     entry: { type: 'http', name: 'GET /feed' }, steps: [],
     terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
     terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'low' as const,
     call_chain_ids: [], exit_point_ids: [],
   };
-  const grounded = evaluateCapabilityCatalogAudience([feed], [], [], [], { userJourneys: [journey] });
+  const grounded = evaluateCapabilityCatalogAudience([feed], [], [], [], { entryPointFlows: [journey] });
   expect(grounded.rejections[0].missingAudience).toBe('Users');
 
   const unrelated = evaluateCapabilityCatalogAudience([feed], [], [], [], {
-    userJourneys: [{ ...journey, entry_point_id: 'other' }],
+    entryPointFlows: [{ ...journey, entry_point_id: 'other' }],
   });
   expect(unrelated.rejections[0].missingAudience).toBeUndefined();
 });

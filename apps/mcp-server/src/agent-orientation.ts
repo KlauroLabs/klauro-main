@@ -1,6 +1,6 @@
 import type { CASEntryPoint, CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isInstalledToolName } from './installed-tool-registry';
-import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
 
 interface OrientationTask {
   task_type?: string;
@@ -61,7 +61,7 @@ export function buildTargetlessOrientationContext(input: {
       purpose: step.purpose,
       required: step.required,
     })),
-    source_reading_rule: 'Use product maps, conceptual analysis, user journeys, and answer packs first. Read source only when those comprehension surfaces report a concrete evidence gap.',
+    source_reading_rule: 'Use product maps, conceptual analysis, entry-point flows, and answer packs first. Read source only when those comprehension surfaces report a concrete evidence gap.',
     gaps: readinessGaps,
   };
 }
@@ -108,10 +108,10 @@ export function orientationAnchorNodes(
   isExcludedNode: (node: CASNode) => boolean,
 ): CASNode[] {
   const nodeIndex = new Map(cas.nodes.map(node => [node.id, node]));
-  const journeyNodeIds = projectUserJourneysFromCas(cas).journeys
+  const journeyNodeIds = projectEntryPointFlowsFromCas(cas).entryPointFlows
     .slice()
     .sort((left, right) =>
-      journeyKindRank(left.journey_kind) - journeyKindRank(right.journey_kind) ||
+      journeyKindRank(left.flow_kind) - journeyKindRank(right.flow_kind) ||
       (CRITICALITY_RANK[left.criticality] ?? 4) - (CRITICALITY_RANK[right.criticality] ?? 4)
     )
     .flatMap(journey => [journey.entry?.handler_node_id, ...(journey.steps || []).map(step => step.node_id)])
@@ -133,8 +133,8 @@ export function rankOrientationEntryPoints(
   isExcludedEntry: (entry: CASEntryPoint) => boolean,
 ): CASEntryPoint[] {
   const journeyRank = new Map<string, number>();
-  for (const journey of projectUserJourneysFromCas(cas).journeys) {
-    const score = journeyKindRank(journey.journey_kind) * 100 + (CRITICALITY_RANK[journey.criticality] ?? 4) * 10;
+  for (const journey of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
+    const score = journeyKindRank(journey.flow_kind) * 100 + (CRITICALITY_RANK[journey.criticality] ?? 4) * 10;
     const current = journeyRank.get(journey.entry_point_id);
     if (current === undefined || score < current) journeyRank.set(journey.entry_point_id, score);
   }

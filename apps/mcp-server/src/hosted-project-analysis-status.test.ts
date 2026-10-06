@@ -100,7 +100,7 @@ function largeReadyCas(): CASOutput {
     category: 'core',
     criticality: 'high',
     operations: [],
-    journeys: Array.from({ length: 40 }, (_, j) => ({ id: `journey-${index}-${j}`, name: `Journey ${index} ${j} `.repeat(4) })),
+    entry_point_flows: Array.from({ length: 40 }, (_, j) => ({ id: `journey-${index}-${j}`, name: `Journey ${index} ${j} `.repeat(4) })),
     entities: ['Order', 'Invoice'],
   });
   return {
@@ -123,7 +123,8 @@ function largeReadyCas(): CASOutput {
     product_map: {
       identity: { name: 'system', domain: 'orders', description: 'd', unanalyzed_languages: [] },
       capabilities: Array.from({ length: 60 }, (_, index) => ({ ...capability(index), tests_present: true, risk_level: 'low' })),
-      journeys: { total: 2400, user_facing: 1000, system: 1300, scheduled: 100, top: [] },
+      entry_point_flows: { total: 2400, user_facing: 1000, system: 1300, scheduled: 100, top: [] },
+      journeys: { total: 0, representative: 0, top: [] },
       data: { entities: 200, sensitive: [], exposure_highlights: [] },
       conventions: { paradigms: [], open_deviations: { error: 0, warning: 0, info: 0 } },
       health: { tests: { total: 10, passing: 0, failing: 0 }, implementation: { complete: 0, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },
@@ -163,7 +164,7 @@ test('the hosted analysis status of a large analysis stays compact and names the
   assert.equal('product_map' in status, false);
   const overview = status.product_map_overview as Record<string, any>;
   assert.equal(overview.capabilities, 60);
-  assert.equal(overview.journeys.total, 2400);
+  assert.equal(overview.entry_point_flows.total, 2400);
   assert.match(overview.detail, /get_product_map/);
   const summary = status.summary as Record<string, any>;
   assert.equal(summary.database_entities.length, 15);

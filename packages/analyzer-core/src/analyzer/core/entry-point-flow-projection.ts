@@ -8,20 +8,20 @@ import type {
   CASExitPoint,
   CASNode,
   CASOutput,
-  CASUserJourney,
-  CASUserJourneyStep,
-  CASUserJourneyTerminalEntity,
-  CASUserJourneySummary,
+  CASEntryPointFlow,
+  CASEntryPointFlowStep,
+  CASEntryPointFlowTerminalEntity,
+  CASEntryPointFlowSummary,
   FlowConcept,
 } from '../../types/cas.types';
 import { classifyGuardKind } from './guard-classification';
 import { isGuardEnforcementEdge } from './guard-relationships';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
-import { buildCronScheduleIndex, findCronSchedule, USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { buildCronScheduleIndex, findCronSchedule, USER_FACING_ENTRY_TYPES } from './entry-point-flow-builder';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
 import { hasUnresolvedDependencyEffect } from './exit-point-effects';
 
-export interface JourneyProjectionInput {
+export interface EntryPointFlowProjectionInput {
   nodes: CASNode[];
   edges: CASEdge[];
   entryPoints: CASEntryPoint[];
@@ -32,12 +32,12 @@ export interface JourneyProjectionInput {
   flows: FlowConcept[];
 }
 
-export interface JourneyProjectionResult {
-  journeys: CASUserJourney[];
-  summary: CASUserJourneySummary;
+export interface EntryPointFlowProjectionResult {
+  entryPointFlows: CASEntryPointFlow[];
+  summary: CASEntryPointFlowSummary;
 }
 
-interface JourneyProjectionIndexes {
+interface EntryPointFlowProjectionIndexes {
   exitsById: Map<string, CASExitPoint[]>;
   exitsBySource: Map<string, CASExitPoint[]>;
   exitOrder: Map<CASExitPoint, number>;
@@ -70,7 +70,7 @@ function flowNodeIds(flow: FlowConcept, entryPoint: CASEntryPoint): Map<string, 
   return result;
 }
 
-function journeyLayer(node: CASNode | undefined, entryPoint: CASEntryPoint): CASUserJourneyStep['layer'] {
+function entryPointFlowLayer(node: CASNode | undefined, entryPoint: CASEntryPoint): CASEntryPointFlowStep['layer'] {
   if (!node) return 'business';
   const text = `${node.type} ${node.category || ''} ${(node.subcategories || []).join(' ')}`.toLowerCase();
   if (DATA_LAYER_TYPES.test(text)) return 'data';
@@ -81,11 +81,11 @@ function journeyLayer(node: CASNode | undefined, entryPoint: CASEntryPoint): CAS
   return 'business';
 }
 
-function journeyKind(
+function entryPointFlowKind(
   entryPoint: CASEntryPoint,
   entryNode: CASNode | undefined,
   cronSchedule: string | undefined,
-): CASUserJourney['journey_kind'] {
+): CASEntryPointFlow['flow_kind'] {
   if (unshippedRoleOf(entryPoint)) return 'system';
   if (entryPoint.type === 'schedule' || cronSchedule) return 'scheduled';
   const genericCli = entryPoint.type === 'cli' &&
@@ -113,7 +113,7 @@ function appendIndexed<T>(index: Map<string, T[]>, key: string | undefined, valu
   else index.set(key, [value]);
 }
 
-function buildProjectionIndexes(input: JourneyProjectionInput): JourneyProjectionIndexes {
+function buildProjectionIndexes(input: EntryPointFlowProjectionInput): EntryPointFlowProjectionIndexes {
   const exitsById = new Map<string, CASExitPoint[]>();
   const exitsBySource = new Map<string, CASExitPoint[]>();
   const exitOrder = new Map<CASExitPoint, number>();
@@ -152,7 +152,7 @@ function relatedChains(
   flow: FlowConcept,
   entryPoint: CASEntryPoint,
   nodeIds: ReadonlySet<string>,
-  indexes: JourneyProjectionIndexes,
+  indexes: EntryPointFlowProjectionIndexes,
 ): CASCallChain[] {
   const candidates = new Set<CASCallChain>();
   for (const key of [entryPoint.id, entryPoint.source_node, entryPoint.handler?.node_id]) {
@@ -166,28 +166,28 @@ function relatedChains(
     });
 }
 
-function selectJourneys(journeys: CASUserJourney[], maxJourneys?: number): CASUserJourney[] {
-  if (!maxJourneys || maxJourneys <= 0 || journeys.length <= maxJourneys) return journeys;
-  const selected: CASUserJourney[] = [];
+function selectEntryPointFlows(entryPointFlows: CASEntryPointFlow[], maxEntryPointFlows?: number): CASEntryPointFlow[] {
+  if (!maxEntryPointFlows || maxEntryPointFlows <= 0 || entryPointFlows.length <= maxEntryPointFlows) return entryPointFlows;
+  const selected: CASEntryPointFlow[] = [];
   const ids = new Set<string>();
   for (const kind of ['user-facing', 'system', 'scheduled'] as const) {
-    const journey = journeys.find(candidate => candidate.journey_kind === kind);
-    if (journey && selected.length < maxJourneys) {
-      selected.push(journey);
-      ids.add(journey.id);
+    const entryPointFlow = entryPointFlows.find(candidate => candidate.flow_kind === kind);
+    if (entryPointFlow && selected.length < maxEntryPointFlows) {
+      selected.push(entryPointFlow);
+      ids.add(entryPointFlow.id);
     }
   }
-  for (const journey of journeys) {
-    if (selected.length >= maxJourneys) break;
-    if (!ids.has(journey.id)) selected.push(journey);
+  for (const entryPointFlow of entryPointFlows) {
+    if (selected.length >= maxEntryPointFlows) break;
+    if (!ids.has(entryPointFlow.id)) selected.push(entryPointFlow);
   }
   return selected;
 }
 
-export function projectUserJourneysFromFlows(
-  input: JourneyProjectionInput,
-  options: { maxJourneys?: number } = {},
-): JourneyProjectionResult {
+export function projectEntryPointFlowsFromFlows(
+  input: EntryPointFlowProjectionInput,
+  options: { maxEntryPointFlows?: number } = {},
+): EntryPointFlowProjectionResult {
   const nodesById = new Map(input.nodes.map(node => [node.id, node]));
   const entriesByKey = new Map<string, CASEntryPoint>();
   for (const entryPoint of input.entryPoints) {
@@ -197,7 +197,7 @@ export function projectUserJourneysFromFlows(
   }
   const risksByNode = new Map((input.changeRisks || []).map(risk => [risk.node_id, risk.risk_level]));
   const cronSchedules = buildCronScheduleIndex(input.nodes);
-  const journeys: CASUserJourney[] = [];
+  const entryPointFlows: CASEntryPointFlow[] = [];
   const indexes = buildProjectionIndexes(input);
 
   for (const flow of input.flows) {
@@ -211,7 +211,7 @@ export function projectUserJourneysFromFlows(
     const participants = [...new Map((input.dataEntities || [])
       .filter(entity => flow.entities.includes(entity.id) || entityEvidence.includes(entity.name.toLowerCase()))
       .map(entity => [entity.id, entity])).values()];
-    const terminalEntities: CASUserJourneyTerminalEntity[] = participants
+    const terminalEntities: CASEntryPointFlowTerminalEntity[] = participants
       .filter(entity => entityEvidence.includes(entity.name.toLowerCase()))
       .map(entity => ({
         entity_id: entity.id,
@@ -248,7 +248,7 @@ export function projectUserJourneysFromFlows(
         externalServices.add(exitPoint.target?.service_id || exitPoint.target?.sdk || '');
       }
     }
-    const securityBoundaries = new Map<string, CASUserJourney['security_boundaries'][number]>();
+    const securityBoundaries = new Map<string, CASEntryPointFlow['security_boundaries'][number]>();
     for (const guard of entryPoint.security?.guards || []) {
       securityBoundaries.set(guard, { name: guard, mechanism: 'entry-guard', kind: classifyGuardKind(guard) });
     }
@@ -270,7 +270,7 @@ export function projectUserJourneysFromFlows(
       for (const testId of nodesById.get(nodeId)?.testing?.tested_by || []) tests.add(testId);
     }
     const chains = relatedChains(flow, entryPoint, nodeIds, indexes);
-    let risk: CASUserJourney['risk'];
+    let risk: CASEntryPointFlow['risk'];
     for (const nodeId of nodeIds) {
       const candidate = risksByNode.get(nodeId);
       if (candidate && (!risk || RISK_ORDER[candidate] > RISK_ORDER[risk])) risk = candidate;
@@ -278,17 +278,17 @@ export function projectUserJourneysFromFlows(
     const commandName = String((entryPoint.metadata as any)?.commandName || '').trim();
     const cronSchedule = entryPoint.type === 'cli' && commandName ? findCronSchedule(commandName, cronSchedules) : undefined;
     const unshipped = unshippedRoleOf(entryPoint);
-    const kind = journeyKind(entryPoint, nodesById.get(entryPoint.handler?.node_id || entryPoint.source_node), cronSchedule);
+    const kind = entryPointFlowKind(entryPoint, nodesById.get(entryPoint.handler?.node_id || entryPoint.source_node), cronSchedule);
     const steps = flow.steps.map((step, index) => {
       const nodeId = step.code_mappings?.[0]?.code_region.node_id || step.functions[0]?.function_id ||
         entryPoint.handler?.node_id || entryPoint.source_node;
-      return { node_id: nodeId, name: step.name, layer: journeyLayer(nodesById.get(nodeId), entryPoint), depth: index };
+      return { node_id: nodeId, name: step.name, layer: entryPointFlowLayer(nodesById.get(nodeId), entryPoint), depth: index };
     });
     const boundaries = [...securityBoundaries.values()].sort((left, right) => left.name.localeCompare(right.name));
-    journeys.push({
-      id: `journey_${flow.flow_id}`,
+    entryPointFlows.push({
+      id: `entry_point_flow_${flow.flow_id}`,
       name: flow.name,
-      journey_kind: kind,
+      flow_kind: kind,
       entry_point_id: entryPoint.id,
       entry: {
         type: entryPoint.type, name: entryPoint.name, method: entryPoint.trigger?.method,
@@ -315,16 +315,16 @@ export function projectUserJourneysFromFlows(
       ...(flow.capability_relationships?.length ? { capability_relationships: flow.capability_relationships } : {}),
     });
   }
-  journeys.sort((left, right) =>
+  entryPointFlows.sort((left, right) =>
     CRITICALITY_ORDER[left.criticality] - CRITICALITY_ORDER[right.criticality] || left.id.localeCompare(right.id));
-  const byKind: CASUserJourneySummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
-  for (const journey of journeys) byKind[journey.journey_kind] += 1;
-  const included = selectJourneys(journeys, options.maxJourneys);
-  return { journeys: included, summary: { total_discovered: journeys.length, included: included.length, by_kind: byKind } };
+  const byKind: CASEntryPointFlowSummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
+  for (const entryPointFlow of entryPointFlows) byKind[entryPointFlow.flow_kind] += 1;
+  const included = selectEntryPointFlows(entryPointFlows, options.maxEntryPointFlows);
+  return { entryPointFlows: included, summary: { total_discovered: entryPointFlows.length, included: included.length, by_kind: byKind } };
 }
 
-export function projectUserJourneysFromCas(cas: CASOutput): JourneyProjectionResult {
-  if (cas.flows) return projectUserJourneysFromFlows({
+export function projectEntryPointFlowsFromCas(cas: CASOutput): EntryPointFlowProjectionResult {
+  if (cas.flows) return projectEntryPointFlowsFromFlows({
     nodes: cas.nodes || [],
     edges: cas.edges || [],
     entryPoints: cas.entry_points || [],
@@ -334,10 +334,10 @@ export function projectUserJourneysFromCas(cas: CASOutput): JourneyProjectionRes
     changeRisks: cas.change_risks || [],
     flows: cas.flows,
   });
-  const journeys = cas.user_journeys || [];
-  const byKind: CASUserJourneySummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
-  for (const journey of journeys) byKind[journey.journey_kind] += 1;
-  return { journeys, summary: cas.user_journey_summary || {
-    total_discovered: journeys.length, included: journeys.length, by_kind: byKind,
+  const entryPointFlows = cas.entry_point_flows || [];
+  const byKind: CASEntryPointFlowSummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
+  for (const entryPointFlow of entryPointFlows) byKind[entryPointFlow.flow_kind] += 1;
+  return { entryPointFlows, summary: cas.entry_point_flow_summary || {
+    total_discovered: entryPointFlows.length, included: entryPointFlows.length, by_kind: byKind,
   } };
 }

@@ -1,15 +1,15 @@
 import { buildTerminalSignal } from '../../analyzer/core/terminal-signal';
-import type { CASUserJourney, SystemCapability } from '../../types/cas.types';
+import type { CASEntryPointFlow, SystemCapability } from '../../types/cas.types';
 
-function journey(overrides: Partial<CASUserJourney>): CASUserJourney {
+function journey(overrides: Partial<CASEntryPointFlow>): CASEntryPointFlow {
   return {
     id: overrides.id || 'journey_test',
     title: 'Test journey',
-    journey_kind: overrides.journey_kind || 'user-facing',
+    flow_kind: overrides.flow_kind || 'user-facing',
     terminal_entities: overrides.terminal_entities || [],
     steps: overrides.steps || [],
     ...overrides,
-  } as CASUserJourney;
+  } as CASEntryPointFlow;
 }
 
 function capability(name: string, relatedEntities: string[]): SystemCapability {
@@ -34,8 +34,8 @@ describe('buildTerminalSignal', () => {
 
   test('user-facing journeys weigh more than system journeys', () => {
     const journeys = [
-      journey({ id: 'j1', journey_kind: 'system', terminal_entities: [{ name: 'AuditLog', access: 'created', terminal_kind: 'entity' }] }),
-      journey({ id: 'j2', journey_kind: 'user-facing', terminal_entities: [{ name: 'Order', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j1', flow_kind: 'system', terminal_entities: [{ name: 'AuditLog', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', flow_kind: 'user-facing', terminal_entities: [{ name: 'Order', access: 'created', terminal_kind: 'entity' }] }),
     ];
     const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
     expect(signal.ranked_entities[0].name).toBe('Order');

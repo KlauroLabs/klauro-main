@@ -138,7 +138,7 @@ test('retains public behavior with a domain terminal journey when entity linkage
   const surface = { ...candidate('publish', 'POST /release', 'supporting', ['Publish']), evidence_kind: 'behavior-surface' as const };
   surface.operations[0].entry_point_type = 'http';
   const [classified] = classifyCapabilityEvidence([surface], [], undefined, {
-    userJourneys: [{ entry_point_id: surface.operations[0].entry_point_id, journey_kind: 'user-facing',
+    entryPointFlows: [{ entry_point_id: surface.operations[0].entry_point_id, flow_kind: 'user-facing',
       terminal_effects: { entities_written: ['Release'], entities_read: [], messages_emitted: [] }, terminal_entities: [] }],
   } as any);
   expect(classified.evidence_role).toBe('unresolved');
@@ -413,8 +413,8 @@ describe('capability evidence roles', () => {
       { entryPoints: [{
         id: 'jobsites-page', source_node: 'jobsites-node', type: 'page',
         name: 'Job Sites', interaction_reach: 'external',
-      }] as any, userJourneys: [{
-        id: 'jobsites-journey', name: 'View job sites', journey_kind: 'user-facing',
+      }] as any, entryPointFlows: [{
+        id: 'jobsites-journey', name: 'View job sites', flow_kind: 'user-facing',
         entry_point_id: 'jobsites-page', entry: { type: 'page', name: 'Job Sites' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['Job'], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
@@ -450,16 +450,16 @@ describe('capability evidence roles', () => {
           { id: 'jobsites-page', source_node: 'jobsites-node', type: 'http', name: 'GET /job/job-sites/:userId', interaction_reach: 'external' },
           { id: 'jobsites-click', source_node: 'jobsites-click-node', type: 'event', name: 'Jobsites click', interaction_reach: 'external' },
         ] as any,
-        userJourneys: [
+        entryPointFlows: [
           {
-            id: 'jobsites-journey', name: 'View job sites', journey_kind: 'user-facing',
+            id: 'jobsites-journey', name: 'View job sites', flow_kind: 'user-facing',
             entry_point_id: 'jobsites-page', entry: { type: 'http', name: 'Job Sites' }, steps: [],
             terminal_effects: { entities_written: [], entities_read: ['Job'], external_services: [], messages_emitted: [] },
             terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
             call_chain_ids: [], exit_point_ids: [],
           },
           {
-            id: 'category-journey', name: 'Organize applications', journey_kind: 'user-facing',
+            id: 'category-journey', name: 'Organize applications', flow_kind: 'user-facing',
             entry_point_id: 'category-click-0', entry: { type: 'event', name: 'Categories click' }, steps: [],
             terminal_effects: { entities_written: ['Category'], entities_read: [], external_services: [], messages_emitted: [] },
             terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
@@ -520,8 +520,8 @@ describe('capability evidence roles', () => {
       [outcome],
       [entity('entity_order', 'Order', 'persisted-entity', true)],
       undefined,
-      { userJourneys: [{
-        id: 'orders-journey', name: 'Review orders', journey_kind: 'user-facing', entry_point_id: 'orders-page',
+      { entryPointFlows: [{
+        id: 'orders-journey', name: 'Review orders', flow_kind: 'user-facing', entry_point_id: 'orders-page',
         entry: { type: 'page', name: 'orders' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['Order'], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
@@ -540,8 +540,8 @@ describe('capability evidence roles', () => {
       [crud],
       [entity('entity_rule', 'Rule', 'persisted-entity', true)],
       undefined,
-      { userJourneys: crud.operations.map((operation, index) => ({
-        id: `journey-${index}`, name: `Rule operation ${index}`, journey_kind: 'user-facing' as const,
+      { entryPointFlows: crud.operations.map((operation, index) => ({
+        id: `journey-${index}`, name: `Rule operation ${index}`, flow_kind: 'user-facing' as const,
         entry_point_id: operation.entry_point_id, entry: { type: 'http', name: 'rules' }, steps: [],
         terminal_effects: { entities_written: ['Rule'], entities_read: [], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high' as const,
@@ -559,8 +559,8 @@ describe('capability evidence roles', () => {
     settings.evidence_kind = 'behavior-surface';
     settings.operations[0].entry_point_id = 'prompt-settings-update';
     const [classified] = classifyCapabilityEvidence([settings], [], undefined, {
-      userJourneys: [{
-        id: 'settings-journey', name: 'Update rule prompt settings', journey_kind: 'user-facing',
+      entryPointFlows: [{
+        id: 'settings-journey', name: 'Update rule prompt settings', flow_kind: 'user-facing',
         entry_point_id: 'prompt-settings-update', entry: { type: 'http', name: 'settings' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'low',
@@ -576,8 +576,8 @@ describe('capability evidence roles', () => {
     const registration = candidate('register', 'Register', 'supporting', ['Handle']);
     registration.operations[0].entry_point_type = 'event';
     const [classified] = classifyCapabilityEvidence([registration], [], undefined, {
-      userJourneys: [{
-        id: 'register-journey', name: 'Register Change', journey_kind: 'user-facing', entry_point_id: 'register_0',
+      entryPointFlows: [{
+        id: 'register-journey', name: 'Register Change', flow_kind: 'user-facing', entry_point_id: 'register_0',
         entry: { type: 'event', name: 'change' }, steps: [],
         terminal_effects: {
           entities_written: [], entities_read: [],
@@ -605,12 +605,12 @@ describe('capability evidence roles', () => {
     expect(classified.evidence_role).toBe('supporting-mechanism');
   });
 
-  test('uses a terminal user journey as product evidence without relying on capability vocabulary', () => {
+  test('uses a terminal entry-point flow as product evidence without relying on capability vocabulary', () => {
     const outcome = candidate('outcome', 'Present workspace changes', 'core', ['Present']);
     outcome.operations[0].entry_point_id = 'workspace-page';
     const [classified] = classifyCapabilityEvidence([outcome], [], undefined, {
-      userJourneys: [{
-        id: 'journey', name: 'Review changes', journey_kind: 'user-facing', entry_point_id: 'workspace-page',
+      entryPointFlows: [{
+        id: 'journey', name: 'Review changes', flow_kind: 'user-facing', entry_point_id: 'workspace-page',
         entry: { type: 'page', name: 'workspace' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['Workspace'], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
@@ -627,8 +627,8 @@ describe('capability evidence roles', () => {
     const [classified] = classifyCapabilityEvidence([surface], [], {
       productDocSummary: 'The product gives AI agents behavior-level software comprehension.',
     }, {
-      userJourneys: [{
-        id: 'journey', name: 'Search nodes', journey_kind: 'user-facing', entry_point_id: 'search-nodes',
+      entryPointFlows: [{
+        id: 'journey', name: 'Search nodes', flow_kind: 'user-facing', entry_point_id: 'search-nodes',
         entry: { type: 'message', name: 'search_nodes' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['CASNode'], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
@@ -1357,8 +1357,8 @@ describe('shell executable evidence roles', () => {
         id: 'shell-entry', source_node: 'shell-file', source_analyzer: 'shell', type: 'cli', name: 'Shell script: export',
         metadata: { source_analyzer: 'shell', cli_origin: 'filesystem-executable', cli_product_role: 'supporting-mechanism' },
       }],
-      userJourneys: [{
-        id: 'shell-journey', name: 'Export reports', journey_kind: 'user-facing', entry_point_id: 'shell-entry',
+      entryPointFlows: [{
+        id: 'shell-journey', name: 'Export reports', flow_kind: 'user-facing', entry_point_id: 'shell-entry',
         entry: { type: 'cli', name: 'export' }, steps: [], terminal_effects: { entities_written: [], entities_read: [], external_services: ['storage'], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium', call_chain_ids: [], exit_point_ids: [],
       }],
@@ -1448,11 +1448,11 @@ describe('structural CRUD evidence classification', () => {
       { productDocTitle: 'Distributed Pet Clinic', productDocSummary: 'A sample application demonstrating a microservices architecture.' },
       {
         entryPoints: [{ id: 'get-pet-types', type: 'http', name: 'Get Pet Types', interaction_reach: 'external', trigger: { method: 'GET', path: '/pettypes' } }] as any,
-        userJourneys: [{
+        entryPointFlows: [{
           id: 'view-pet-types',
           name: 'View Pet Types',
           entry_point_id: 'get-pet-types',
-          journey_kind: 'user-facing',
+          flow_kind: 'user-facing',
           steps: [],
           terminal_entities: [{ entity_id: 'entity_pettype', terminal_kind: 'entity' }],
           terminal_effects: { entities_read: ['entity_pettype'], entities_written: [], messages_emitted: [] },
@@ -1498,11 +1498,11 @@ describe('structural CRUD evidence classification', () => {
           { id: 'create-visit', type: 'http', name: 'Create Visit', interaction_reach: 'external', trigger: { method: 'POST', path: '/owners/:ownerId/pets/:petId/visits' } },
           { id: 'list-visits', type: 'http', name: 'List Visits', interaction_reach: 'external', trigger: { method: 'GET', path: '/owners/:ownerId/pets/:petId/visits' } },
         ] as any,
-        userJourneys: [{
+        entryPointFlows: [{
           id: 'record-visits',
           name: 'Record Pet Visits',
           entry_point_id: 'create-visit',
-          journey_kind: 'user-facing',
+          flow_kind: 'user-facing',
           steps: [],
           terminal_entities: [{ entity_id: 'entity_visit', terminal_kind: 'entity' }],
           terminal_effects: { entities_read: ['entity_visit'], entities_written: ['entity_visit'], messages_emitted: [] },
@@ -1537,11 +1537,11 @@ describe('structural CRUD evidence classification', () => {
       { productDocTitle: 'Distributed Pet Clinic', productDocSummary: 'Users can find veterinarian information by specialty.' },
       {
         entryPoints: [{ id: 'get-vets', type: 'http', name: 'Find Veterinarians', interaction_reach: 'external', trigger: { method: 'GET', path: '/vets' } }] as any,
-        userJourneys: [{
+        entryPointFlows: [{
           id: 'find-veterinarians',
           name: 'Find Veterinarians',
           entry_point_id: 'get-vets',
-          journey_kind: 'user-facing',
+          flow_kind: 'user-facing',
           steps: [],
           terminal_entities: [{ entity_id: 'entity_vet', terminal_kind: 'entity' }],
           terminal_effects: { entities_read: ['entity_vet'], entities_written: [], messages_emitted: [] },

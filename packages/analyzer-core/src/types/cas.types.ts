@@ -84,9 +84,9 @@ export interface CASOutput extends CASSourceInputCatalog {
   behavior_surfaces?: SystemCapability[];
   system_purpose?: SystemPurpose;
 
-  user_journeys?: CASUserJourney[];
+  entry_point_flows?: CASEntryPointFlow[];
   causal_journeys?: import('./causal-journey.types').CASCausalJourney[];
-  user_journey_summary?: CASUserJourneySummary;
+  entry_point_flow_summary?: CASEntryPointFlowSummary;
   data_lineage?: CASEntityLineage[];
   domain_concepts?: CASDomainConcept[];
   enhanced_system_purpose?: EnhancedSystemPurpose;
@@ -1237,14 +1237,14 @@ export interface CASProductMapCapability {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   category: 'core' | 'supporting' | 'admin' | 'internal';
   criticality: 'critical' | 'high' | 'medium' | 'low';
-  journeys: Array<{ id: string; name: string }>;
+  entry_point_flows: Array<{ id: string; name: string }>;
   entities: string[];
   tests_present: boolean;
   confidence?: number;
   risk_level: 'low' | 'medium' | 'high';
 }
 
-export interface CASProductMapJourney {
+export interface CASProductMapEntryPointFlow {
   id: string;
   name: string;
   kind: 'user-facing' | 'system' | 'scheduled';
@@ -1252,6 +1252,14 @@ export interface CASProductMapJourney {
   boundaries: string[];
   tests: number;
   unshipped?: string;
+}
+
+export interface CASProductMapJourney {
+  id: string;
+  label: string;
+  does: string;
+  steps: number;
+  representative: boolean;
 }
 
 export interface CASProductMap {
@@ -1277,11 +1285,16 @@ export interface CASProductMap {
     nested_repositories?: CASNestedRepository[];
   };
   capabilities: CASProductMapCapability[];
-  journeys: {
+  entry_point_flows: {
     total: number;
     user_facing: number;
     system: number;
     scheduled: number;
+    top: CASProductMapEntryPointFlow[];
+  };
+  journeys: {
+    total: number;
+    representative: number;
     top: CASProductMapJourney[];
   };
   data: {
@@ -3692,14 +3705,14 @@ export interface SystemPurpose {
   secondary_types?: string[];
 }
 
-export interface CASUserJourneyStep {
+export interface CASEntryPointFlowStep {
   node_id: string;
   name: string;
   layer: 'entry' | 'business' | 'data' | 'infrastructure';
   depth: number;
 }
 
-export interface CASUserJourneyTerminalEntity {
+export interface CASEntryPointFlowTerminalEntity {
   entity_id?: string;
   name: string;
   access: 'created' | 'updated' | 'deleted' | 'read';
@@ -3714,10 +3727,10 @@ export interface CASUserJourneyTerminalEntity {
 
 export type CASGuardKind = 'authentication' | 'authorization' | 'rate-limiting' | 'validation' | 'unknown';
 
-export interface CASUserJourney {
+export interface CASEntryPointFlow {
   id: string;
   name: string;
-  journey_kind: 'user-facing' | 'system' | 'scheduled';
+  flow_kind: 'user-facing' | 'system' | 'scheduled';
   entry_point_id: string;
   entry: {
     type: string;
@@ -3726,14 +3739,14 @@ export interface CASUserJourney {
     path_or_trigger?: string;
     handler_node_id?: string;
   };
-  steps: CASUserJourneyStep[];
+  steps: CASEntryPointFlowStep[];
   terminal_effects: {
     entities_written: string[];
     entities_read: string[];
     external_services: string[];
     messages_emitted: string[];
   };
-  terminal_entities: CASUserJourneyTerminalEntity[];
+  terminal_entities: CASEntryPointFlowTerminalEntity[];
   security_boundaries: Array<{
     node_id?: string;
     name: string;
@@ -3777,7 +3790,7 @@ export interface CASUserJourney {
   }>;
 }
 
-export interface CASUserJourneySummary {
+export interface CASEntryPointFlowSummary {
   total_discovered: number;
   included: number;
   by_kind: {

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as nodePath from 'path';
 import { sourceExclusionReadiness } from './source-coverage';
 import type { CASEntryPoint, CASOutput, CASNode, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
-import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
 import {
   assessChangeRisk,
   buildSummary,
@@ -35,7 +35,7 @@ import { buildIdiomContextForAgent } from './idiom-query';
 import { summarizeAnalysisFreshness } from './freshness';
 import { buildAgentContextFreshness } from './agent-context-freshness';
 import { resolveFileAwareTestScript } from './agent-test-command';
-import { journeyHeadline } from './journey-presentation';
+import { entryPointFlowHeadline } from './entry-point-flow-presentation';
 import {
   classifyAnalysisProfile,
   expectedCallChainCount,
@@ -387,7 +387,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
   const pillarEntityName = selectedNode && ['entity', 'class', 'model'].includes(String(selectedNode.type || '').toLowerCase())
     ? selectedNode.name
     : undefined;
-  const journeyContext = buildJourneyContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
+  const entryPointFlowContext = buildEntryPointFlowContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
   const lineageContext = buildLineageContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
   const conformanceContext = buildConformanceContextForAgent(cas, { file: pillarTargetFile || undefined });
   const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
@@ -464,7 +464,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
       ...(fabricContext ? { fabric_context: fabricContext } : {}),
       entry_context: entryContext,
       ...(lineageContext ? { lineage_context: lineageContext } : {}),
-      ...(journeyContext ? { journey_context: journeyContext } : {}),
+      ...(entryPointFlowContext ? { entry_point_flow_context: entryPointFlowContext } : {}),
       ...(conformanceContext ? { conformance_context: conformanceContext } : {}),
     },
     file_read_plan: fileReadPlan,
@@ -1214,8 +1214,8 @@ function buildProductOrientationLine(cas: CASOutput): string | null {
   const capabilities = (map.capabilities || []).slice(0, 3).map(capability => capability.name).filter(Boolean);
   const parts = [
     capabilities.length > 0 ? `Top capabilities: ${capabilities.join(', ')}` : '',
-    typeof map.journeys?.total === 'number' ? `${map.journeys.total} entry-point flows` : '',
-    (cas.causal_journeys?.length || 0) > 0 ? `${cas.causal_journeys!.length} cross-boundary journeys` : '',
+    typeof map.entry_point_flows?.total === 'number' ? `${map.entry_point_flows.total} entry-point flows` : '',
+    typeof map.journeys?.total === 'number' && map.journeys.total > 0 ? `${map.journeys.total} cross-boundary journeys` : '',
     Array.isArray(map.data?.sensitive) ? `${map.data.sensitive.length} sensitive entities` : '',
   ].filter(Boolean);
   if (parts.length === 0) return null;
@@ -1235,29 +1235,29 @@ function trimToPillarTokenBudget<T>(items: T[]): T[] {
   return selected;
 }
 
-export function buildJourneyContextForAgent(
+export function buildEntryPointFlowContextForAgent(
   cas: CASOutput,
   opts: { nodeId?: string; file?: string; entityName?: string } = {},
 ) {
-  const journeys = projectUserJourneysFromCas(cas).journeys;
-  if (journeys.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
+  const flows = projectEntryPointFlowsFromCas(cas).entryPointFlows;
+  if (flows.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
   const rootPath = cas.system?.root_path;
   const nodeIndex = getAgentNodeIndex(cas);
   const targetFile = opts.file ? normalizeSourceFile(opts.file, rootPath) : '';
-  const matching = journeys.filter(journey => {
-    const journeyNodeIds = [
-      journey.entry?.handler_node_id,
-      ...(journey.steps || []).map(step => step.node_id),
-      ...(journey.terminal_entities || []).map(terminal => terminal.node_id),
+  const matching = flows.filter(flow => {
+    const flowNodeIds = [
+      flow.entry?.handler_node_id,
+      ...(flow.steps || []).map(step => step.node_id),
+      ...(flow.terminal_entities || []).map(terminal => terminal.node_id),
     ].filter((id): id is string => Boolean(id));
-    if (opts.nodeId && journeyNodeIds.includes(opts.nodeId)) return true;
+    if (opts.nodeId && flowNodeIds.includes(opts.nodeId)) return true;
     if (opts.entityName) {
-      if ((journey.terminal_entities || []).some(terminal => terminal.name === opts.entityName)) return true;
-      const effects = journey.terminal_effects;
+      if ((flow.terminal_entities || []).some(terminal => terminal.name === opts.entityName)) return true;
+      const effects = flow.terminal_effects;
       if ((effects?.entities_written || []).includes(opts.entityName) || (effects?.entities_read || []).includes(opts.entityName)) return true;
     }
     if (!targetFile) return false;
-    return journeyNodeIds.some(id => {
+    return flowNodeIds.some(id => {
       const sourceFile = nodeIndex.get(id)?.source?.file;
       const file = sourceFile ? normalizeSourceFile(sourceFile, rootPath) : undefined;
       return Boolean(file && projectPathsMatch(file, targetFile));
@@ -1267,13 +1267,13 @@ export function buildJourneyContextForAgent(
   return {
     unit: ENTRY_POINT_FLOW_UNIT,
     total_matching: matching.length,
-    journeys: trimToPillarTokenBudget(matching.slice(0, 5).map(journey => ({
-      id: journey.id,
-      headline: journeyHeadline(journey).slice(0, 160),
-      kind: journey.journey_kind,
-      criticality: journey.criticality,
-      boundaries: [...new Set((journey.security_boundaries || []).slice(0, 3).map(boundary => boundary.name))],
-      tests: (journey.tests_covering || []).length,
+    entry_point_flows: trimToPillarTokenBudget(matching.slice(0, 5).map(flow => ({
+      id: flow.id,
+      headline: entryPointFlowHeadline(flow).slice(0, 160),
+      kind: flow.flow_kind,
+      criticality: flow.criticality,
+      boundaries: [...new Set((flow.security_boundaries || []).slice(0, 3).map(boundary => boundary.name))],
+      tests: (flow.tests_covering || []).length,
     }))),
   };
 }
@@ -1408,7 +1408,7 @@ export function buildConformanceContextForAgent(
 
 function compactPillarWorkContext(
   context: any,
-  limits: { journeys: number; entities: number; deviations: number },
+  limits: { entry_point_flows: number; entities: number; deviations: number },
 ): Record<string, any> {
   const result: Record<string, any> = {};
   if (!context || typeof context !== 'object') return result;
@@ -1421,17 +1421,17 @@ function compactPillarWorkContext(
       entities: context.lineage_context.entities.slice(0, limits.entities),
     };
   }
-  if (context.journey_context?.journeys?.length) {
-    result.journey_context = {
-      unit: context.journey_context.unit,
-      total_matching: context.journey_context.total_matching,
-      journeys: context.journey_context.journeys.slice(0, limits.journeys).map((journey: any) => ({
-        id: journey.id,
-        headline: journey.headline,
-        kind: journey.kind,
-        criticality: journey.criticality,
-        boundaries: Array.isArray(journey.boundaries) ? journey.boundaries.slice(0, 2) : journey.boundaries,
-        tests: journey.tests,
+  if (context.entry_point_flow_context?.entry_point_flows?.length) {
+    result.entry_point_flow_context = {
+      unit: context.entry_point_flow_context.unit,
+      total_matching: context.entry_point_flow_context.total_matching,
+      entry_point_flows: context.entry_point_flow_context.entry_point_flows.slice(0, limits.entry_point_flows).map((flow: any) => ({
+        id: flow.id,
+        headline: flow.headline,
+        kind: flow.kind,
+        criticality: flow.criticality,
+        boundaries: Array.isArray(flow.boundaries) ? flow.boundaries.slice(0, 2) : flow.boundaries,
+        tests: flow.tests,
       })),
     };
   }
@@ -2317,7 +2317,7 @@ function compactSmallRepoMinimalAgentContext<T extends Record<string, any>>(cont
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 2),
       ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
-      ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
+      ...compactPillarWorkContext(workContext, { entry_point_flows: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: compactTinyFileReadPlan(context.file_read_plan, task),
     execution_brief: compactSmallRepoExecutionBrief(context.execution_brief),
@@ -2371,7 +2371,7 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 1),
       ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
-      ...compactPillarWorkContext(workContext, { journeys: 1, entities: 1, deviations: 1 }),
+      ...compactPillarWorkContext(workContext, { entry_point_flows: 1, entities: 1, deviations: 1 }),
     },
     file_read_plan: fileReadPlan,
     execution_brief: context.execution_brief,
@@ -2665,7 +2665,7 @@ function compactTokenMinimalAgentContext<T extends Record<string, any>>(context:
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 3),
       ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
-      ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
+      ...compactPillarWorkContext(workContext, { entry_point_flows: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: fileReadPlan,
     execution_brief: context.execution_brief,
@@ -2980,7 +2980,7 @@ function compactMicroWorkContext(context: any) {
     operational_priorities: compactOperationalPrioritiesForAgent(context.operational_priorities, 3),
     ...(compactFabricContextForAgent(context.fabric_context) ? { fabric_context: compactFabricContextForAgent(context.fabric_context) } : {}),
     entry_context: compactEntryContextForMicroRepo(context.entry_context),
-    ...compactPillarWorkContext(context, { journeys: 3, entities: 3, deviations: 3 }),
+    ...compactPillarWorkContext(context, { entry_point_flows: 3, entities: 3, deviations: 3 }),
   };
 }
 
@@ -5615,7 +5615,7 @@ function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {
   return {
     total_call_chains: cas.call_chains?.length || 0,
     measured_call_chains: cas.flow_coverage?.length || 0,
-    entry_point_flows: projectUserJourneysFromCas(cas).journeys.length,
+    entry_point_flows: projectEntryPointFlowsFromCas(cas).entryPointFlows.length,
     causal_journeys: cas.causal_journeys?.length || 0,
     critical_flows: cas.flow_summary?.total_critical_flows || 0,
     by_coverage_status: byStatus,
@@ -5749,9 +5749,10 @@ function stepsForTask(path: string, task: Required<Pick<AgentTask, 'task_type'>>
   return [
     ...base,
     step(2, 'get_summary', { path }, 'Read the system purpose and condensed capability summary.', true),
-    step(3, 'get_product_map', { path }, 'Read the product-level capability, deployable, data, and journey map.', true),
+    step(3, 'get_product_map', { path }, 'Read the product-level capability, deployable, data, entry-point flow, and journey map.', true),
     step(4, 'get_conceptual_analysis', { path }, 'Understand capabilities as flows and ordered behavior steps.', true),
-    step(5, 'get_user_journeys', { path, limit: 20 }, 'Inspect source-to-terminal user and system journeys.', true),
+    step(5, 'get_entry_point_flows', { path, limit: 20 }, 'Inspect entry-point flows from each entry point to its effects.', true),
+    step(6, 'get_user_journeys', { path, limit: 20 }, 'Inspect cross-boundary journeys that chain flows across programs.', false),
     step(6, 'run_answer_pack', { path, pack: 'mastery' }, 'Answer core codebase questions with evidence.', true),
   ];
 }

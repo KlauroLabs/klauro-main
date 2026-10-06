@@ -3,7 +3,7 @@
   "truckspy_create_company": {
     "id": "journey_entry_post__api_web_partner_companies_createCompany",
     "name": "Create company -> Company created (+7 more) (POST /api/web/partner/companies)",
-    "journey_kind": "user-facing",
+    "flow_kind": "user-facing",
     "entry_point_id": "entry_post__api_web_partner_companies_createCompany",
     "entry": {
       "type": "http",
@@ -248,7 +248,7 @@
   "washup_update_location_event": {
     "id": "journey_entry_route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
     "name": "Update location event -> InvitationEvent deleted (+7 more) (PATCH /location_events/:id)",
-    "journey_kind": "user-facing",
+    "flow_kind": "user-facing",
     "entry_point_id": "entry_route_config_routes_rb_PATCH__location_events__id_270_331b1d9d",
     "entry": {
       "type": "http",
@@ -399,7 +399,7 @@
   "klauro_delete_work_order": {
     "id": "journey_entry_route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d",
     "name": "Delete work order -> WorkOrder deleted (+1 more)",
-    "journey_kind": "user-facing",
+    "flow_kind": "user-facing",
     "entry_point_id": "entry_route_config_routes_rb_DELETE__work_orders__id_5_ec6c5e7d",
     "entry": {
       "type": "http",

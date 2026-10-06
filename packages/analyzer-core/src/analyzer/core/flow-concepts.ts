@@ -27,7 +27,7 @@ import type { CASOutput,
 } from '../../types/cas.types';
 import { hasUnresolvedDependencyEffect } from './exit-point-effects';
 import { buildTerminalSignal } from './terminal-signal';
-import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './entry-point-flow-builder';
 import { cleanRawFallbackName, dedupeAdjacentWords, flowNameForEntryPoint, titleCaseWords } from './flow-entry-naming';
 export { dedupeAdjacentWords } from './flow-entry-naming';
 import { guardConstraintKind } from './guard-classification';

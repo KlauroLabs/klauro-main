@@ -353,10 +353,10 @@ const EMISSION_SPECS: EmissionSpec[] = [
   },
   {
     key: 'journeys',
-    label: 'User journeys (C2)',
+    label: 'Entry-point flows (C2)',
     description: 'get_user_journeys projects the canonical flows into a user-facing end-to-end view at read time.',
     campABCannot:
-      'a user journey is an end-to-end flow across layers; symbol graphs see local calls and embeddings retrieve snippets — neither composes an entry→…→terminal-entity journey.',
+      'a entry-point flow is an end-to-end flow across layers; symbol graphs see local calls and embeddings retrieve snippets — neither composes an entry→…→terminal-entity journey.',
     fields: ['flows', 'steps', 'flow_graph', 'flow_summary'],
   },
   {

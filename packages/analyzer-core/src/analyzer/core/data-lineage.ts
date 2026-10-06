@@ -4,7 +4,7 @@ import {
   CASEntryPoint,
   CASExitPoint,
   CASDataEntity,
-  CASUserJourney,
+  CASEntryPointFlow,
   CASEntityLineage,
   CASEntityLineageAccessor,
   CASEntityLineageExternalRecipient,
@@ -21,7 +21,7 @@ export interface DataLineageInput {
   dataEntities: CASDataEntity[];
   exitPoints: CASExitPoint[];
   entryPoints: CASEntryPoint[];
-  userJourneys: CASUserJourney[];
+  entryPointFlows: CASEntryPointFlow[];
 }
 
 
@@ -93,8 +93,8 @@ interface LineageIndex {
   exitPointsById: Map<string, CASExitPoint>;
   databaseExitsByResourceKey: Map<string, CASExitPoint[]>;
   entityNodeIdsByKey: Map<string, string[]>;
-  journeysByEntityKey: Map<string, CASUserJourney[]>;
-  journeysByEntityId: Map<string, CASUserJourney[]>;
+  journeysByEntityKey: Map<string, CASEntryPointFlow[]>;
+  journeysByEntityId: Map<string, CASEntryPointFlow[]>;
 }
 
 export function buildDataLineage(input: DataLineageInput): CASEntityLineage[] {
@@ -177,16 +177,16 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
     entityNodeIdsByKey.set(key, list);
   }
 
-  const journeysByEntityKey = new Map<string, CASUserJourney[]>();
-  const journeysByEntityId = new Map<string, CASUserJourney[]>();
-  const linkJourney = (map: Map<string, CASUserJourney[]>, key: string, journey: CASUserJourney) => {
+  const journeysByEntityKey = new Map<string, CASEntryPointFlow[]>();
+  const journeysByEntityId = new Map<string, CASEntryPointFlow[]>();
+  const linkJourney = (map: Map<string, CASEntryPointFlow[]>, key: string, journey: CASEntryPointFlow) => {
     const list = map.get(key) || [];
     if (!list.includes(journey)) {
       list.push(journey);
       map.set(key, list);
     }
   };
-  for (const journey of input.userJourneys) {
+  for (const journey of input.entryPointFlows) {
     for (const terminal of journey.terminal_entities || []) {
       if (terminal.entity_id) linkJourney(journeysByEntityId, terminal.entity_id, journey);
       for (const key of entityNameKeys(terminal.name)) linkJourney(journeysByEntityKey, key, journey);
@@ -347,8 +347,8 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   };
 }
 
-function collectJourneys(entity: CASDataEntity, index: LineageIndex): CASUserJourney[] {
-  const journeys = new Set<CASUserJourney>(index.journeysByEntityId.get(entity.id) || []);
+function collectJourneys(entity: CASDataEntity, index: LineageIndex): CASEntryPointFlow[] {
+  const journeys = new Set<CASEntryPointFlow>(index.journeysByEntityId.get(entity.id) || []);
   for (const key of entityNameKeys(entity.name)) {
     for (const journey of index.journeysByEntityKey.get(key) || []) journeys.add(journey);
   }
@@ -363,7 +363,7 @@ function isAuthProtectionKind(kind: CASGuardKind): boolean {
   return kind === 'authentication' || kind === 'authorization';
 }
 
-function boundaryLabel(journey: CASUserJourney): string {
+function boundaryLabel(journey: CASEntryPointFlow): string {
   const method = journey.entry?.method?.toUpperCase();
   const pathOrTrigger = journey.entry?.path_or_trigger;
   if (method && pathOrTrigger) return `${method} ${pathOrTrigger}`;

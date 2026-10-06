@@ -199,7 +199,7 @@
       "reason": "Supported source-file extensions are removed from evidence-derived entry labels and never infer behavior or product purpose."
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-projection.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-projection.ts",
       "name": "access",
       "category": "closed-operation-taxonomy",
       "reason": "Mutation verbs classify an already-observed terminal effect as read or updated; the exit point and terminal node remain source-derived."

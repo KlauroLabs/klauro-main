@@ -42,7 +42,7 @@ function lineageInputFor(exitPoints: CASExitPoint[]): DataLineageInput {
     ],
     exitPoints,
     entryPoints: [],
-    userJourneys: [],
+    entryPointFlows: [],
   };
 }
 

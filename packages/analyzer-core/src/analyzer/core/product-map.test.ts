@@ -36,11 +36,11 @@ test('capability tests_present is true when its own entry point backs a tested j
       },
     ],
     entities: [],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_ep1',
         name: 'Fetch Feed',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep1',
         entry: { type: 'http', name: 'GET /feed' },
         steps: [],
@@ -85,11 +85,11 @@ test('capability tests_present is true from a READ-only journey that touches one
       },
     ],
     entities: [{ id: 'entity_apikey', name: 'APIKey' } as any],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_list',
         name: 'List API Keys',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep_list', // deliberately NOT one of the capability's own operations
         entry: { type: 'http', name: 'GET /api-keys' },
         steps: [],
@@ -123,11 +123,11 @@ test('capability tests_present stays false (honest) when no journey has any real
       },
     ],
     entities: [],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_ep1',
         name: 'Fetch Feed',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep1',
         entry: { type: 'http', name: 'GET /feed' },
         steps: [],
@@ -183,11 +183,11 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
       },
     ],
     entities: [{ id: 'entity_feed', name: 'Feed' } as any],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_ep1',
         name: 'Fetch Feed',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep1',
         entry: { type: 'http', name: 'GET /feed' },
         steps: [],
@@ -203,7 +203,7 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
       {
         id: 'journey_ep2',
         name: 'Get Nav Metadata',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep2',
         entry: { type: 'http', name: 'GET /nav' },
         steps: [],
@@ -222,7 +222,7 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
   const map = buildProductMap(cas);
 
   const capByName = new Map(map.capabilities.map(c => [c.name, c]));
-  const journeyByName = new Map(map.journeys.top.map(j => [j.name, j]));
+  const journeyByName = new Map(map.entry_point_flows.top.map(j => [j.name, j]));
 
   // A capability structurally anchored on a real-tests journey must agree
   // with that journey's own reported test count.
@@ -290,11 +290,11 @@ test('INVARIANT: file-adjacency test evidence (no traced call edge) still satisf
       },
     ],
     entities: [],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_ep1',
         name: 'Vets',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'ep1',
         entry: { type: 'http', name: 'GET /vets', handler_node_id: 'ep1_node' },
         steps: [],
@@ -333,7 +333,7 @@ test('capability tests_present is true from its OWN operations when NO journey l
       { id: 'ep-orphan', type: 'schedule', name: 'poll', source_node: 'handler1', handler: { node_id: 'handler1' } },
     ],
     // Deliberately empty: this is the shape that used to force a false negative.
-    user_journeys: [],
+    entry_point_flows: [],
     test_suites: [
       { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
     ],
@@ -353,7 +353,7 @@ test('capability tests_present is true from its OWN operations when NO journey l
   const map = buildProductMap(cas);
   const capability = map.capabilities.find(entry => entry.name === 'Ingest Feeds On A Schedule');
   assert.ok(capability, 'capability should be present');
-  assert.equal(capability!.journeys.length, 0, 'precondition: no journey links to this capability');
+  assert.equal(capability!.entry_point_flows.length, 0, 'precondition: no journey links to this capability');
   assert.equal(
     capability!.tests_present,
     true,
@@ -369,7 +369,7 @@ test('capability tests_present stays false when no test suite matches its own op
     entry_points: [
       { id: 'ep-untested', type: 'schedule', name: 'sweep', source_node: 'handler2', handler: { node_id: 'handler2' } },
     ],
-    user_journeys: [],
+    entry_point_flows: [],
     // A real suite exists, but for UNRELATED code — the stem must not match.
     test_suites: [
       { name: 'poller', file_path: 'src/feed/poller.test.ts', tests: [] },
@@ -416,8 +416,8 @@ test('product map excludes entity-overlap-only journeys from every capability sh
       },
     ],
     entities: [{ id: 'entity_graph', name: 'SoftwareGraph' } as any],
-    user_journeys: [{
-      id: 'journey_health', name: 'Check health', journey_kind: 'user-facing', entry_point_id: 'health',
+    entry_point_flows: [{
+      id: 'journey_health', name: 'Check health', flow_kind: 'user-facing', entry_point_id: 'health',
       entry: { type: 'message', name: 'health' }, steps: [],
       terminal_effects: { entities_written: [], entities_read: ['SoftwareGraph'], external_services: [], messages_emitted: [] },
       terminal_entities: [{ name: 'SoftwareGraph', access: 'read' }], security_boundaries: [], tests_covering: [],
@@ -427,7 +427,7 @@ test('product map excludes entity-overlap-only journeys from every capability sh
   } as any);
 
   const map = buildProductMap(cas);
-  assert.deepEqual(map.capabilities.map(capability => capability.journeys), [[], []]);
+  assert.deepEqual(map.capabilities.map(capability => capability.entry_point_flows), [[], []]);
 });
 
 test('product map keeps direct operation relationships and uniquely owned entity fallbacks', () => {
@@ -441,16 +441,16 @@ test('product map keeps direct operation relationships and uniquely owned entity
       },
     ],
     entities: [{ id: 'entity_context', name: 'AgentContext' } as any],
-    user_journeys: [
+    entry_point_flows: [
       {
-        id: 'journey_agent', name: 'Get agent context', journey_kind: 'user-facing', entry_point_id: 'agent_context',
+        id: 'journey_agent', name: 'Get agent context', flow_kind: 'user-facing', entry_point_id: 'agent_context',
         entry: { type: 'message', name: 'get_agent_context' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
         terminal_entities: [], security_boundaries: [], tests_covering: [], risk: 'low', criticality: 'high',
         call_chain_ids: [], exit_point_ids: [],
       },
       {
-        id: 'journey_context_read', name: 'Review context', journey_kind: 'user-facing', entry_point_id: 'review_context',
+        id: 'journey_context_read', name: 'Review context', flow_kind: 'user-facing', entry_point_id: 'review_context',
         entry: { type: 'page', name: 'review_context' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['AgentContext'], external_services: [], messages_emitted: [] },
         terminal_entities: [{ name: 'AgentContext', access: 'read' }], security_boundaries: [], tests_covering: [],
@@ -460,15 +460,15 @@ test('product map keeps direct operation relationships and uniquely owned entity
   } as any);
 
   const map = buildProductMap(cas);
-  assert.deepEqual(map.capabilities[0].journeys.map(journey => journey.id), ['journey_agent', 'journey_context_read']);
+  assert.deepEqual(map.capabilities[0].entry_point_flows.map(journey => journey.id), ['journey_agent', 'journey_context_read']);
 });
 
-test('product map reuses a supplied canonical journey projection', () => {
+test('product map reuses a supplied canonical entry-point flow projection', () => {
   const projection = {
-    journeys: [{
-      id: 'journey_canonical',
+    entryPointFlows: [{
+      id: 'entry_point_flow_canonical',
       name: 'Reach a verified outcome',
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: 'entry_canonical',
       entry: { type: 'http', name: 'POST /outcome' },
       steps: [],
@@ -485,6 +485,21 @@ test('product map reuses a supplied canonical journey projection', () => {
   } as any;
 
   const map = buildProductMap(baseCas(), projection);
-  assert.equal(map.journeys.total, 1);
-  assert.equal(map.journeys.top[0]?.id, 'journey_canonical');
+  assert.equal(map.entry_point_flows.total, 1);
+  assert.equal(map.entry_point_flows.top[0]?.id, 'entry_point_flow_canonical');
+});
+
+test('product map keeps entry-point flows and cross-boundary journeys as separate sections', () => {
+  const base = { cas_version: '1.11.0', system: { name: 'x', type: 'application' }, nodes: [], edges: [], entry_points: [], exit_points: [] } as unknown as CASOutput;
+  const withoutJourneys = buildProductMap(base);
+  assert.equal(withoutJourneys.journeys.total, 0);
+  assert.equal(withoutJourneys.entry_point_flows.total, 0);
+  const withJourneys = buildProductMap({
+    ...base,
+    causal_journeys: [{ id: 'j1', label: 'Send a message', does: 'types and delivers', rank: 1, representative: true, steps: [{ file: 'a.ts', symbol: 'a', does: 'sends' }] }],
+  } as unknown as CASOutput);
+  assert.equal(withJourneys.journeys.total, 1);
+  assert.equal(withJourneys.journeys.representative, 1);
+  assert.equal(withJourneys.journeys.top[0].steps, 1);
+  assert.equal(withJourneys.entry_point_flows.total, 0);
 });

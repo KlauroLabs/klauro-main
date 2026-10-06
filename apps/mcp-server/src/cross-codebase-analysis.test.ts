@@ -543,10 +543,10 @@ test('workspace analysis composes completed CAS outputs without source reads', (
       confidence: 0.86,
       evidence: ['entry:admin', 'entity:agent'],
     }] as any,
-    user_journeys: [{
+    entry_point_flows: [{
       id: 'journey:agent-registration',
       name: 'Agent Registration',
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: 'entry:admin',
       call_chain_ids: [],
       exit_point_ids: [],
@@ -953,10 +953,10 @@ test('interpretation updates workspace narrative, domains, and primary capabilit
         sensitive_fields: ['token'],
         exposure: { sensitive: true },
       }] as any,
-      user_journeys: [{
+      entry_point_flows: [{
         id: 'journey:agent-enrollment',
         name: 'Agent Enrollment',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'entry:agent',
         exit_point_ids: [],
         terminal_effects: { entities_written: ['Agent'], entities_read: [], messages_emitted: [], external_services: [] },
@@ -1098,7 +1098,7 @@ test('workspace domains demote thin entity-only concepts below terminal product 
       { id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } },
       { id: 'entity_customer', name: 'Customer', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
     ] as any,
-    user_journeys: [{
+    entry_point_flows: [{
       id: 'journey:analysis',
       name: 'Analyze Codebase',
       classification: 'primary',
@@ -1165,7 +1165,7 @@ test('workspace domains reject token-frequency concepts sourced only from shell 
     entities: [
       { id: 'entity_policy', name: 'Policy', fields: [], lifecycle: { created_by: ['enroll'], read_by: ['enroll'], updated_by: [], deleted_by: [] } },
     ] as any,
-    user_journeys: [{
+    entry_point_flows: [{
       id: 'journey:enroll',
       name: 'Enroll Device',
       classification: 'primary',
@@ -1249,7 +1249,7 @@ test('interpretation rejects item descriptions that are useful-sounding but not 
         { id: 'entity_analysis_run', name: 'AnalysisRun', fields: [], lifecycle: { created_by: ['route'], read_by: ['route'], updated_by: [], deleted_by: [] } },
         { id: 'entity_customer', name: 'Customer', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       ] as any,
-      user_journeys: [{
+      entry_point_flows: [{
         id: 'journey:analysis',
         name: 'Analyze Codebase',
         classification: 'primary',
@@ -1499,7 +1499,7 @@ test('ranks evidence-backed product capabilities above unsupported generic bucke
 	      { id: 'entity:device', name: 'Device', fields: [], lifecycle: { created_by: ['device-route'], read_by: [], updated_by: [], deleted_by: [] } },
 	      { id: 'entity:access-request', name: 'AccessRequest', fields: [], lifecycle: { created_by: ['access-route'], read_by: [], updated_by: [], deleted_by: [] } },
 	    ] as any,
-	    user_journeys: [{
+	    entry_point_flows: [{
 	      id: 'journey:device-enrollment',
 	      name: 'Enroll a device for access',
 	      criticality: 'high',
@@ -3601,10 +3601,10 @@ test('WAS lookup indexing visits a 50k-node CAS once and uses bounded reference 
       target: { endpoint: `https://service-${index}.example/items` },
       operation: { method: 'GET' },
     } as any)),
-    user_journeys: Array.from({ length: referenceCount }, (_, index) => ({
+    entry_point_flows: Array.from({ length: referenceCount }, (_, index) => ({
       id: `workflow-${index}`,
       name: `Process item ${index}`,
-      journey_kind: 'system',
+      flow_kind: 'system',
       entry_point_id: `entry-${index}`,
       exit_point_ids: [`exit-${index}`],
       terminal_effects: { entities_written: [], entities_read: [], messages_emitted: [], external_services: [] },
@@ -3677,10 +3677,10 @@ test('indexed WAS lookups preserve complete interface, workflow, alias, and risk
       target: { endpoint: 'https://orders-worker.example/events' },
       operation: { method: 'POST' },
     } as any],
-    user_journeys: [{
+    entry_point_flows: [{
       id: 'orders-workflow',
       name: 'Process orders',
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: 'entry-orders',
       exit_point_ids: ['exit-orders'],
       terminal_effects: { entities_written: ['Order'], entities_read: [], messages_emitted: [], external_services: [] },

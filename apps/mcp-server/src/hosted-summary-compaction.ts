@@ -30,11 +30,15 @@ export function compactSubCasNodes(index: SubCasNodeIndex) {
 export function productMapOverview(map: CASProductMap) {
   return {
     capabilities: map.capabilities.length,
+    entry_point_flows: {
+      total: map.entry_point_flows.total,
+      user_facing: map.entry_point_flows.user_facing,
+      system: map.entry_point_flows.system,
+      scheduled: map.entry_point_flows.scheduled,
+    },
     journeys: {
       total: map.journeys.total,
-      user_facing: map.journeys.user_facing,
-      system: map.journeys.system,
-      scheduled: map.journeys.scheduled,
+      representative: map.journeys.representative,
     },
     entities: map.data.entities,
     paradigms: map.conventions.paradigms.length,
@@ -44,6 +48,6 @@ export function productMapOverview(map: CASProductMap) {
       ...(map.health.score !== undefined ? { score: map.health.score } : {}),
       tests_total: map.health.tests.total,
     },
-    detail: 'get_product_map returns capabilities, journeys, data, conventions, health and runtime topology; get_user_journeys and get_data_entities page the journeys and entities.',
+    detail: 'get_product_map returns capabilities, entry-point flows, journeys, data, conventions, health and runtime topology; get_entry_point_flows, get_user_journeys and get_data_entities page the flows, journeys and entities.',
   };
 }

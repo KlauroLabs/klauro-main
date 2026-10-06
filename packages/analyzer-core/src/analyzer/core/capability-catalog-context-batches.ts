@@ -91,7 +91,7 @@ export function fitCapabilityCatalogContexts<T extends Record<string, unknown>>(
     return fitCapabilityCatalogContext(base, scoped, env);
   };
   const sharedEvidence = (value: Record<string, unknown>) => JSON.stringify([
-    value.user_journeys, value.entities, value.external_services,
+    value.entry_point_flows, value.entities, value.external_services,
   ]);
   const empty = fit([]);
   const shared = sharedEvidence(empty.context.facts);

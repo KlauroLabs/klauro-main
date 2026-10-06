@@ -35,7 +35,7 @@ export interface BoundedEnvelope {
 }
 
 const OFFSET_PAGED_TOOLS = new Set([
-  'get_user_journeys', 'get_data_entities', 'get_codebase_idioms', 'get_behavioral_invariants', 'find_tests',
+  'get_user_journeys', 'get_entry_point_flows', 'get_data_entities', 'get_codebase_idioms', 'get_behavioral_invariants', 'find_tests',
 ]);
 
 function byteLength(text: string): number {

@@ -1,4 +1,4 @@
-import { projectUserJourneysFromCas, projectUserJourneysFromFlows } from '../../analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas, projectEntryPointFlowsFromFlows } from '../../analyzer/core/entry-point-flow-projection';
 import type { FlowConcept } from '../../types/cas.types';
 
 function flow(id: string, exitId: string, nodeId: string): FlowConcept {
@@ -39,7 +39,7 @@ function flow(id: string, exitId: string, nodeId: string): FlowConcept {
 }
 
 test('projects dependency uncertainty without losing the canonical flow or exit', () => {
-  const projected = projectUserJourneysFromFlows({
+  const projected = projectEntryPointFlowsFromFlows({
     nodes: [{ id: 'approve-node', name: 'handleReview', type: 'function' }] as any,
     edges: [],
     entryPoints: [{ id: 'review-entry', name: 'POST /review', type: 'http', source_node: 'approve-node' }] as any,
@@ -49,15 +49,15 @@ test('projects dependency uncertainty without losing the canonical flow or exit'
     changeRisks: [],
     flows: [flow('approve', 'dependency', 'approve-node')],
   });
-  expect(projected.journeys).toHaveLength(1);
-  expect(projected.journeys[0].terminal_effects.external_services).toEqual([]);
-  expect(projected.journeys[0].exit_point_ids).toEqual(['dependency']);
-  expect(projected.journeys[0].unresolved_exit_point_ids).toEqual(['dependency']);
+  expect(projected.entryPointFlows).toHaveLength(1);
+  expect(projected.entryPointFlows[0].terminal_effects.external_services).toEqual([]);
+  expect(projected.entryPointFlows[0].exit_point_ids).toEqual(['dependency']);
+  expect(projected.entryPointFlows[0].unresolved_exit_point_ids).toEqual(['dependency']);
 });
 
-test('journey views are one-to-one projections of canonical flows sharing an entry', () => {
+test('entryPointFlow views are one-to-one projections of canonical flows sharing an entry', () => {
   const flows = [flow('approve', 'approve-exit', 'approve-node'), flow('reject', 'reject-exit', 'reject-node')];
-  const result = projectUserJourneysFromFlows({
+  const result = projectEntryPointFlowsFromFlows({
     nodes: [
       { id: 'review-node', name: 'review', type: 'controller' },
       { id: 'approve-node', name: 'approve', type: 'method' },
@@ -78,10 +78,10 @@ test('journey views are one-to-one projections of canonical flows sharing an ent
     flows,
   });
 
-  expect(result.journeys.map(journey => journey.derived_from_flow_id).sort()).toEqual(['approve', 'reject']);
-  expect(result.journeys.find(journey => journey.derived_from_flow_id === 'approve')?.exit_point_ids).toEqual(['approve-exit']);
-  expect(result.journeys.find(journey => journey.derived_from_flow_id === 'reject')?.exit_point_ids).toEqual(['reject-exit']);
-  expect(result.journeys.find(journey => journey.derived_from_flow_id === 'approve')?.terminal_entities).toContainEqual({
+  expect(result.entryPointFlows.map(entryPointFlow => entryPointFlow.derived_from_flow_id).sort()).toEqual(['approve', 'reject']);
+  expect(result.entryPointFlows.find(entryPointFlow => entryPointFlow.derived_from_flow_id === 'approve')?.exit_point_ids).toEqual(['approve-exit']);
+  expect(result.entryPointFlows.find(entryPointFlow => entryPointFlow.derived_from_flow_id === 'reject')?.exit_point_ids).toEqual(['reject-exit']);
+  expect(result.entryPointFlows.find(entryPointFlow => entryPointFlow.derived_from_flow_id === 'approve')?.terminal_entities).toContainEqual({
     node_id: 'approve-node',
     name: 'approve',
     access: 'read',
@@ -89,7 +89,7 @@ test('journey views are one-to-one projections of canonical flows sharing an ent
   });
 });
 
-test('current CAS derives journeys from flows without a persisted journey collection', () => {
+test('current CAS derives entryPointFlows from flows without a persisted entryPointFlow collection', () => {
   const cas = {
     cas_version: '3.0.0',
     analysis_id: 'analysis',
@@ -103,14 +103,14 @@ test('current CAS derives journeys from flows without a persisted journey collec
     analyzer_contributions: [],
   } as any;
 
-  expect(cas.user_journeys).toBeUndefined();
-  expect(projectUserJourneysFromCas(cas).journeys[0]?.derived_from_flow_id).toBe('approve');
+  expect(cas.entry_point_flows).toBeUndefined();
+  expect(projectEntryPointFlowsFromCas(cas).entryPointFlows[0]?.derived_from_flow_id).toBe('approve');
 });
 
 test('indexed projection preserves exits, guards, tests, and entry aliases without a terminus', () => {
   const unboundedFlow = flow('inspect', 'unused-exit', 'worker-node') as any;
   delete unboundedFlow.terminus;
-  const result = projectUserJourneysFromFlows({
+  const result = projectEntryPointFlowsFromFlows({
     nodes: [
       { id: 'review-node', name: 'review', type: 'controller' },
       { id: 'handler-node', name: 'handleReview', type: 'method' },
@@ -143,18 +143,18 @@ test('indexed projection preserves exits, guards, tests, and entry aliases witho
     flows: [unboundedFlow],
   });
 
-  expect(result.journeys).toHaveLength(1);
-  expect(result.journeys[0].exit_point_ids).toEqual(['worker-exit', 'entry-exit']);
-  expect(result.journeys[0].call_chain_ids).toEqual(['source-chain', 'handler-chain']);
-  expect(result.journeys[0].security_boundaries).toContainEqual(expect.objectContaining({
+  expect(result.entryPointFlows).toHaveLength(1);
+  expect(result.entryPointFlows[0].exit_point_ids).toEqual(['worker-exit', 'entry-exit']);
+  expect(result.entryPointFlows[0].call_chain_ids).toEqual(['source-chain', 'handler-chain']);
+  expect(result.entryPointFlows[0].security_boundaries).toContainEqual(expect.objectContaining({
     node_id: 'guard-node',
     name: 'ApplicationPolicy',
   }));
-  expect(result.journeys[0].tests_covering).toEqual(['edge-test', 'metadata-test']);
+  expect(result.entryPointFlows[0].tests_covering).toEqual(['edge-test', 'metadata-test']);
 });
 
-test('a journey whose entry is tagged unshipped is a low-criticality system journey carrying its tag', () => {
-  const projected = projectUserJourneysFromFlows({
+test('a entryPointFlow whose entry is tagged unshipped is a low-criticality system entryPointFlow carrying its tag', () => {
+  const projected = projectEntryPointFlowsFromFlows({
     nodes: [{ id: 'approve-node', name: 'handleReview', type: 'function' }] as any,
     edges: [],
     entryPoints: [{ id: 'review-entry', name: 'POST /review', type: 'http', source_node: 'approve-node', metadata: { unshipped: { role: 'benchmark' } } }] as any,
@@ -164,8 +164,8 @@ test('a journey whose entry is tagged unshipped is a low-criticality system jour
     changeRisks: [],
     flows: [flow('approve', 'dependency', 'approve-node')],
   });
-  expect(projected.journeys[0].journey_kind).toBe('system');
-  expect(projected.journeys[0].criticality).toBe('low');
-  expect(projected.journeys[0].unshipped).toBe('benchmark');
+  expect(projected.entryPointFlows[0].flow_kind).toBe('system');
+  expect(projected.entryPointFlows[0].criticality).toBe('low');
+  expect(projected.entryPointFlows[0].unshipped).toBe('benchmark');
   expect(projected.summary.by_kind['user-facing']).toBe(0);
 });

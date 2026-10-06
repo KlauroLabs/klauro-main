@@ -3,7 +3,7 @@ import type {
 
   CASChangeRisk, ChangeRiskFactor,
   ChangeHistoryEntry, ChangeAggregate, HeatMapData,
-  CASUserJourney,
+  CASEntryPointFlow,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { findTests } from './test-query';
 import { surprisingCoupling } from './surprising-coupling';
@@ -21,7 +21,7 @@ import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyze
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { getCausalJourneys, hasCausalJourneys } from './causal-journeys';
-import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
 import { computeSemanticCoverage, toCompactSemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -41,16 +41,16 @@ import {
   type SemanticRole,
 } from './semantic-roles';
 import {
-  displayJourneySteps,
+  displayEntryPointFlowSteps,
   guardPhraseForBoundaries,
-  journeyDetailMarkdown,
-  journeyHeadline,
-  journeyListMarkdown,
-  journeyStepPhrase,
-  journeyTitle,
-  storedJourneyNameHeadline,
-  storedJourneyNameParts,
-} from './journey-presentation';
+  entryPointFlowDetailMarkdown,
+  entryPointFlowHeadline,
+  entryPointFlowListMarkdown,
+  entryPointFlowStepPhrase,
+  entryPointFlowTitle,
+  storedEntryPointFlowNameHeadline,
+  storedEntryPointFlowNameParts,
+} from './entry-point-flow-presentation';
 import {
   loadChangeHistory,
   listAnalysisSnapshots,
@@ -226,7 +226,7 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     analysis_timestamp: cas.analysis_timestamp || null,
     analysis_version_status: versionInfo.status,
     analysis_version_notice: versionInfo.status === 'older-compatible'
-      ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (user journeys, data lineage, paradigm conformance, product map).`
+      ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (entry-point flows, data lineage, paradigm conformance, product map).`
       : undefined,
 
 
@@ -288,6 +288,8 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     database_entities: databaseEntityNames.slice(0, detail === 'full' ? undefined : SUMMARY_DATABASE_ENTITY_LIMIT),
     database_entities_total: databaseEntityNames.length,
     capabilities: cas.capabilities?.length || 0,
+    flows: cas.flows?.length || 0,
+    journeys: cas.causal_journeys?.length || 0,
     structural_capability_candidates: cas.flow_graph?.capability_candidates?.length || 0,
     top_capabilities: cas.capabilities?.length
       ? [...cas.capabilities]
@@ -1721,12 +1723,12 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
 
 
 
-function journeyToWorkflowSummary(journey: CASUserJourney) {
+function journeyToWorkflowSummary(journey: CASEntryPointFlow) {
   return {
     id: journey.id,
     name: journey.name,
-    workflow_type: journey.journey_kind,
-    classification: journey.journey_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
+    workflow_type: journey.flow_kind,
+    classification: journey.flow_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
     criticality: journey.criticality,
     entry_point_count: journey.entry_point_id ? 1 : 0,
     chain_count: journey.call_chain_ids?.length || 0,
@@ -1736,7 +1738,7 @@ function journeyToWorkflowSummary(journey: CASUserJourney) {
 }
 
 export function getWorkflows(cas: CASOutput, workflowId?: string) {
-  const journeys = projectUserJourneysFromCas(cas).journeys;
+  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   if (workflowId) {
     const journey = journeys.find(j => j.id === workflowId);
     return { workflow: journey ? journeyToWorkflowSummary(journey) : null };
@@ -1756,30 +1758,45 @@ export function getUserJourneys(
   opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
 ) {
   if (hasCausalJourneys(cas)) return getCausalJourneys(cas, opts);
-  const journeysNotice = cas.flows === undefined && cas.user_journeys === undefined
-    ? analysisVersionNotice(cas, 'user journeys')
-    : undefined;
-  const projection = projectUserJourneysFromCas(cas);
-  const journeys = projection.journeys;
+  const notice = 'This analysis has no cross-boundary journeys. Journeys chain flows across program boundaries; entry-point flows (one program\'s entry point followed to its effects) are available from get_entry_point_flows.';
+  const versionNotice = analysisVersionNotice(cas, 'journeys');
   if (opts.journeyId) {
-    const journey = journeys.find(item => item.id === opts.journeyId) || null;
+    return opts.format === 'markdown'
+      ? { markdown: `> ${notice}` }
+      : { journey: null, journeys_notice: notice, analysis_version_notice: versionNotice };
+  }
+  if (opts.format === 'markdown') return { markdown: `0 journeys.\n\n> ${notice}` };
+  return { total: 0, offset: opts.offset || 0, limit: opts.limit || 25, journeys: [], journeys_notice: notice, analysis_version_notice: versionNotice };
+}
+
+export function getEntryPointFlows(
+  cas: CASOutput,
+  opts: { flowId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
+) {
+  const flowsNotice = cas.flows === undefined && cas.entry_point_flows === undefined
+    ? analysisVersionNotice(cas, 'entry-point flows')
+    : undefined;
+  const projection = projectEntryPointFlowsFromCas(cas);
+  const journeys = projection.entryPointFlows;
+  if (opts.flowId) {
+    const journey = journeys.find(item => item.id === opts.flowId) || null;
     if (opts.format === 'markdown') {
-      const markdown = journey ? journeyDetailMarkdown(journey) : `No journey with id '${opts.journeyId}'.`;
+      const markdown = journey ? entryPointFlowDetailMarkdown(journey) : `No entry-point flow with id '${opts.flowId}'.`;
       return {
-        markdown: journeysNotice ? `> ${journeysNotice}\n\n${markdown}` : markdown,
+        markdown: flowsNotice ? `> ${flowsNotice}\n\n${markdown}` : markdown,
       };
     }
     return {
-      journey: journey
-        ? { title: journeyTitle(journey), headline: journeyHeadline(journey), ...journey }
+      entry_point_flow: journey
+        ? { title: entryPointFlowTitle(journey), headline: entryPointFlowHeadline(journey), ...journey }
         : null,
-      analysis_version_notice: journeysNotice,
+      analysis_version_notice: flowsNotice,
     };
   }
 
   let filtered = journeys;
   if (opts.kind) {
-    filtered = filtered.filter(journey => journey.journey_kind === opts.kind);
+    filtered = filtered.filter(journey => journey.flow_kind === opts.kind);
   }
 
   const limit = opts.limit || 25;
@@ -1787,13 +1804,13 @@ export function getUserJourneys(
   const page = filtered.slice(offset, offset + limit);
 
   if (opts.format === 'markdown') {
-    const markdown = journeyListMarkdown(page, {
+    const markdown = entryPointFlowListMarkdown(page, {
       total: filtered.length,
       offset,
       byKind: projection.summary.by_kind,
     });
     return {
-      markdown: journeysNotice ? `> ${journeysNotice}\n\n${markdown}` : markdown,
+      markdown: flowsNotice ? `> ${flowsNotice}\n\n${markdown}` : markdown,
     };
   }
 
@@ -1811,14 +1828,14 @@ export function getUserJourneys(
     total: filtered.length,
     offset,
     limit,
-    analysis_version_notice: journeysNotice,
+    analysis_version_notice: flowsNotice,
     summary: projection.summary,
-    journeys: page.map(journey => ({
+    entry_point_flows: page.map(journey => ({
       id: journey.id,
-      title: journeyTitle(journey),
-      headline: journeyHeadline(journey),
+      title: entryPointFlowTitle(journey),
+      headline: entryPointFlowHeadline(journey),
       name: journey.name,
-      journey_kind: journey.journey_kind,
+      flow_kind: journey.flow_kind,
       derived_from_flow_id: journey.derived_from_flow_id,
       exit_point_ids: journey.exit_point_ids,
       criticality: journey.criticality,
@@ -1829,7 +1846,7 @@ export function getUserJourneys(
       external_services: journey.terminal_effects?.external_services || [],
       step_count: journey.steps?.length || 0,
       steps: includeSteps
-        ? displayJourneySteps(journey).map(step => ({
+        ? displayEntryPointFlowSteps(journey).map(step => ({
             node_id: step.node_id,
             name: step.name,
             layer: step.layer,
@@ -1838,7 +1855,7 @@ export function getUserJourneys(
         : undefined,
 
 
-      path: journeyStepPhrase(journey) || undefined,
+      path: entryPointFlowStepPhrase(journey) || undefined,
       security_boundary_count: journey.security_boundaries?.length || 0,
       test_count: journey.tests_covering?.length || 0,
 
@@ -2159,7 +2176,7 @@ export async function diffBehaviorAgainstSnapshot(
   const diff = diffBehavior(before, currentCas);
 
   const baselinePredatesPillars =
-    before.flows === undefined && before.user_journeys === undefined &&
+    before.flows === undefined && before.entry_point_flows === undefined &&
     before.data_lineage === undefined &&
     compareCasVersions(before.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
 
@@ -2187,14 +2204,14 @@ export async function diffBehaviorAgainstSnapshot(
   };
 }
 
-const PRODUCT_MAP_SECTIONS = ['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'runtime_topology', 'coverage_caveats'] as const;
+const PRODUCT_MAP_SECTIONS = ['identity', 'capabilities', 'entry_point_flows', 'journeys', 'data', 'conventions', 'health', 'runtime_topology', 'coverage_caveats'] as const;
 
 export function getProductMap(
   cas: CASOutput,
   opts: { section?: string; format?: 'json' | 'markdown' } = {}
 ) {
-  const map = cas.product_map || buildProductMap(cas);
-  const mapPredatesStorage = cas.product_map === undefined
+  const map = cas.product_map?.entry_point_flows ? cas.product_map : buildProductMap(cas);
+  const mapPredatesStorage = cas.product_map?.entry_point_flows === undefined
     && compareCasVersions(cas.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
   const mapNotice = mapPredatesStorage
     ? `This analysis (cas_version ${cas.cas_version || '0.0.0'}) predates the stored product map; the map below was computed on demand from older analysis data and may miss journeys, lineage, and conventions. Re-run analyze_codebase for the full product map.`
@@ -2256,8 +2273,8 @@ export function productMapToMarkdown(map: CASProductMap): string {
   for (const capability of map.capabilities.slice(0, 12)) {
     lines.push(`- **${capability.name}** [${capability.criticality}, ${capability.category}] ${capability.description}`);
     const facts: string[] = [];
-    if (capability.journeys.length > 0) {
-      facts.push(`journeys: ${capability.journeys.map(journey => storedJourneyNameParts(journey.name).title || journey.name).join('; ')}`);
+    if (capability.entry_point_flows.length > 0) {
+      facts.push(`entry-point flows: ${capability.entry_point_flows.map(journey => storedEntryPointFlowNameParts(journey.name).title || journey.name).join('; ')}`);
     }
     if (capability.entities.length > 0) {
       facts.push(`entities: ${capability.entities.join(', ')}`);
@@ -2271,21 +2288,31 @@ export function productMapToMarkdown(map: CASProductMap): string {
   }
 
   lines.push('');
-  lines.push('## Journeys');
-  const mappedJourneys = map.journeys.user_facing + map.journeys.system + map.journeys.scheduled;
-  const kindBreakdown = `${map.journeys.user_facing} user-facing, ${map.journeys.system} system, ${map.journeys.scheduled} scheduled`;
-  if (mappedJourneys < map.journeys.total) {
-    lines.push(`${map.journeys.total} discovered, ${mappedJourneys} mapped in detail: ${kindBreakdown}.`);
+  lines.push('## Entry-point flows');
+  const mappedFlows = map.entry_point_flows.user_facing + map.entry_point_flows.system + map.entry_point_flows.scheduled;
+  const kindBreakdown = `${map.entry_point_flows.user_facing} user-facing, ${map.entry_point_flows.system} system, ${map.entry_point_flows.scheduled} scheduled`;
+  if (mappedFlows < map.entry_point_flows.total) {
+    lines.push(`${map.entry_point_flows.total} discovered, ${mappedFlows} mapped in detail: ${kindBreakdown}.`);
   } else {
-    lines.push(`${map.journeys.total} total: ${kindBreakdown}.`);
+    lines.push(`${map.entry_point_flows.total} total: ${kindBreakdown}.`);
   }
-  for (const journey of map.journeys.top) {
-    const guardText = guardPhraseForBoundaries(journey.boundaries.map(name => ({ name })));
-    const testText = journey.tests === 0 ? 'no tests' : `${journey.tests} test${journey.tests === 1 ? '' : 's'}`;
-    lines.push(`- ${storedJourneyNameHeadline(journey.name)}; ${guardText}, ${testText} [${journey.kind}, ${journey.criticality}]`);
+  for (const flow of map.entry_point_flows.top) {
+    const guardText = guardPhraseForBoundaries(flow.boundaries.map(name => ({ name })));
+    const testText = flow.tests === 0 ? 'no tests' : `${flow.tests} test${flow.tests === 1 ? '' : 's'}`;
+    lines.push(`- ${storedEntryPointFlowNameHeadline(flow.name)}; ${guardText}, ${testText} [${flow.kind}, ${flow.criticality}]`);
   }
 
   lines.push('');
+  lines.push('## Journeys');
+  if (map.journeys.total === 0) {
+    lines.push('No cross-boundary journeys in this analysis.');
+  } else {
+    lines.push(`${map.journeys.total} total, ${map.journeys.representative} representative.`);
+    for (const journey of map.journeys.top) {
+      lines.push(`- ${journey.label}: ${journey.does} (${journey.steps} steps)`);
+    }
+  }
+
   lines.push('## Data');
   const sensitiveText = map.data.sensitive.length > 0 ? map.data.sensitive.join(', ') : 'none detected';
   lines.push(`${map.data.entities} entities tracked. Sensitive: ${sensitiveText}.`);
@@ -3943,7 +3970,7 @@ export function getInterfaceSignature(
 
 
   let purpose: string | undefined;
-  const projectedJourneys = projectUserJourneysFromCas(cas).journeys;
+  const projectedJourneys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   if (projectedJourneys.length > 0) {
     const signal = buildTerminalSignal({ journeys: projectedJourneys, systemCapabilities: cas.capabilities || [] });
     const nameLower = targetNode.name.toLowerCase();

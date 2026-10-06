@@ -529,12 +529,20 @@ export function createServer(): McpServer {
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'find_tests', args)));
 
   register('get_user_journeys', {
-    description: 'Retrieve hosted source-to-terminal user journeys and their concrete steps.',
+    description: 'Retrieve hosted cross-boundary journeys: end-to-end chains of flows across program boundaries, with ordered steps. Returns none when the analysis has no journeys; entry-point flows come from get_entry_point_flows.',
     inputSchema: {
       path: z.string(), journey_id: z.string().optional(), kind: z.string().optional(), limit: z.number().optional(), offset: z.number().optional(),
       format: z.enum(['json', 'markdown']).optional(), include_steps: z.boolean().optional(),
     },
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_user_journeys', args)));
+
+  register('get_entry_point_flows', {
+    description: 'Retrieve hosted entry-point flows: one program\'s entry point followed through its steps to its effects. These are flows, not cross-boundary journeys (get_user_journeys).',
+    inputSchema: {
+      path: z.string(), flow_id: z.string().optional(), kind: z.string().optional(), limit: z.number().optional(), offset: z.number().optional(),
+      format: z.enum(['json', 'markdown']).optional(), include_steps: z.boolean().optional(),
+    },
+  }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'get_entry_point_flows', args)));
 
   register('get_codebase_idioms', {
     description: 'Retrieve hosted repo-local conventions and evidence before editing.',

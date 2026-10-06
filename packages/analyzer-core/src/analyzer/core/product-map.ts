@@ -5,15 +5,15 @@ import {
   CASProductMapCapability,
   CASProductMapCommunicationGraph,
   CASProductMapDeployableTopology,
-  CASProductMapJourney,
+  CASProductMapEntryPointFlow,
   CASProductMapRuntimeTopology,
-  CASUserJourney,
+  CASEntryPointFlow,
   SystemCapability,
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
-import { projectUserJourneysFromCas, type JourneyProjectionResult } from './journey-projection';
+import { projectEntryPointFlowsFromCas, type EntryPointFlowProjectionResult } from './entry-point-flow-projection';
 import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
-import { journeyPrimaryEntityNames, linkJourneysToCapability, normalizeProductMapEntityName } from './product-map-journey-linking';
+import { entryPointFlowPrimaryEntityNames, linkEntryPointFlowsToCapability, normalizeProductMapEntityName } from './product-map-flow-linking';
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -44,15 +44,15 @@ function testedFileStems(testSuites: CASOutput['test_suites']): Set<string> {
   return stems;
 }
 
-function journeyHasFileTestEvidence(
-  journey: CASUserJourney,
+function entryPointFlowHasFileTestEvidence(
+  entryPointFlow: CASEntryPointFlow,
   testedStems: Set<string>,
   nodesById: Map<string, { source?: { file?: string } }>
 ): boolean {
   if (testedStems.size === 0) return false;
-  const handlerNodeId = journey.entry?.handler_node_id || journey.entry_point_id;
+  const handlerNodeId = entryPointFlow.entry?.handler_node_id || entryPointFlow.entry_point_id;
   const handlerFile = handlerNodeId ? nodesById.get(handlerNodeId)?.source?.file : undefined;
-  const candidateFiles = [handlerFile, ...journey.steps.map(step => nodesById.get(step.node_id)?.source?.file)]
+  const candidateFiles = [handlerFile, ...entryPointFlow.steps.map(step => nodesById.get(step.node_id)?.source?.file)]
     .filter((file): file is string => Boolean(file));
   return candidateFiles.some(file => testedStems.has(fileStem(file)));
 }
@@ -64,11 +64,11 @@ function resolveCapabilityDescriptionProvenance(
   return capability.description_source || 'deterministic';
 }
 
-function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
+function entryPointFlowTouchedEntityNames(entryPointFlow: CASEntryPointFlow): Set<string> {
   const touched = new Set<string>();
-  for (const terminal of journey.terminal_entities || []) touched.add(normalizeProductMapEntityName(terminal.name));
-  for (const name of journey.terminal_effects?.entities_written || []) touched.add(normalizeProductMapEntityName(name));
-  for (const name of journey.terminal_effects?.entities_read || []) touched.add(normalizeProductMapEntityName(name));
+  for (const terminal of entryPointFlow.terminal_entities || []) touched.add(normalizeProductMapEntityName(terminal.name));
+  for (const name of entryPointFlow.terminal_effects?.entities_written || []) touched.add(normalizeProductMapEntityName(name));
+  for (const name of entryPointFlow.terminal_effects?.entities_read || []) touched.add(normalizeProductMapEntityName(name));
   return touched;
 }
 
@@ -87,22 +87,22 @@ function capabilityHasOperationFileTestEvidence(
 
 function capabilityHasTestEvidence(
   capability: SystemCapability,
-  journeys: CASUserJourney[],
+  entryPointFlows: CASEntryPointFlow[],
   capabilityEntities: Set<string>,
   testedStems: Set<string>,
   nodesById: Map<string, { source?: { file?: string } }>
 ): boolean {
   const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
-  return journeys.some(journey => {
-    if ((journey.tests_covering || []).length > 0) {
-      if (entryPointIds.has(journey.entry_point_id)) return true;
+  return entryPointFlows.some(entryPointFlow => {
+    if ((entryPointFlow.tests_covering || []).length > 0) {
+      if (entryPointIds.has(entryPointFlow.entry_point_id)) return true;
       if (capabilityEntities.size > 0) {
-        for (const name of journeyTouchedEntityNames(journey)) {
+        for (const name of entryPointFlowTouchedEntityNames(entryPointFlow)) {
           if (capabilityEntities.has(name)) return true;
         }
       }
     }
-    if (entryPointIds.has(journey.entry_point_id) && journeyHasFileTestEvidence(journey, testedStems, nodesById)) {
+    if (entryPointIds.has(entryPointFlow.entry_point_id) && entryPointFlowHasFileTestEvidence(entryPointFlow, testedStems, nodesById)) {
       return true;
     }
     return false;
@@ -111,19 +111,19 @@ function capabilityHasTestEvidence(
 
 function capabilityRiskLevel(
   capability: SystemCapability,
-  linkedJourneys: CASUserJourney[],
+  linkedEntryPointFlows: CASEntryPointFlow[],
   testsPresent: boolean
 ): 'low' | 'medium' | 'high' {
   const highCriticality = capability.criticality === 'critical' || capability.criticality === 'high';
-  const riskyJourney = linkedJourneys.some(journey => journey.risk === 'high' || journey.risk === 'critical');
-  if (riskyJourney) return 'high';
+  const riskyEntryPointFlow = linkedEntryPointFlows.some(entryPointFlow => entryPointFlow.risk === 'high' || entryPointFlow.risk === 'critical');
+  if (riskyEntryPointFlow) return 'high';
   if (highCriticality && !testsPresent) return 'high';
   if (testsPresent) return 'low';
   return 'medium';
 }
 
-function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProductMapCapability[] {
-  const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
+function buildCapabilities(cas: CASOutput, entryPointFlows: CASEntryPointFlow[]): CASProductMapCapability[] {
+  const primaryNamesByEntryPointFlow = new Map(entryPointFlows.map(entryPointFlow => [entryPointFlow.id, entryPointFlowPrimaryEntityNames(entryPointFlow)]));
   const entityNameById = new Map((cas.entities || []).map(entity => [entity.id, entity.name]));
   const entityOwnerCounts = new Map<string, number>();
   for (const capability of cas.capabilities || []) {
@@ -149,17 +149,17 @@ function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProdu
     const exclusivelyOwnedEntityNames = new Set(entityNames
       .map(normalizeProductMapEntityName)
       .filter(name => entityOwnerCounts.get(name) === 1));
-    const linked = linkJourneysToCapability(
-      capability, entityNames, exclusivelyOwnedEntityNames, journeys, primaryNamesByJourney,
+    const linked = linkEntryPointFlowsToCapability(
+      capability, entityNames, exclusivelyOwnedEntityNames, entryPointFlows, primaryNamesByEntryPointFlow,
     );
     const linkedSorted = [...linked].sort(
       (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
     );
     const capabilityEntities = new Set(entityNames.map(normalizeProductMapEntityName));
-    const testsPresent = linked.some(journey =>
-      (journey.tests_covering || []).length > 0 || journeyHasFileTestEvidence(journey, testedStems, nodesById)
+    const testsPresent = linked.some(entryPointFlow =>
+      (entryPointFlow.tests_covering || []).length > 0 || entryPointFlowHasFileTestEvidence(entryPointFlow, testedStems, nodesById)
     )
-      || capabilityHasTestEvidence(capability, journeys, capabilityEntities, testedStems, nodesById)
+      || capabilityHasTestEvidence(capability, entryPointFlows, capabilityEntities, testedStems, nodesById)
       || capabilityHasOperationFileTestEvidence(capability, testedStems, entryPointFileById);
     return {
       name: capability.name,
@@ -167,7 +167,7 @@ function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProdu
       description_source: resolveCapabilityDescriptionProvenance(capability),
       category: capability.category,
       criticality: capability.criticality,
-      journeys: linkedSorted.map(journey => ({ id: journey.id, name: journey.name })),
+      entry_point_flows: linkedSorted.map(entryPointFlow => ({ id: entryPointFlow.id, name: entryPointFlow.name })),
       entities: [...new Set(entityNames)].sort((a, b) => a.localeCompare(b)),
       tests_present: testsPresent,
       risk_level: capabilityRiskLevel(capability, linked, testsPresent),
@@ -184,10 +184,25 @@ function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProdu
   );
 }
 
-function buildJourneys(projection: JourneyProjectionResult): CASProductMap['journeys'] {
-  const { journeys, summary } = projection;
+function buildJourneys(cas: CASOutput): CASProductMap['journeys'] {
+  const held = [...(cas.causal_journeys ?? [])].sort((left, right) => left.rank - right.rank);
+  return {
+    total: held.length,
+    representative: held.filter(journey => journey.representative).length,
+    top: held.slice(0, TOP_JOURNEY_LIMIT).map(journey => ({
+      id: journey.id,
+      label: journey.label,
+      does: journey.does,
+      steps: journey.steps.length,
+      representative: journey.representative,
+    })),
+  };
+}
 
-  const top: CASProductMapJourney[] = [...journeys]
+function buildEntryPointFlows(projection: EntryPointFlowProjectionResult): CASProductMap['entry_point_flows'] {
+  const { entryPointFlows, summary } = projection;
+
+  const top: CASProductMapEntryPointFlow[] = [...entryPointFlows]
     .sort(
       (a, b) =>
         criticalityRank(a.criticality) - criticalityRank(b.criticality) ||
@@ -195,21 +210,21 @@ function buildJourneys(projection: JourneyProjectionResult): CASProductMap['jour
         a.name.localeCompare(b.name)
     )
     .slice(0, TOP_JOURNEY_LIMIT)
-    .map(journey => ({
-      id: journey.id,
-      name: journey.name,
-      kind: journey.journey_kind,
-      criticality: journey.criticality,
-      boundaries: [...new Set((journey.security_boundaries || []).map(boundary => boundary.name))],
-      tests: (journey.tests_covering || []).length,
-      ...(journey.unshipped ? { unshipped: journey.unshipped } : {}),
+    .map(entryPointFlow => ({
+      id: entryPointFlow.id,
+      name: entryPointFlow.name,
+      kind: entryPointFlow.flow_kind,
+      criticality: entryPointFlow.criticality,
+      boundaries: [...new Set((entryPointFlow.security_boundaries || []).map(boundary => boundary.name))],
+      tests: (entryPointFlow.tests_covering || []).length,
+      ...(entryPointFlow.unshipped ? { unshipped: entryPointFlow.unshipped } : {}),
     }));
 
-  const countByKind = (kind: CASUserJourney['journey_kind']) =>
-    journeys.filter(journey => journey.journey_kind === kind).length;
+  const countByKind = (kind: CASEntryPointFlow['flow_kind']) =>
+    entryPointFlows.filter(entryPointFlow => entryPointFlow.flow_kind === kind).length;
 
   return {
-    total: summary?.total_discovered ?? journeys.length,
+    total: summary?.total_discovered ?? entryPointFlows.length,
     user_facing: summary?.by_kind['user-facing'] ?? countByKind('user-facing'),
     system: summary?.by_kind.system ?? countByKind('system'),
     scheduled: summary?.by_kind.scheduled ?? countByKind('scheduled'),
@@ -341,10 +356,10 @@ function buildCoverageCaveats(
     );
   }
 
-  const journeySummary = cas.user_journey_summary;
-  if (journeySummary && journeySummary.total_discovered > journeySummary.included) {
+  const entryPointFlowSummary = cas.entry_point_flow_summary;
+  if (entryPointFlowSummary && entryPointFlowSummary.total_discovered > entryPointFlowSummary.included) {
     caveats.push(
-      `${journeySummary.total_discovered} journeys discovered, ${journeySummary.included} included in detail`
+      `${entryPointFlowSummary.total_discovered} entry-point flows discovered, ${entryPointFlowSummary.included} included in detail`
     );
   }
 
@@ -373,11 +388,11 @@ function buildCoverageCaveats(
   }
 
   const totalTests = cas.test_summary?.total_tests ?? 0;
-  const journeysWithTests = projectUserJourneysFromCas(cas).journeys.filter(journey => (journey.tests_covering || []).length > 0).length;
-  if (totalTests === 0 && journeysWithTests === 0) {
+  const entryPointFlowsWithTests = projectEntryPointFlowsFromCas(cas).entryPointFlows.filter(entryPointFlow => (entryPointFlow.tests_covering || []).length > 0).length;
+  if (totalTests === 0 && entryPointFlowsWithTests === 0) {
     caveats.push('No tests detected; test coverage signals are unavailable');
-  } else if (totalTests === 0 && journeysWithTests > 0) {
-    caveats.push('Test inventory not built for this stack; only journey-level test links are available');
+  } else if (totalTests === 0 && entryPointFlowsWithTests > 0) {
+    caveats.push('Test inventory not built for this stack; only entryPointFlow-level test links are available');
   }
 
   if ((cas.data_lineage || []).length === 0) {
@@ -582,7 +597,7 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
 
 export function buildProductMap(
   cas: CASOutput,
-  journeyProjection: JourneyProjectionResult = projectUserJourneysFromCas(cas),
+  entryPointFlowProjection: EntryPointFlowProjectionResult = projectEntryPointFlowsFromCas(cas),
 ): CASProductMap {
   const purpose = cas.enhanced_system_purpose;
   const identityDescription = purpose?.inferred_description || cas.system?.description || '';
@@ -604,8 +619,9 @@ export function buildProductMap(
       unanalyzed_languages: unanalyzedLanguages,
       ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
     },
-    capabilities: buildCapabilities(cas, journeyProjection.journeys),
-    journeys: buildJourneys(journeyProjection),
+    capabilities: buildCapabilities(cas, entryPointFlowProjection.entryPointFlows),
+    entry_point_flows: buildEntryPointFlows(entryPointFlowProjection),
+    journeys: buildJourneys(cas),
     data: buildData(cas),
     conventions: buildConventions(cas),
     health: buildHealth(cas),

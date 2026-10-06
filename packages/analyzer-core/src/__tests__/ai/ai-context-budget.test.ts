@@ -20,7 +20,7 @@ describe('AI context budgeting', () => {
       distance_to_terminal: index,
     }));
     const facts = {
-      user_journeys: Array.from({ length: 30 }, (_, index) => ({ name: `Complete journey ${index}`, writes: [`Entity${index}`], terminal: [`Entity${index}:write`] })),
+      entry_point_flows: Array.from({ length: 30 }, (_, index) => ({ name: `Complete journey ${index}`, writes: [`Entity${index}`], terminal: [`Entity${index}:write`] })),
       entities: Array.from({ length: 40 }, (_, index) => ({ name: `Entity${index}`, fields: Array.from({ length: 12 }, (__, field) => `field_${field}`) })),
       candidate_route_areas: candidates,
       required_behavior_candidate_ids: candidates.slice(0, 20).map(candidate => candidate.candidate_id),
@@ -72,7 +72,7 @@ describe('AI context budgeting', () => {
       task: 'Return a complete PM-readable capability catalog and cite every required evidence family.',
       style: 'Use product language without source type identifiers.',
     }, {
-      user_journeys: [],
+      entry_point_flows: [],
       entities: [],
       candidate_route_areas: candidates,
       required_behavior_candidate_ids: [],
@@ -92,7 +92,7 @@ describe('AI context budgeting', () => {
     const result = fitCapabilityCatalogContext({
       task: 'Repair one required product outcome.',
     }, {
-      user_journeys: Array.from({ length: 40 }, (_, index) => ({ name: `Journey ${index} ${'x'.repeat(200)}` })),
+      entry_point_flows: Array.from({ length: 40 }, (_, index) => ({ name: `Journey ${index} ${'x'.repeat(200)}` })),
       entities: Array.from({ length: 40 }, (_, index) => ({ name: `RawEntity${index}`, fields: ['secret'] })),
       candidate_route_areas: [{
         candidate_id: 'candidate_1',

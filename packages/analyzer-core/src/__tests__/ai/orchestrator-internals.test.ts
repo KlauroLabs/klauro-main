@@ -58,7 +58,7 @@ test.each([
   try {
     const result = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'Request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [candidate],
       externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
       requiredOutcomeRequirements: [{ id: 'request-routing', candidateIds: ['routing'],
         statement: 'Route requests to handlers', subjectTokens: ['request', 'handler'] }],
@@ -88,7 +88,7 @@ test('provider output cannot relabel itself as deterministic recovery', async ()
   try {
     const result = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'Request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [candidate],
       externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
     });
     expect(result).toHaveLength(1);
@@ -121,7 +121,7 @@ test.each((['message', 'cli', 'http'] as const).flatMap(entryType =>
   try {
     const result = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'Workshop', enhancedSystemPurpose: { artifact_type: 'application' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [candidate],
       nodes: [node], entryPoints: [entry], externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
       requiredOutcomeRequirements: [{ id: 'occupancy-reporting', candidateIds: [candidate.id],
         statement: 'Inspect workshop occupancy', subjectTokens: ['workshop', 'occupancy'] }],
@@ -168,7 +168,7 @@ test('catalog provider receives the full observed tool surface and distinct evid
   try {
     await localOrch.aiExtractCapabilityCatalog({
       systemName: 'Record inspection', enhancedSystemPurpose: { artifact_type: 'application' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
       behaviorSurfaces: [candidate], entryPoints: entries,
       externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
     });
@@ -207,7 +207,7 @@ test('catalog extraction forwards every candidate-bound rejection for targeted r
   try {
     const catalog = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: candidates,
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: candidates,
       externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       onRejection: (feedback: any) => rejections.push(feedback),
@@ -283,7 +283,7 @@ test('catalog extraction preserves only cited and retained public operation evid
     };
     const catalog = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [candidate],
       externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
     });
@@ -320,7 +320,7 @@ for (const [label, response, expectedStatus, expectedCalls] of [
     try {
       const result = await localOrch.runCapabilityCatalogWithQualityGate({
         systemName: 'request library', enhancedSystemPurpose: purpose,
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateSnapshot: [{
           id: 'request', name: 'Request API', category: 'core', description: '',
           operations: [{ entry_point_id: 'api_request', entry_point_type: 'api', action: 'read' }],
@@ -368,7 +368,7 @@ test.each([true, false])('incomplete evidence preserves only individually publis
   const accepted = jest.fn();
   const purpose: any = { primary_domain: 'product-review', core_concepts: [] };
   const result = await localOrch.runCapabilityCatalogWithQualityGate({
-    systemName: 'review system', enhancedSystemPurpose: purpose, frameworks: [], userJourneys: [],
+    systemName: 'review system', enhancedSystemPurpose: purpose, frameworks: [], entryPointFlows: [],
     dataEntities: [{ id: 'entity-0', name: 'ProductArea0', lifecycle: { created_by: [], read_by: ['entry-0'], updated_by: [], deleted_by: [] } }],
     candidateSnapshot: [candidate], behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
     projectTextSignal: { concepts: [], evidence: [] }, entryPoints: [], nodes: [], budgetMs: 30000,
@@ -398,7 +398,7 @@ test('catalog batches share one provider budget and do not publish incomplete ev
   try {
     await expect(localOrch.aiExtractCapabilityCatalog({
       systemName: 'record library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: candidates,
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: candidates,
       nodes, externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       reserveProviderCall: reserve,
@@ -423,7 +423,7 @@ test('catalog output capacity follows supplied API evidence without requiring a 
     }));
     const result = await localOrch.aiExtractCapabilityCatalog({
       systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: candidates,
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: candidates,
       externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
     });
@@ -454,7 +454,7 @@ test('catalog extraction does not multiply the provider retry budget after a req
   try {
     await expect(localOrch.aiExtractCapabilityCatalog({
       systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
       externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
     })).rejects.toThrow('provider-request-failed');
@@ -489,7 +489,7 @@ test('catalog extraction recovers from a malformed response within its existing 
   try {
     expect(await localOrch.aiExtractCapabilityCatalog({
       systemName: 'empty library', enhancedSystemPurpose: { artifact_type: 'library' },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
       externalServices: [], flowGraph: emptyFlowGraph(),
       projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
     })).toEqual([]);
@@ -579,10 +579,10 @@ test('does not certify a lifecycle outcome from a route inventory when AI produc
     systemName: 'work-orders',
     enhancedSystemPurpose: purpose,
     frameworks: ['rails'],
-    userJourneys: operations.map((operation, index) => ({
+    entryPointFlows: operations.map((operation, index) => ({
       id: `journey-${index}`,
       name: `${operation.action} work orders`,
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: operation.entry_point_id,
       terminal_entities: [{ name: 'WorkOrder', access: operation.action, node_id: 'entity_workorder', terminal_kind: 'entity' }],
       terminal_effects: { entities_read: ['WorkOrder'], entities_written: ['WorkOrder'], external_services: [], messages_emitted: [] },
@@ -663,7 +663,7 @@ test("does not retry uncited structural evidence families as standalone capabili
     systemName: 'catalog-repair-fixture',
     enhancedSystemPurpose: purpose,
     frameworks: [],
-    userJourneys: [],
+    entryPointFlows: [],
     dataEntities: candidates.map((candidate, index) => ({
       id: candidate.related_entities[0],
       name: `ProductArea${index}`,
@@ -721,7 +721,7 @@ test("accepts a partial catalog when uncited entity families do not prove audien
     systemName: 'stalled-repair-fixture',
     enhancedSystemPurpose: purpose,
     frameworks: [],
-    userJourneys: [],
+    entryPointFlows: [],
     dataEntities: candidates.map((candidate, index) => ({
       id: candidate.related_entities[0],
       name: `ProductFamily${index}`,
@@ -780,10 +780,10 @@ test("does not manufacture capability identities for unmatched semantic evidence
     systemName: 'semantic-family-repair-fixture',
     enhancedSystemPurpose: purpose,
     frameworks: [],
-    userJourneys: candidates.map(candidate => ({
+    entryPointFlows: candidates.map(candidate => ({
       id: `journey-${candidate.id}`,
       name: candidate.name,
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: candidate.operations[0].entry_point_id,
       terminal_entities: [{ name: `ProductFamily-${candidate.id}`, access: 'read', node_id: `terminal-${candidate.id}`, terminal_kind: 'entity' }],
       terminal_effects: { entities_read: [`ProductFamily-${candidate.id}`], entities_written: [], external_services: [], messages_emitted: [] },
@@ -2655,7 +2655,7 @@ describe('architecture and capability inference', () => {
     const allCapabilitiesForEvidence: any[] = [{
       id: 'cap_alerts', name: 'Alert Monitoring', related_entities: ['entity_alert'], related_domains: [], operations: [],
     }];
-    const userJourneys: any[] = [{
+    const entryPointFlows: any[] = [{
       id: 'journey_alert', name: 'Driver Alert Journey',
       terminal_effects: { entities_written: ['DriveAlert'], entities_read: [] },
     }];
@@ -2672,7 +2672,7 @@ describe('architecture and capability inference', () => {
         },
         frameworks: ['NestJS'],
         includeEntities: true,
-        nodes, edges, allCapabilitiesForEvidence, userJourneys,
+        nodes, edges, allCapabilitiesForEvidence, entryPointFlows,
       });
       // The FIRST provider call's batch (call order == cursor order for
       // concurrency >= batch count, see runWithConcurrency) must lead with
@@ -7028,14 +7028,14 @@ describe('entity description evidence bundle (entity descriptions authored LAST)
   it('buildJourneysByEntityName maps each entity name to the journeys that write/read/terminate on it', () => {
     const journeys = [
       {
-        id: 'journey_1', name: 'Create Booking', journey_kind: 'user-facing', entry_point_id: 'ep_1',
+        id: 'journey_1', name: 'Create Booking', flow_kind: 'user-facing', entry_point_id: 'ep_1',
         entry: { type: 'http', name: 'POST /bookings' }, steps: [],
         terminal_effects: { entities_written: ['Booking'], entities_read: [], external_services: [], messages_emitted: [] },
         terminal_entities: [{ name: 'Booking', access: 'created', terminal_kind: 'entity' }],
         security_boundaries: [],
       },
       {
-        id: 'journey_2', name: 'View Booking', journey_kind: 'user-facing', entry_point_id: 'ep_2',
+        id: 'journey_2', name: 'View Booking', flow_kind: 'user-facing', entry_point_id: 'ep_2',
         entry: { type: 'http', name: 'GET /bookings/:id' }, steps: [],
         terminal_effects: { entities_written: [], entities_read: ['Booking'], external_services: [], messages_emitted: [] },
         terminal_entities: [],
@@ -8303,7 +8303,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
   const journey = (id: string, entryPointId: string, handlerNodeId?: string): any => ({
     id,
     name: id,
-    journey_kind: 'user-facing',
+    flow_kind: 'user-facing',
     entry_point_id: entryPointId,
     entry: { type: 'http', name: id, handler_node_id: handlerNodeId },
     steps: [],
@@ -9337,9 +9337,9 @@ describe('top-down capability evidence (C2)', () => {
         systemName: 'Application Tracker',
         enhancedSystemPurpose: { primary_domain: 'application-tracking', core_concepts: [] },
         frameworks: [],
-        userJourneys: [
-          { id: 'relevant', name: 'Change application progress', journey_kind: 'user-facing', entry_point_id: 'change-status', terminal_entities: [], terminal_effects: {} },
-          { id: 'unrelated', name: 'Configure deployment', journey_kind: 'user-facing', entry_point_id: 'deploy', terminal_entities: [], terminal_effects: {} },
+        entryPointFlows: [
+          { id: 'relevant', name: 'Change application progress', flow_kind: 'user-facing', entry_point_id: 'change-status', terminal_entities: [], terminal_effects: {} },
+          { id: 'unrelated', name: 'Configure deployment', flow_kind: 'user-facing', entry_point_id: 'deploy', terminal_entities: [], terminal_effects: {} },
         ],
         dataEntities: [
           { id: 'job', name: 'JobApplication', kind: 'persisted-entity' },
@@ -9367,7 +9367,7 @@ describe('top-down capability evidence (C2)', () => {
       expect(context.facts.top_down_signals.scoped_product_context).toEqual([
         'Users track job applications and organize them by progress.',
       ]);
-      expect(context.facts.user_journeys.map((journey: any) => journey.name)).toEqual(['Change application progress']);
+      expect(context.facts.entry_point_flows.map((journey: any) => journey.name)).toEqual(['Change application progress']);
       expect(context.facts.entities).toEqual([{ name: 'JobApplication', fields: [] }]);
       expect(JSON.stringify(context.facts)).not.toContain('Configure deployment');
       expect(JSON.stringify(context.facts)).not.toContain('DeploymentConfig');
@@ -9380,7 +9380,7 @@ describe('top-down capability evidence (C2)', () => {
     const catalog = await orch.aiExtractCapabilityCatalog({
       systemName: 'Budget Planner',
       enhancedSystemPurpose: { primary_domain: 'budget-planning', core_concepts: [] },
-      frameworks: [], userJourneys: [],
+      frameworks: [], entryPointFlows: [],
       dataEntities: [{ id: 'budget', name: 'Budget', kind: 'persisted-entity' }],
       candidateCapabilities: [
         {
@@ -9436,7 +9436,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Todo Jobs',
         enhancedSystemPurpose: { primary_domain: 'job-tracking', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'note', name: 'Note', kind: 'persisted-entity' }],
         candidateCapabilities: [{
           id: 'auth-note', name: 'Auth Note', category: 'core',
@@ -9476,7 +9476,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Todo Jobs',
         enhancedSystemPurpose: { primary_domain: 'job-tracking', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'job-sites', name: 'Get /Job/Job Sites/:User Id', category: 'core',
           evidence_kind: 'behavior-surface', evidence_examples: ['GET /job/job-sites/:userId'],
@@ -9525,7 +9525,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Todo Jobs',
         enhancedSystemPurpose: { primary_domain: 'job-application-tracking', core_concepts: ['job tracking', 'Google sign in'] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'cap_signin_google', name: 'Signin Google', category: 'core',
           evidence_role: 'supporting-mechanism',
@@ -9591,7 +9591,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['change history'] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_history', name: 'ChangeHistoryEntry', kind: 'persisted-entity' }],
         candidateCapabilities: [{
           id: 'history', name: 'Change History', category: 'core',
@@ -9627,7 +9627,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['codebase understanding'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'agent-surface', name: 'Agent MCP Tool Surface', structural_label: 'Agent MCP Tool Surface',
           category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
@@ -9681,7 +9681,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'understanding', name: 'Explore connected software behavior', category: 'core',
           related_entities: [], related_domains: ['software behavior'],
@@ -9719,7 +9719,7 @@ describe('top-down capability evidence (C2)', () => {
         const catalog = await orch.aiExtractCapabilityCatalog({
           systemName: 'software-platform',
           enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
-          frameworks: [], userJourneys: [], dataEntities: [],
+          frameworks: [], entryPointFlows: [], dataEntities: [],
           candidateCapabilities: [{
             id: 'understanding', name: 'Explore connected software behavior', category: 'core',
             related_entities: [], related_domains: ['software behavior'],
@@ -9751,7 +9751,7 @@ describe('top-down capability evidence (C2)', () => {
         }] });
         const catalog = await orch.aiExtractCapabilityCatalog({
           systemName: 'software-platform', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
-          frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
+          frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
           externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps people understand connected software behavior.' },
           budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement],
         });
@@ -9776,7 +9776,7 @@ describe('top-down capability evidence (C2)', () => {
       }] });
       return orch.aiExtractCapabilityCatalog({
         systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [{
           id: 'capability_mcp', name: 'Analyze codebase', category: 'core', related_entities: [], related_domains: ['work', 'concepts'],
           evidence_examples: ['Fabric work concepts'], operations: [{ entry_point_id: 'analysis', entry_point_type: 'message', action: 'Enable real-time collaboration' }],
         }], externalServices: [], flowGraph: { capability_candidates: [] },
@@ -9819,7 +9819,7 @@ describe('top-down capability evidence (C2)', () => {
       }] });
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
         externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps agents understand connected software behavior.' },
         budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement], onRejection: (feedback: any) => rejections.push(feedback),
       });
@@ -9857,7 +9857,7 @@ describe('top-down capability evidence (C2)', () => {
         };
         results.push(await orch.aiExtractCapabilityCatalog({
           systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['CrossCodebaseSystemGraph'] },
-          frameworks: ['KlauroConfig'], userJourneys: [], dataEntities: [{ id: 'CASEdge', name: 'CASEdge' }],
+          frameworks: ['KlauroConfig'], entryPointFlows: [], dataEntities: [{ id: 'CASEdge', name: 'CASEdge' }],
           candidateCapabilities: [{
             id: 'capability_mcp', name: 'Explore connected software behavior', structural_label: 'CrossCodebaseSystemGraph', category: 'core',
             related_entities: ['CASEdge'], related_domains: ['CAS'], evidence_examples: ['get_cross_codebase_system_graph'],
@@ -9904,7 +9904,7 @@ describe('top-down capability evidence (C2)', () => {
     };
     const input: any = {
       systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software relationships'] },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [{
         id: 'graph', name: 'Relationship analysis', category: 'core', related_entities: [], related_domains: ['software relationships'],
         operations: [{ entry_point_id: 'graph', entry_point_type: 'message', action: 'Build relationship graph' }],
       }], externalServices: [], flowGraph: { capability_candidates: [] },
@@ -9960,7 +9960,7 @@ describe('top-down capability evidence (C2)', () => {
     };
     const baseInput: any = {
       systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: [] },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [{
         id: 'understanding', name: 'Explore software behavior', category: 'core', related_entities: [], related_domains: ['software'],
         operations: [{ entry_point_id: 'explore', entry_point_type: 'message', action: 'Inspect software behavior' }],
       }], externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: [], evidence: [] },
@@ -10004,7 +10004,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['collaboration'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
           category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
@@ -10034,7 +10034,7 @@ describe('top-down capability evidence (C2)', () => {
     try {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['workspace', 'collaboration'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
           category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
@@ -10067,7 +10067,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'coordination-platform',
         enhancedSystemPurpose: { primary_domain: 'work-coordination', core_concepts: ['work'] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'candidate_concurrent_work',
           name: 'Concurrent Work Surface',
@@ -10111,7 +10111,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'finance',
         enhancedSystemPurpose: { primary_domain: 'personal-finance', core_concepts: ['transactions', 'categories'] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [
           { id: 'rule', name: 'Rule', kind: 'persisted-entity' },
           { id: 'transaction', name: 'Transaction', kind: 'persisted-entity' },
@@ -10154,7 +10154,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['codebase'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'codebase', name: 'Codebase Tool Surface', evidence_kind: 'behavior-surface',
           evidence_examples: ['analyze_codebase', 'preview_codebase_iteration'],
@@ -10190,7 +10190,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'notes',
         enhancedSystemPurpose: { primary_domain: 'notes', core_concepts: ['memos', 'media'] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'media-capture', name: 'Media Capture', category: 'core',
           evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
@@ -10235,7 +10235,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'notes',
         enhancedSystemPurpose: { primary_domain: 'notes', core_concepts: ['user profiles'] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'user', name: 'User', kind: 'persisted-entity' }],
         candidateCapabilities: [{
           id: 'user-lifecycle', name: 'User Lifecycle', category: 'core',
@@ -10297,7 +10297,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['exploration', 'agent context', 'CAS', 'Fabric'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [
           surface('exploration', ['explore_connected_software_behavior', 'inspect_software_behavior']),
           surface('agent', ['get_agent_context', 'assess_change_risk']),
@@ -10343,7 +10343,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['runtime evidence'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'cross', name: 'Cross Repository Tool Surface', evidence_kind: 'behavior-surface',
           evidence_examples: ['get_cross_repo_links', 'run_cross_codebase_analysis'],
@@ -10405,7 +10405,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['analysis'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'workspace', name: 'Workspace Tool Surface', evidence_kind: 'behavior-surface',
           evidence_examples: ['list_workspaces', 'select_workspace', 'resolve_workspace'],
@@ -10437,7 +10437,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'software-platform',
         enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['analysis'] },
-        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'auth', name: 'Authentication Tool Surface', evidence_kind: 'behavior-surface',
           evidence_examples: ['login', 'authenticate_user', 'refresh_session'],
@@ -10469,7 +10469,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'sample-application',
         enhancedSystemPurpose: { primary_domain: 'content', core_concepts: ['article'] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'auth-login', name: 'Auth', structural_label: 'Auth Workflow',
           evidence_kind: 'entity', evidence_role: 'product-outcome',
@@ -10501,7 +10501,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'sample-application',
         enhancedSystemPurpose: { primary_domain: 'content', core_concepts: ['article'] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_impersonationsession', name: 'ImpersonationSession', kind: 'persisted-entity', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } }],
         candidateCapabilities: [{
           id: 'impersonation-sessions', name: 'Impersonation Sessions', structural_label: 'Impersonation Sessions Management',
@@ -10691,7 +10691,7 @@ describe('top-down capability evidence (C2)', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'ak',
         enhancedSystemPurpose: { primary_domain: 'analysis', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities,
         candidateCapabilities: [
           { id: 'analysis', name: 'Analysis Management', related_entities: ['entity_analysis'], operations: mkOps('analysis', 4) },
@@ -10737,7 +10737,7 @@ describe('top-down capability evidence (C2)', () => {
       await orch.aiExtractCapabilityCatalog({
         systemName: 'mtg',
         enhancedSystemPurpose: { primary_domain: 'games', core_concepts: [] },
-        frameworks: [], userJourneys: [{ name: 'Install Agent Default Config' }], dataEntities: [],
+        frameworks: [], entryPointFlows: [{ name: 'Install Agent Default Config' }], dataEntities: [],
         candidateCapabilities: [{ name: 'Search Nodes Tool Surface', related_entities: [], operations: [] }],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: withSignal, budgetMs: 30000,
@@ -10764,7 +10764,7 @@ describe('top-down capability evidence (C2)', () => {
       await orch.aiExtractCapabilityCatalog({
         systemName: 'bare',
         enhancedSystemPurpose: { primary_domain: 'x', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [],
+        frameworks: [], entryPointFlows: [], dataEntities: [],
         candidateCapabilities: [], externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
@@ -10832,7 +10832,7 @@ describe('top-down capability evidence (C2)', () => {
         systemName: 'fleet',
         enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
         frameworks: [],
-        userJourneys: [{ name: 'Create inspection report' }] as any[],
+        entryPointFlows: [{ name: 'Create inspection report' }] as any[],
         dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: [
           { id: 'dispatch', name: 'Inspection Dispatch Routing', related_entities: [], operations: [
@@ -10883,7 +10883,7 @@ describe('capability cardinality follows outcomes rather than structural family 
         systemName: 'outcome-cardinality-fixture',
         enhancedSystemPurpose: { primary_domain: 'widgets', core_concepts: [] },
         frameworks: [],
-        userJourneys: [],
+        entryPointFlows: [],
         dataEntities: [
           { id: 'entity_widget', name: 'Widget' },
           { id: 'entity_gadget', name: 'Gadget' },
@@ -10927,7 +10927,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [
           { name: 'run_shell_script_release_sh_docker_read_2_more', related_entities: [], operations: [] },
@@ -10955,7 +10955,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [],
         externalServices: [], flowGraph: { capability_candidates: [] },
@@ -10996,7 +10996,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [
           { name: 'Run Shell script: release.sh -> Docker read (+2 more)', related_entities: [], operations: [] },
@@ -11035,7 +11035,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [
           { name: 'Run main -> detect_frameworks', related_entities: [], operations: [] },
@@ -11066,7 +11066,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Hoggan Scientific',
         enhancedSystemPurpose: { primary_domain: 'medical-device', core_concepts: [] },
-        frameworks: ['WPF'], userJourneys: [],
+        frameworks: ['WPF'], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [
           { name: 'Run .NET Main entry point', related_entities: [], operations: [] },
@@ -11108,7 +11108,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Express Mongoose Truth',
         enhancedSystemPurpose: { primary_domain: 'user-management', core_concepts: [] },
-        frameworks: ['express', 'mongoose'], userJourneys: [],
+        frameworks: ['express', 'mongoose'], entryPointFlows: [],
         dataEntities: [{ id: 'entity_user', name: 'User' }],
         candidateCapabilities: [
           {
@@ -11148,7 +11148,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Hoggan Scientific',
         enhancedSystemPurpose: { primary_domain: 'medical-device', core_concepts: [] },
-        frameworks: ['WPF'], userJourneys: [],
+        frameworks: ['WPF'], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [
           { id: 'main', name: 'Run .NET Main entry point', related_entities: [], operations: [{ entry_point_id: 'entry_main', entry_point_type: 'internal', action: 'Run' }] },
@@ -11182,7 +11182,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Sundered World',
         enhancedSystemPurpose: { primary_domain: 'game-automation', core_concepts: [] },
-        frameworks: ['fastapi'], userJourneys: [],
+        frameworks: ['fastapi'], entryPointFlows: [],
         dataEntities: [
           { id: 'entity_currency', name: 'Currency' },
           { id: 'entity_quest', name: 'Quest' },
@@ -11216,7 +11216,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [
           { id: 'release', name: 'Release Management', related_entities: ['entity_releaseconfig'], operations: [
@@ -11264,7 +11264,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'klauro',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [],
         behaviorSurfaces: [
@@ -11340,7 +11340,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       await orch.aiExtractCapabilityCatalog({
         systemName: 'analysis-platform',
         enhancedSystemPurpose: { primary_domain: 'software-analysis', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities,
+        frameworks: [], entryPointFlows: [], dataEntities,
         candidateCapabilities, behaviorSurfaces, externalServices: [],
         flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
@@ -11408,7 +11408,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [],
         behaviorSurfaces,
@@ -11470,7 +11470,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       await orch.aiExtractCapabilityCatalog({
         systemName: 'small-tool',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [],
         behaviorSurfaces: [
@@ -11538,10 +11538,10 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         },
       ];
       const systemCapabilities: any[] = []; // no deterministic domain candidates at all
-      const userJourneys: any[] = [{ name: 'Analyze a codebase' }];
+      const entryPointFlows: any[] = [{ name: 'Analyze a codebase' }];
       await orch.applyAIInterpretation(
         purpose, 'klauro', [], [], [], [], emptyFlowGraph(), [],
-        systemCapabilities, [], [], [], { concepts: [], evidence: [] }, userJourneys,
+        systemCapabilities, [], [], [], { concepts: [], evidence: [] }, entryPointFlows,
         undefined, [], [], behaviorSurfaces
       );
       expect(systemCapabilities).toEqual([]);
@@ -11616,7 +11616,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
           id: 'entity_repository', name: 'Repository', kind: 'persisted-entity', fields: [],
           lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
         }], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
-        [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
+        [{ name: 'Analyze a codebase', flow_kind: 'user-facing' }],
       );
       expect(catalogStarted).toBe(true);
       expect(narrativeSpy).not.toHaveBeenCalled();
@@ -11656,7 +11656,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'proof-of-concept',
         enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [
           { id: 'entity_gateway', name: 'Gateway' },
           { id: 'entity_pattern', name: 'Pattern' },
@@ -12917,7 +12917,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       await orch.aiExtractCapabilityCatalog({
         systemName: 'big',
         enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
+        frameworks: [], entryPointFlows: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: bigPool as any[],
         externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
@@ -12936,7 +12936,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       await orch.aiExtractCapabilityCatalog({
         systemName: 'small',
         enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
-        frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
+        frameworks: [], entryPointFlows: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: smallPool as any[],
         externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
@@ -13266,7 +13266,7 @@ describe('enterprise AI semantic guards', () => {
           core_concepts: ['deployment'],
         },
         frameworks: ['Shell', 'Terraform', 'Kubernetes'],
-        userJourneys: [],
+        entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [{
           id: 'deploy', name: 'Shell Deploy',
@@ -13308,7 +13308,7 @@ describe('enterprise AI semantic guards', () => {
           core_concepts: ['deployment'],
         },
         frameworks: ['Shell', 'Terraform'],
-        userJourneys: [],
+        entryPointFlows: [],
         dataEntities: [],
         candidateCapabilities: [{
           id: 'deploy', name: 'Shell Deploy', related_entities: [], operations: [],
@@ -13346,7 +13346,7 @@ describe('enterprise AI semantic guards', () => {
         enhancedSystemPurpose: {
           artifact_type: 'app', primary_domain: 'enterprise-order-review', core_concepts: ['enterprise', 'order'],
         },
-        frameworks: ['Express'], userJourneys: [],
+        frameworks: ['Express'], entryPointFlows: [],
         dataEntities: [{ id: 'entity_order', name: 'EnterpriseOrder' }],
         candidateCapabilities: [{
           id: 'orders', name: 'Enterpriseorders', related_entities: ['entity_order'],
@@ -13384,7 +13384,7 @@ describe('enterprise AI semantic guards', () => {
         enhancedSystemPurpose: {
           artifact_type: 'app', primary_domain: 'enterprise-order-review', core_concepts: ['enterprise', 'order'],
         },
-        frameworks: ['Express'], userJourneys: [],
+        frameworks: ['Express'], entryPointFlows: [],
         dataEntities: [{ id: 'entity_order', name: 'EnterpriseOrder' }],
         candidateCapabilities: [{
           name: 'Enterpriseorders', related_entities: ['entity_order'],
@@ -13790,7 +13790,7 @@ describe('enterprise AI semantic guards', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'analysis-platform',
         enhancedSystemPurpose: { primary_domain: 'software-analysis', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_cas', name: 'CAS', kind: 'domain-shape' }],
         candidateCapabilities: [],
         behaviorSurfaces: [{
@@ -13825,7 +13825,7 @@ describe('enterprise AI semantic guards', () => {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'account-service',
         enhancedSystemPurpose: { primary_domain: 'account-management', core_concepts: [] },
-        frameworks: [], userJourneys: [],
+        frameworks: [], entryPointFlows: [],
         dataEntities: [{ id: 'entity_user', name: 'User', kind: 'persisted-entity' }],
         candidateCapabilities: [{ id: 'profiles', name: 'User profiles', related_entities: ['entity_user'],
           operations: [{ entry_point_id: 'profile-update', entry_point_type: 'http', action: 'Update profiles' }] }],
@@ -15549,7 +15549,7 @@ describe('capability operation semantics', () => {
     const original = (aiService as any).generateComponentDescription;
     const input = {
       systemName: 'Article Reader', enhancedSystemPurpose: { primary_domain: 'articles', core_concepts: [] },
-      frameworks: [], userJourneys: [], dataEntities: [], behaviorSurfaces: [], externalServices: [],
+      frameworks: [], entryPointFlows: [], dataEntities: [], behaviorSurfaces: [], externalServices: [],
       flowGraph: emptyFlowGraph(), projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Users read articles from a feed.' },
       budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this description.', repairMode: 'description' as const,
       repairIdentityName: 'Read articles from the feed',
@@ -15607,7 +15607,7 @@ test('defers an exact typed-interaction mismatch to validated candidate-local re
     systemName: 'Application Tracker',
     enhancedSystemPurpose: { primary_domain: 'application-tracking', core_concepts: [] },
     frameworks: [],
-    userJourneys: [],
+    entryPointFlows: [],
     dataEntities: [{ id: 'entity_job', name: 'Job', kind: 'persisted-entity' }],
     candidateCapabilities: [candidate],
     behaviorSurfaces: [],
@@ -15776,7 +15776,7 @@ test("an empty catalog whose granted repair named candidates that were all rejec
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
   const purpose: any = { primary_domain: 'accounts', core_concepts: [] };
   const result = await localOrch.runCapabilityCatalogWithQualityGate({
-    systemName: 'signup-fixture', enhancedSystemPurpose: purpose, frameworks: [], userJourneys: [],
+    systemName: 'signup-fixture', enhancedSystemPurpose: purpose, frameworks: [], entryPointFlows: [],
     dataEntities: [
       { id: 'entity_user', name: 'User', kind: 'persisted-entity', lifecycle: { created_by: ['entry_signup'], read_by: [], updated_by: [], deleted_by: [] } },
       { id: 'entity_profile', name: 'Profile', kind: 'persisted-entity', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
@@ -15818,7 +15818,7 @@ test.each([false, true, 'shared'])('missing required outcomes preserve grounded 
   const accepted = jest.fn();
   const result = await localOrch.runCapabilityCatalogWithQualityGate({
     systemName: 'feed reader', enhancedSystemPurpose: purpose,
-    frameworks: [], userJourneys: [],
+    frameworks: [], entryPointFlows: [],
     dataEntities: candidates.map(item => ({
       id: 'entity-' + item.subject, name: item.subject,
       lifecycle: { created_by: [], read_by: ['entry-' + item.id], updated_by: [], deleted_by: [] },
@@ -15853,7 +15853,7 @@ test.each(['app', 'library', 'client-sdk', 'infrastructure'])('catalog instructi
   try {
     await localOrch.aiExtractCapabilityCatalog({
       systemName: 'Record inspection', enhancedSystemPurpose: { artifact_type: artifactType },
-      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      frameworks: [], entryPointFlows: [], dataEntities: [], candidateCapabilities: [candidate],
       externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
       entryPoints: [{ id: 'read-record', name: 'Read records', type: 'api', source_node: 'reader' }],
       nodes: [{ id: 'reader', name: 'readRecord', type: 'function', documentation: { raw: text } }],

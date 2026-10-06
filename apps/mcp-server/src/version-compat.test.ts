@@ -29,6 +29,7 @@ import {
   getProductMap,
   getSecurityOverview,
   getSystemOverview,
+  getEntryPointFlows,
   getUserJourneys,
   getWorkflows,
   searchNodes,
@@ -71,11 +72,11 @@ function makeCas(casVersion: string, overrides: Record<string, unknown> = {}): C
 
 function makeCurrentAnalysis(): CASOutput {
   return makeCas(CAS_VERSION, {
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey-create-thing',
         name: 'Create thing',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         criticality: 'high',
         risk: 'low',
         entry_point_id: 'entry-things',
@@ -192,8 +193,11 @@ test('current analyses carry no version notice', () => {
   assert.equal(summary.analysis_version_status, 'current');
   assert.equal(summary.analysis_version_notice, undefined);
 
+  const flows = getEntryPointFlows(current) as { total: number; analysis_version_notice?: string };
+  assert.equal(flows.total, 1);
+  assert.equal(flows.analysis_version_notice, undefined);
   const journeys = getUserJourneys(current) as { total: number; analysis_version_notice?: string };
-  assert.equal(journeys.total, 1);
+  assert.equal(journeys.total, 0);
   assert.equal(journeys.analysis_version_notice, undefined);
 });
 
@@ -202,12 +206,16 @@ test('pillar tools return an explicit version notice on a pre-pillar analysis', 
 
   const journeys = getUserJourneys(legacy) as { total: number; analysis_version_notice?: string };
   assert.equal(journeys.total, 0);
-  assert.ok(journeys.analysis_version_notice?.includes('user journeys'));
+  assert.ok(journeys.analysis_version_notice?.includes('journeys'));
   assert.ok(journeys.analysis_version_notice?.includes('Re-run analyze_codebase'));
+
+  const flows = getEntryPointFlows(legacy) as { total: number; analysis_version_notice?: string };
+  assert.equal(flows.total, 0);
+  assert.ok(flows.analysis_version_notice?.includes('entry-point flows'));
 
   const journeyDetail = getUserJourneys(legacy, { journeyId: 'missing' }) as { journey: unknown; analysis_version_notice?: string };
   assert.equal(journeyDetail.journey, null);
-  assert.ok(journeyDetail.analysis_version_notice?.includes('user journeys'));
+  assert.ok(journeyDetail.analysis_version_notice?.includes('journeys'));
 
   const paradigms = getParadigmConformance(legacy) as { total: number; analysis_version_notice?: string };
   assert.equal(paradigms.total, 0);
@@ -227,7 +235,7 @@ test('a current analysis with genuinely no pillar data stays notice-free', () =>
   const journeys = getUserJourneys(current) as { total: number; analysis_version_notice?: string };
   assert.equal(journeys.total, 0);
   assert.equal(journeys.analysis_version_notice, undefined);
-  assert.equal(analysisVersionNotice(current, 'user journeys'), undefined);
+  assert.equal(analysisVersionNotice(current, 'entry-point flows'), undefined);
 });
 
 test('get_product_map falls back to an on-demand map with a notice on a pre-pillar analysis', () => {
@@ -381,7 +389,7 @@ test('pillar tools return the version notice on the real 1.10.0 artifact', async
 
   const journeys = getUserJourneys(legacy) as { total: number; analysis_version_notice?: string };
   assert.equal(journeys.total, 0);
-  assert.ok(journeys.analysis_version_notice?.includes('user journeys'));
+  assert.ok(journeys.analysis_version_notice?.includes('journeys'));
   assert.ok(journeys.analysis_version_notice?.includes('1.10.0'));
   assert.ok(journeys.analysis_version_notice?.includes('Re-run analyze_codebase'));
 

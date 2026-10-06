@@ -1,8 +1,8 @@
 import { strict as assert } from 'assert';
 import { test } from 'node:test';
-import { getUserJourneys } from './query';
+import { getEntryPointFlows } from './query';
 
-test('getUserJourneys projects the current flow graph without persisted journey truth', () => {
+test('getEntryPointFlows projects the current flow graph without persisted entryPointFlow truth', () => {
   const cas = {
     cas_version: '3.0.0',
     analysis_id: 'analysis',
@@ -68,10 +68,10 @@ test('getUserJourneys projects the current flow graph without persisted journey 
     analyzer_contributions: [],
   } as any;
 
-  assert.equal(cas.user_journeys, undefined);
-  const result = getUserJourneys(cas) as any;
+  assert.equal(cas.entry_point_flows, undefined);
+  const result = getEntryPointFlows(cas) as any;
   assert.equal(result.total, 1);
-  assert.equal(result.journeys[0].derived_from_flow_id, 'approve-application');
-  assert.deepEqual(result.journeys[0].exit_point_ids, ['approve-exit']);
-  assert.deepEqual(result.journeys[0].entities_written, ['Application']);
+  assert.equal(result.entry_point_flows[0].derived_from_flow_id, 'approve-application');
+  assert.deepEqual(result.entry_point_flows[0].exit_point_ids, ['approve-exit']);
+  assert.deepEqual(result.entry_point_flows[0].entities_written, ['Application']);
 });

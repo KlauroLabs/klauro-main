@@ -1,11 +1,11 @@
-import type { CASExitPoint, CASUserJourneyTerminalEntity } from '../../types/cas.types';
+import type { CASExitPoint, CASEntryPointFlowTerminalEntity } from '../../types/cas.types';
 
 export interface TerminalEffects {
   entitiesWritten: string[];
   entitiesRead: string[];
   externalServices: string[];
   messagesEmitted: string[];
-  terminalEntities: CASUserJourneyTerminalEntity[];
+  terminalEntities: CASEntryPointFlowTerminalEntity[];
   exitPointIds: string[];
   unresolvedExitPointIds: string[];
   hasAnyEffect: boolean;

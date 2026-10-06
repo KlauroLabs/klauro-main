@@ -117,7 +117,7 @@ describe('linkRouteHandlers: terminal-handler resolution through a middleware ch
 // falls back to "search every file" even though the real handler lives
 // entirely outside the narrowed set — leaving `handler.node_id` unset,
 // `source_node` pointed at a FILE node with no outgoing calls, and
-// journey-builder's chain walk dead-ending at depth 0. Of 151 real HTTP
+// entry-point-flow-builder's chain walk dead-ending at depth 0. Of 151 real HTTP
 // routes on that analysis, exactly one journey survived. This test locks in
 // the fix: an unambiguous EXACT project-wide name match resolves even when
 // it lives outside handlerFile's narrowed scope.

@@ -1,7 +1,7 @@
 import { buildProductMap } from '../../analyzer/core/product-map';
 import {
   CASOutput,
-  CASUserJourney,
+  CASEntryPointFlow,
   SystemCapability,
   CASEntityLineage,
   CASParadigmConformance,
@@ -26,9 +26,9 @@ test('keeps unresolved transfer exposure visible without asserting a destination
   });
 });
 
-function journey(overrides: Partial<CASUserJourney> & { id: string; name: string }): CASUserJourney {
+function journey(overrides: Partial<CASEntryPointFlow> & { id: string; name: string }): CASEntryPointFlow {
   return {
-    journey_kind: 'user-facing',
+    flow_kind: 'user-facing',
     entry_point_id: `entry_${overrides.id}`,
     entry: { type: 'http', name: overrides.name },
     steps: [],
@@ -40,7 +40,7 @@ function journey(overrides: Partial<CASUserJourney> & { id: string; name: string
     call_chain_ids: [],
     exit_point_ids: [],
     ...overrides,
-  } as CASUserJourney;
+  } as CASEntryPointFlow;
 }
 
 const capabilities: SystemCapability[] = [
@@ -71,7 +71,7 @@ const capabilities: SystemCapability[] = [
   },
 ];
 
-const journeys: CASUserJourney[] = [
+const journeys: CASEntryPointFlow[] = [
   journey({
     id: 'j_charge',
     name: 'Charge customer',
@@ -90,7 +90,7 @@ const journeys: CASUserJourney[] = [
   journey({
     id: 'j_report',
     name: 'Nightly report job',
-    journey_kind: 'scheduled',
+    flow_kind: 'scheduled',
     criticality: 'low',
     terminal_effects: { entities_written: ['Report'], entities_read: [], external_services: [], messages_emitted: [] },
   }),
@@ -170,8 +170,8 @@ const fullCas = {
     supporting_workflow_ids: [],
   },
   capabilities: capabilities,
-  user_journeys: journeys,
-  user_journey_summary: {
+  entry_point_flows: journeys,
+  entry_point_flow_summary: {
     total_discovered: 5,
     included: 3,
     by_kind: { 'user-facing': 2, system: 0, scheduled: 1 },
@@ -354,11 +354,11 @@ describe('buildProductMap', () => {
 
   it('links capabilities to journeys via entry points and shared terminal entities', () => {
     const billing = map.capabilities[0];
-    expect(billing.journeys.map(linked => linked.id)).toEqual(['j_charge', 'j_refund']);
+    expect(billing.entry_point_flows.map(linked => linked.id)).toEqual(['j_charge', 'j_refund']);
     expect(billing.entities).toEqual(['Payment']);
 
     const reporting = map.capabilities[1];
-    expect(reporting.journeys.map(linked => linked.id)).toEqual(['j_report']);
+    expect(reporting.entry_point_flows.map(linked => linked.id)).toEqual(['j_report']);
   });
 
   it('derives tests_present and risk_level from linked journeys', () => {
@@ -372,10 +372,10 @@ describe('buildProductMap', () => {
   });
 
   it('summarizes journeys with top entries by criticality', () => {
-    expect(map.journeys.total).toBe(5);
-    expect(map.journeys.user_facing).toBe(2);
-    expect(map.journeys.scheduled).toBe(1);
-    expect(map.journeys.top[0]).toMatchObject({
+    expect(map.entry_point_flows.total).toBe(5);
+    expect(map.entry_point_flows.user_facing).toBe(2);
+    expect(map.entry_point_flows.scheduled).toBe(1);
+    expect(map.entry_point_flows.top[0]).toMatchObject({
       id: 'j_charge',
       kind: 'user-facing',
       boundaries: ['AuthGuard'],
@@ -412,9 +412,9 @@ describe('buildProductMap', () => {
     ]);
   });
 
-  it('surfaces coverage caveats for unanalyzed languages and truncated journeys', () => {
+  it('surfaces coverage caveats for unanalyzed languages and truncated entry-point flows', () => {
     expect(map.coverage_caveats).toContain('Ruby not analyzed: 12 files (30% of source)');
-    expect(map.coverage_caveats).toContain('5 journeys discovered, 3 included in detail');
+    expect(map.coverage_caveats).toContain('5 entry-point flows discovered, 3 included in detail');
   });
 
   it('surfaces excluded nested git repositories as a coverage caveat', () => {
@@ -449,7 +449,7 @@ describe('buildProductMap with a minimal CAS', () => {
     expect(map.identity.description_source).toBeUndefined();
     expect(map.identity.nested_repositories).toBeUndefined();
     expect(map.capabilities).toEqual([]);
-    expect(map.journeys).toMatchObject({ total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] });
+    expect(map.entry_point_flows).toMatchObject({ total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] });
     expect(map.data).toEqual({ entities: 0, sensitive: [], exposure_highlights: [] });
     expect(map.conventions).toEqual({
       paradigms: [],
@@ -555,7 +555,7 @@ describe('journey attachment discriminates on primary (terminal produced) entiti
     },
   ];
 
-  const discriminationJourneys: CASUserJourney[] = [
+  const discriminationJourneys: CASEntryPointFlow[] = [
     // Writes UserProfile terminally, only READS EconomyTransaction mid-chain —
     // the mtg fan-out shape (socket journeys pasted onto every economy cap).
     journey({
@@ -589,12 +589,12 @@ describe('journey attachment discriminates on primary (terminal produced) entiti
     analyzer_contributions: [],
     progressive_levels: {} as any,
     capabilities: discriminationCapabilities,
-    user_journeys: discriminationJourneys,
+    entry_point_flows: discriminationJourneys,
   } as unknown as CASOutput;
 
   const map = buildProductMap(cas);
   const journeyNamesFor = (capabilityName: string) =>
-    (map.capabilities.find(capability => capability.name === capabilityName)?.journeys || []).map(j => j.name);
+    (map.capabilities.find(capability => capability.name === capabilityName)?.entry_point_flows || []).map(j => j.name);
 
   it('a journey with terminal entity A attaches only to the A-anchored capability', () => {
     expect(journeyNamesFor('Economy')).toContain('Purchase item');

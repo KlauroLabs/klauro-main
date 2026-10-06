@@ -2,7 +2,7 @@ export const INSTALLED_TOOL_NAMES = [
   'analyze_codebase', 'sync_codebase_remote', 'get_upload_manifest', 'resolve_agent_analysis',
   'get_summary', 'get_product_map', 'get_conceptual_analysis', 'get_data_entities',
   'get_semantic_coverage', 'get_agent_start_context', 'get_agent_tool_plan', 'get_agent_context',
-  'search_nodes', 'get_coding_context', 'assess_change_risk', 'find_tests', 'get_user_journeys',
+  'search_nodes', 'get_coding_context', 'assess_change_risk', 'find_tests', 'get_user_journeys', 'get_entry_point_flows',
   'get_codebase_idioms', 'get_behavioral_invariants', 'validate_codebase_idioms',
   'validate_behavioral_invariants', 'run_answer_pack', 'get_agent_revision_tracks', 'start_watch', 'stop_watch',
   'get_watch_status', 'list_watches', 'poll_watch_changes',

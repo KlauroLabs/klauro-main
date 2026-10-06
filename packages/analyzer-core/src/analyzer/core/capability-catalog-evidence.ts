@@ -1,10 +1,10 @@
-import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, SystemCapability } from '../../types/cas.types';
+import { CASDataEntity, CASEntryPoint, CASNode, CASEntryPointFlow, SystemCapability } from '../../types/cas.types';
 export { comprehensionAiPhaseStatus, synchronizeCapabilityCatalogCoverage } from './comprehension-status';
 import type { ProductDocumentStatement } from './product-document-framing';
 import { capabilityEvidenceSubjectTokens, capabilityOperationEvidenceTexts } from './capability-subject-evidence';
 export { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 import { capabilityMarketingLanguageTerms } from './capability-audience-test';
-import { USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { USER_FACING_ENTRY_TYPES } from './entry-point-flow-builder';
 import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
@@ -18,7 +18,7 @@ export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role
 export interface CapabilityEvidenceContext {
   entryPoints?: CASEntryPoint[];
   nodes?: CASNode[];
-  userJourneys?: CASUserJourney[];
+  entryPointFlows?: CASEntryPointFlow[];
 }
 export interface CapabilityEvidenceRoleSummary {
   product: number;
@@ -579,11 +579,11 @@ function capabilityHasPotentialUserSurface(capability: SystemCapability, entryPo
 
 function capabilityHasUserOutcomeJourney(
   capability: SystemCapability,
-  journeys: CASUserJourney[],
+  journeys: CASEntryPointFlow[],
 ): boolean {
   const operationIds = new Set((capability.operations || []).map(operation => operation.entry_point_id));
   return journeys.some(journey => operationIds.has(journey.entry_point_id) &&
-    journey.journey_kind === 'user-facing' &&
+    journey.flow_kind === 'user-facing' &&
     ((journey.terminal_entities || []).some(entity => entity.terminal_kind === 'entity') ||
       (journey.terminal_effects.entities_written || []).length > 0 ||
       (journey.terminal_effects.entities_read || []).length > 0 ||
@@ -659,7 +659,7 @@ export function classifyCapabilityEvidence(
     } else if (candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core' &&
         capabilityHasExternalReach(candidate, entryPointById) &&
         (candidateHasProductEntity(candidate, entityById, projectTextSignal) ||
-          capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []))) {
+          capabilityHasUserOutcomeJourney(candidate, context.entryPointFlows || []))) {
       evidenceRole = 'unresolved';
       reasons.push('potential-user-outcome-requires-catalog-resolution');
     } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
@@ -671,7 +671,7 @@ export function classifyCapabilityEvidence(
     } else {
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
-      const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
+      const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.entryPointFlows || []);
       const deliverySurfaceShapedCandidate =
         /^(?:get|post|put|patch|delete)\s+\//i.test(candidate.name) ||
         /\b(?:click|change|close|submit|mouse\s*leave)\s*$/i.test(candidate.name) ||

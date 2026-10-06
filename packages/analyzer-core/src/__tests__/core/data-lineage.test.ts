@@ -5,7 +5,7 @@ import {
   CASEntryPoint,
   CASExitPoint,
   CASDataEntity,
-  CASUserJourney
+  CASEntryPointFlow
 } from '../../types/cas.types';
 
 function node(id: string, name: string, type: string, file: string): CASNode {
@@ -87,11 +87,11 @@ const entryPoints: CASEntryPoint[] = [
   } as CASEntryPoint,
 ];
 
-const journeys: CASUserJourney[] = [
+const journeys: CASEntryPointFlow[] = [
   {
     id: 'journey_entry_create_payment',
     name: 'Create payment -> Payment created',
-    journey_kind: 'user-facing',
+    flow_kind: 'user-facing',
     entry_point_id: 'entry_create_payment',
     entry: { type: 'http', name: 'POST /payments', method: 'POST', path_or_trigger: '/payments' },
     steps: [],
@@ -113,7 +113,7 @@ const journeys: CASUserJourney[] = [
   {
     id: 'journey_entry_list_reports',
     name: 'List reports -> Payment read',
-    journey_kind: 'user-facing',
+    flow_kind: 'user-facing',
     entry_point_id: 'entry_list_reports',
     entry: { type: 'http', name: 'GET /reports', method: 'GET', path_or_trigger: '/reports' },
     steps: [],
@@ -141,7 +141,7 @@ describe('buildDataLineage', () => {
     dataEntities: [auditLogEntity, paymentEntity],
     exitPoints: [stripeExit],
     entryPoints,
-    userJourneys: journeys,
+    entryPointFlows: journeys,
   });
 
   const payment = lineage.find(item => item.entity_id === 'entity_payment')!;
@@ -231,7 +231,7 @@ describe('buildDataLineage', () => {
       dataEntities: [],
       exitPoints: [stripeExit],
       entryPoints,
-      userJourneys: journeys,
+      entryPointFlows: journeys,
     })).toEqual([]);
   });
 });
@@ -241,11 +241,11 @@ describe('buildDataLineage auth-aware exposure', () => {
     id: string,
     boundaries: Array<{ name: string; mechanism: string; kind?: 'authentication' | 'authorization' | 'rate-limiting' | 'validation' | 'unknown' }>,
     path: string,
-  ): CASUserJourney {
+  ): CASEntryPointFlow {
     return {
       id,
       name: `${id} -> Payment created`,
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: `entry_${id}`,
       entry: { type: 'http', name: `POST ${path}`, method: 'POST', path_or_trigger: path },
       steps: [],
@@ -261,14 +261,14 @@ describe('buildDataLineage auth-aware exposure', () => {
     };
   }
 
-  function lineageFor(testJourneys: CASUserJourney[]) {
+  function lineageFor(testJourneys: CASEntryPointFlow[]) {
     const lineage = buildDataLineage({
       nodes,
       edges,
       dataEntities: [paymentEntity],
       exitPoints: [],
       entryPoints,
-      userJourneys: testJourneys,
+      entryPointFlows: testJourneys,
     });
     return lineage.find(item => item.entity_id === 'entity_payment')!;
   }
@@ -372,7 +372,7 @@ describe('buildDataLineage language-builtin exit filtering', () => {
     dataEntities: [paymentEntity],
     exitPoints: [stripeExit, arrayFilterExit, issetExit, ioExit, mathAbsExit],
     entryPoints,
-    userJourneys: journeys,
+    entryPointFlows: journeys,
   });
   const payment = lineage.find(item => item.entity_id === 'entity_payment')!;
 
@@ -420,7 +420,7 @@ describe('buildDataLineage external recipient service resolution', () => {
     dataEntities: [paymentEntity],
     exitPoints: [stripeExit, cleanChainedExit, rawSourceExit, longUnresolvedExit],
     entryPoints,
-    userJourneys: journeys,
+    entryPointFlows: journeys,
   });
   const payment = lineage.find(item => item.entity_id === 'entity_payment')!;
 
@@ -475,7 +475,7 @@ describe('buildDataLineage external recipient service resolution', () => {
       dataEntities: [paymentEntity],
       exitPoints: [resolvedChainExit],
       entryPoints,
-      userJourneys: journeys,
+      entryPointFlows: journeys,
     }).find(item => item.entity_id === 'entity_payment')!;
     expect(resolved.external_recipients.map(recipient => recipient.service)).toEqual(['payment-gateway']);
   });
@@ -508,7 +508,7 @@ describe('buildDataLineage accessor .file relativization', () => {
     dataEntities: [orderEntity],
     exitPoints: [],
     entryPoints: [],
-    userJourneys: [],
+    entryPointFlows: [],
   });
   const order = lineage.find(item => item.entity_id === 'entity_order')!;
 

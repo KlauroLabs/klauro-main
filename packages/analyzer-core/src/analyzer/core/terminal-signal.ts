@@ -1,4 +1,4 @@
-import type { CASUserJourney, SystemCapability } from '../../types/cas.types';
+import type { CASEntryPointFlow, SystemCapability } from '../../types/cas.types';
 
 
 
@@ -121,14 +121,14 @@ function isNoiseTerminalName(raw: string): boolean {
 }
 
 export function buildTerminalSignal(input: {
-  journeys: CASUserJourney[];
+  journeys: CASEntryPointFlow[];
   systemCapabilities: SystemCapability[];
 }): TerminalSignal {
   const byEntity = new Map<string, RankedTerminalEntity>();
   const byStage = new Map<string, RankedTerminalStage>();
 
   for (const journey of input.journeys || []) {
-    const kindMultiplier = journey.journey_kind === 'user-facing' ? USER_FACING_MULTIPLIER : 1;
+    const kindMultiplier = journey.flow_kind === 'user-facing' ? USER_FACING_MULTIPLIER : 1;
 
     const seenEntities = new Set<string>();
     for (const terminal of journey.terminal_entities || []) {
@@ -151,7 +151,7 @@ export function buildTerminalSignal(input: {
         entry.journey_count += 1;
         if (isWrite) entry.write_journeys += 1;
         else entry.read_journeys += 1;
-        if (journey.journey_kind === 'user-facing') entry.user_facing_journeys += 1;
+        if (journey.flow_kind === 'user-facing') entry.user_facing_journeys += 1;
       }
       byEntity.set(name, entry);
     }

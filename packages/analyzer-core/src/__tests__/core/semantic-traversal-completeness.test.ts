@@ -1,4 +1,4 @@
-import { buildUserJourneys } from '../../analyzer/core/journey-builder';
+import { buildEntryPointFlows } from '../../analyzer/core/entry-point-flow-builder';
 import {
   buildTraversalIndex,
   computeFlowConcepts,
@@ -113,15 +113,15 @@ describe('semantic traversal completeness', () => {
 
   test('journeys preserve complete cyclic reachability and do not default-truncate discovered entries', () => {
     const cas = graphCas(70);
-    const longJourney = buildUserJourneys({
+    const longJourney = buildEntryPointFlows({
       nodes: cas.nodes,
       edges: cas.edges,
       entryPoints: cas.entry_points || [],
       exitPoints: cas.exit_points || [],
       callChains: cas.call_chains || [],
     });
-    expect(longJourney.journeys).toHaveLength(1);
-    expect(new Set(longJourney.journeys[0].steps.map(step => step.node_id)).size).toBe(70);
+    expect(longJourney.entryPointFlows).toHaveLength(1);
+    expect(new Set(longJourney.entryPointFlows[0].steps.map(step => step.node_id)).size).toBe(70);
 
     const manyNodes = Array.from({ length: 55 }, (_, index) => [
       {
@@ -137,7 +137,7 @@ describe('semantic traversal completeness', () => {
         type: 'function',
       },
     ]).flat();
-    const result = buildUserJourneys({
+    const result = buildEntryPointFlows({
       nodes: manyNodes as any,
       edges: Array.from({ length: 55 }, (_, index) => ({
         id: `many_edge_${index}`,
@@ -162,9 +162,9 @@ describe('semantic traversal completeness', () => {
       callChains: [],
     });
     expect(result.summary).toMatchObject({ total_discovered: 55, included: 55 });
-    expect(result.journeys).toHaveLength(55);
+    expect(result.entryPointFlows).toHaveLength(55);
 
-    const rendered = buildUserJourneys({
+    const rendered = buildEntryPointFlows({
       nodes: manyNodes as any,
       edges: Array.from({ length: 55 }, (_, index) => ({
         id: `render_edge_${index}`,
@@ -181,7 +181,7 @@ describe('semantic traversal completeness', () => {
       })) as any,
       exitPoints: [],
       callChains: [],
-    }, { maxJourneys: 5 });
+    }, { maxEntryPointFlows: 5 });
     expect(rendered.summary.total_discovered).toBe(55);
     expect(rendered.summary.included).toBe(5);
   });

@@ -1338,7 +1338,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     flows: ownFlows.length > 0 ? ownFlows : undefined,
     steps: ownFlows.length > 0 ? ownFlows.flatMap(flow => flow.steps) : undefined,
     flow_graph: scopedFlowGraph.graph,
-    user_journeys: undefined,
+    entry_point_flows: undefined,
     causal_journeys: scopeCausalJourneys(cas.causal_journeys, reachableFiles),
     communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
     method_calls: methodCalls.length > 0 ? methodCalls : undefined,

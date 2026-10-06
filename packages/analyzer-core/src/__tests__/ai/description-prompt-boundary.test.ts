@@ -38,7 +38,7 @@ describe('AI description evidence boundary', () => {
       [{
         id: 'journey-order-total',
         name: 'View order -> calculateEnterpriseTotal',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'entry-order',
         entry: { type: 'http', name: 'View order', method: 'GET', path_or_trigger: '/orders/:id' },
         steps: [

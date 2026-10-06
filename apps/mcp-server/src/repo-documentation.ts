@@ -10,7 +10,7 @@ import type {
   CASArchitectureSummary,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 
-import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
 interface GeneratorOptions {
   devRoot: string;
   outputDir: string;
@@ -185,8 +185,8 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
 
 
 
-  const journeys = projectUserJourneysFromCas(cas).journeys
-    .filter(journey => journey.journey_kind === 'user-facing')
+  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows
+    .filter(journey => journey.flow_kind === 'user-facing')
     .slice(0, 8);
   if (journeys.length > 0) {
     lines.push('Top journeys:');

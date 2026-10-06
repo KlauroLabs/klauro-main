@@ -16,7 +16,7 @@ A real stored analysis artifact, not a synthetic one.
   load path, classification, core-tool degradation, and pillar-tool version notices are
   tested against this real file.
 - Shape notes: contains `codebase_idioms`, `embedding_index`, `flow_graph`, and
-  `analysis_facts`, but none of the 1.11.0 pillar fields (`user_journeys`,
+  `analysis_facts`, but none of the 1.11.0 pillar fields (`entry_point_flows`,
   `paradigm_conformance`, `data_lineage`, `product_map`), making it a genuine
   `older-compatible` artifact under a 1.11.0 server.
 

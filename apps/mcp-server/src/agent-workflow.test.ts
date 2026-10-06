@@ -1713,14 +1713,14 @@ test('agent context carries target-scoped pillar digests when pillar data touche
       target: 'UsersService',
     });
 
-    const journeyContext = context.work_context.journey_context;
-    assert.ok(journeyContext, 'journey_context missing');
+    const journeyContext = context.work_context.entry_point_flow_context;
+    assert.ok(journeyContext, 'entry_point_flow_context missing');
     assert.equal(journeyContext.total_matching, 1);
-    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
-    assert.equal(journeyContext.journeys[0].kind, 'user-facing');
-    assert.ok(journeyContext.journeys[0].boundaries.includes('JWT auth'));
-    assert.equal(journeyContext.journeys[0].tests, 1);
-    assert.ok(!journeyContext.journeys.some((journey: any) => journey.id === 'journey-billing-export'));
+    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
+    assert.equal(journeyContext.entry_point_flows[0].kind, 'user-facing');
+    assert.ok(journeyContext.entry_point_flows[0].boundaries.includes('JWT auth'));
+    assert.equal(journeyContext.entry_point_flows[0].tests, 1);
+    assert.ok(!journeyContext.entry_point_flows.some((journey: any) => journey.id === 'journey-billing-export'));
 
     const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing');
@@ -1738,7 +1738,7 @@ test('agent context carries target-scoped pillar digests when pillar data touche
     assert.equal(conformanceContext.deviations[0].severity, 'error');
     assert.ok(!conformanceContext.deviations.some((deviation: any) => deviation.file.startsWith('src/billing/')));
 
-    for (const digest of [journeyContext.journeys, lineageContext.entities, conformanceContext.deviations]) {
+    for (const digest of [journeyContext.entry_point_flows, lineageContext.entities, conformanceContext.deviations]) {
       assert.ok(JSON.stringify(digest).length <= 600, `pillar digest exceeds token budget: ${JSON.stringify(digest).length} chars`);
     }
   });
@@ -1747,7 +1747,7 @@ test('agent context carries target-scoped pillar digests when pillar data touche
 test('agent context bounds journey digests and reports the true match count', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
-    const journeys = (cas as any).user_journeys;
+    const journeys = (cas as any).entry_point_flows;
     const base = journeys[0];
     for (let index = 0; index < 7; index += 1) {
       journeys.push({ ...base, id: `journey-extra-${index}`, name: `Extra user flow ${index}`, criticality: 'medium' });
@@ -1756,12 +1756,12 @@ test('agent context bounds journey digests and reports the true match count', as
       task_type: 'modify',
       target: 'UsersService',
     });
-    const journeyContext = context.work_context.journey_context;
+    const journeyContext = context.work_context.entry_point_flow_context;
     assert.ok(journeyContext);
     assert.equal(journeyContext.total_matching, 8);
-    assert.ok(journeyContext.journeys.length <= 5);
-    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
-    assert.ok(JSON.stringify(journeyContext.journeys).length <= 600);
+    assert.ok(journeyContext.entry_point_flows.length <= 5);
+    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
+    assert.ok(JSON.stringify(journeyContext.entry_point_flows).length <= 600);
   });
 });
 
@@ -1775,9 +1775,9 @@ test('agent context pillar digests match entity targets through terminal entitie
       target: 'User',
     });
     assert.equal(context.selected_node?.name, 'User');
-    const journeyContext = context.work_context.journey_context;
-    assert.ok(journeyContext, 'journey_context missing for entity target');
-    assert.equal(journeyContext.journeys[0].id, 'journey-create-user');
+    const journeyContext = context.work_context.entry_point_flow_context;
+    assert.ok(journeyContext, 'entry_point_flow_context missing for entity target');
+    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
     const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing for entity target');
     assert.equal(lineageContext.entities[0].entity, 'User');
@@ -1791,7 +1791,7 @@ test('agent context omits pillar digests when no pillar data exists', async () =
       task_type: 'modify',
       target: 'UsersService',
     });
-    assert.ok(!('journey_context' in context.work_context));
+    assert.ok(!('entry_point_flow_context' in context.work_context));
     assert.ok(!('lineage_context' in context.work_context));
     assert.ok(!('conformance_context' in context.work_context));
   });
@@ -1800,7 +1800,7 @@ test('agent context omits pillar digests when no pillar data exists', async () =
 test('agent context omits pillar digests when pillar data exists but misses the target', async () => {
   await withWorkspace(async workspace => {
     const cas = pillarFixtureCas();
-    (cas as any).user_journeys = [(cas as any).user_journeys[1]];
+    (cas as any).entry_point_flows = [(cas as any).entry_point_flows[1]];
     (cas as any).data_lineage = [(cas as any).data_lineage[1]];
     (cas as any).paradigm_conformance[0].deviations = (cas as any).paradigm_conformance[0].deviations.filter(
       (deviation: any) => deviation.file.startsWith('src/billing/'),
@@ -1809,7 +1809,7 @@ test('agent context omits pillar digests when pillar data exists but misses the 
       task_type: 'modify',
       target: 'UsersService',
     });
-    assert.ok(!('journey_context' in context.work_context));
+    assert.ok(!('entry_point_flow_context' in context.work_context));
     assert.ok(!('lineage_context' in context.work_context));
     assert.ok(!('conformance_context' in context.work_context));
   });
@@ -1825,8 +1825,8 @@ test('compacted agent contexts preserve pillar digests', async () => {
           task_type: 'modify',
           target: 'UsersService',
         });
-        assert.ok(context.work_context.journey_context, `${profile}: journey_context dropped`);
-        assert.equal(context.work_context.journey_context.journeys[0].id, 'journey-create-user');
+        assert.ok(context.work_context.entry_point_flow_context, `${profile}: entry_point_flow_context dropped`);
+        assert.equal(context.work_context.entry_point_flow_context.entry_point_flows[0].id, 'journey-create-user');
         assert.ok(context.work_context.lineage_context, `${profile}: lineage_context dropped`);
         assert.equal(context.work_context.lineage_context.entities[0].entity, 'User');
         assert.ok(context.work_context.conformance_context, `${profile}: conformance_context dropped`);
@@ -1848,7 +1848,7 @@ test('compacted agent contexts do not invent pillar digests when data is absent'
         task_type: 'modify',
         target: 'UsersService',
       });
-      assert.ok(!('journey_context' in context.work_context));
+      assert.ok(!('entry_point_flow_context' in context.work_context));
       assert.ok(!('lineage_context' in context.work_context));
       assert.ok(!('conformance_context' in context.work_context));
     } finally {
@@ -1888,8 +1888,8 @@ test('start context and agent context lead with the sensitive-data exposure dige
     assert.equal(lineageContext.headline, expectedLine);
     assert.match(String(lineageContext.instruction), /before answering security/);
     const workContextKeys = Object.keys(agentContext.work_context);
-    assert.ok(workContextKeys.indexOf('lineage_context') < workContextKeys.indexOf('journey_context'),
-      'lineage_context should precede journey_context');
+    assert.ok(workContextKeys.indexOf('lineage_context') < workContextKeys.indexOf('entry_point_flow_context'),
+      'lineage_context should precede entry_point_flow_context');
   });
 });
 
@@ -1983,7 +1983,7 @@ test('broad orientation uses exposed comprehension tools in one unique order', a
       path: workspace,
       task: {
         task_type: 'orient',
-        instructions: 'Understand the product, architecture, and major user journeys end to end.',
+        instructions: 'Understand the product, architecture, and major entry-point flows end to end.',
       },
     });
     const exposed = new Set([
@@ -1991,15 +1991,17 @@ test('broad orientation uses exposed comprehension tools in one unique order', a
       'get_summary',
       'get_product_map',
       'get_conceptual_analysis',
+      'get_entry_point_flows',
       'get_user_journeys',
       'run_answer_pack',
     ]);
 
-    assert.deepEqual(plan.steps.map(step => step.order), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(plan.steps.map(step => step.order), [1, 2, 3, 4, 5, 6, 7]);
     assert.equal(new Set(plan.steps.map(step => step.tool)).size, plan.steps.length);
     assert.ok(plan.steps.every(step => exposed.has(step.tool)));
     assert.ok(plan.steps.some(step => step.tool === 'get_product_map'));
     assert.ok(plan.steps.some(step => step.tool === 'get_conceptual_analysis'));
+    assert.ok(plan.steps.some(step => step.tool === 'get_entry_point_flows'));
     assert.ok(plan.steps.some(step => step.tool === 'get_user_journeys'));
     assert.ok(!plan.steps.some(step => step.tool === 'open_agent_workbench'));
   });
@@ -2033,7 +2035,7 @@ test('broad orientation avoids arbitrary internal targets and edit-oriented plan
 
     const task = {
       task_type: 'orient' as const,
-      instructions: 'Understand the product, architecture, and major user journeys end to end.',
+      instructions: 'Understand the product, architecture, and major entry-point flows end to end.',
     };
     const start = getAgentStartContext(cas, workspace, task) as any;
     const context = await getAgentContext(cas, workspace, task) as any;
@@ -2065,11 +2067,11 @@ test('agent start context carries a one-line product orientation when a product 
 
 function pillarFixtureCas(): CASOutput {
   const cas = fixtureCas();
-  (cas as any).user_journeys = [
+  (cas as any).entry_point_flows = [
     {
       id: 'journey-create-user',
       name: 'Create tenant user',
-      journey_kind: 'user-facing',
+      flow_kind: 'user-facing',
       entry_point_id: 'entry-users-create',
       entry: { type: 'http', name: 'POST /users', method: 'POST', path_or_trigger: '/users', handler_node_id: 'users-service' },
       steps: [
@@ -2087,7 +2089,7 @@ function pillarFixtureCas(): CASOutput {
     {
       id: 'journey-billing-export',
       name: 'Billing export',
-      journey_kind: 'scheduled',
+      flow_kind: 'scheduled',
       entry_point_id: 'entry-billing-export',
       entry: { type: 'schedule', name: 'billing export' },
       steps: [{ node_id: 'billing-job', name: 'BillingJob', layer: 'business', depth: 0 }],
@@ -2138,9 +2140,10 @@ function pillarFixtureCas(): CASOutput {
   (cas as any).product_map = {
     identity: { name: 'Fixture API', domain: 'user-management', domain_source: 'deterministic', description: 'Tenant-scoped user API', description_source: 'deterministic', unanalyzed_languages: [] },
     capabilities: [
-      { name: 'Tenant-scoped user management', description: '', description_source: 'deterministic', category: 'core', criticality: 'critical', journeys: [], entities: ['User'], tests_present: true, risk_level: 'high' },
+      { name: 'Tenant-scoped user management', description: '', description_source: 'deterministic', category: 'core', criticality: 'critical', entry_point_flows: [], entities: ['User'], tests_present: true, risk_level: 'high' },
     ],
-    journeys: { total: 2, user_facing: 1, system: 0, scheduled: 1, top: [] },
+    entry_point_flows: { total: 2, user_facing: 1, system: 0, scheduled: 1, top: [] },
+    journeys: { total: 0, representative: 0, top: [] },
     data: { entities: 2, sensitive: ['User'], exposure_highlights: [] },
     conventions: { paradigms: [], open_deviations: { error: 1, warning: 1, info: 0 } },
     health: { tests: { total: 1, passing: 1, failing: 0 }, implementation: { complete: 4, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },

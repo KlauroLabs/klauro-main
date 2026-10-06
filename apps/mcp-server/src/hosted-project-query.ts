@@ -65,6 +65,11 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
   assess_change_risk: z.object({ node_id: z.string().min(1) }).strict(),
   find_tests: FIND_TESTS_QUERY_SCHEMA,
   get_product_map: z.object({}).strict(),
+  get_entry_point_flows: z.object({
+    flow_id: z.string().optional(), kind: z.string().optional(),
+    limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
+    format: z.enum(['json', 'markdown']).optional(), include_steps: z.boolean().optional(),
+  }).strict(),
   get_user_journeys: z.object({
     journey_id: z.string().optional(), kind: z.string().optional(),
     limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
@@ -148,6 +153,7 @@ export function hostedProjectQuerySections(tool: string, args: HostedQuerySectio
   switch (tool) {
     case 'search_nodes': return [];
     case 'get_product_map': return ['graph', 'calls', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental'];
+    case 'get_entry_point_flows':
     case 'get_user_journeys': return ['graph', 'calls', 'comprehension', 'tests', 'quality', 'supplemental'];
     case 'get_module_health': return ['quality'];
     case 'evaluate_analysis_truth': return ['graph', 'calls', 'facts', 'runtime', 'supplemental'];
@@ -234,6 +240,12 @@ export async function executeHostedProjectQuery(input: {
       break;
     case 'get_product_map':
       result = query.getProductMap(input.cas);
+      break;
+    case 'get_entry_point_flows':
+      result = query.getEntryPointFlows(input.cas, {
+        flowId: args.flow_id, kind: args.kind, limit: args.limit, offset: args.offset,
+        format: args.format, includeSteps: args.include_steps,
+      });
       break;
     case 'get_user_journeys':
       result = query.getUserJourneys(input.cas, {

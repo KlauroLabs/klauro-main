@@ -58,7 +58,7 @@ export function evaluateVersionSkewChecks(): VersionSkewCheck[] {
     'empty result carries an analysis_version_notice naming the missing pillar',
     () => {
       const result = getUserJourneys(legacy) as { total?: number; analysis_version_notice?: string };
-      const noticed = Boolean(result.analysis_version_notice?.includes('user journeys'));
+      const noticed = Boolean(result.analysis_version_notice?.includes('journeys'));
       return { observed: `total=${result.total}, notice=${noticed}`, pass: result.total === 0 && noticed };
     }
   );

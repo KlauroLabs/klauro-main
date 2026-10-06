@@ -166,7 +166,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     };
   });
   const boundedFacts: Record<string, unknown> = {
-    user_journeys: (Array.isArray(facts.user_journeys) ? facts.user_journeys : []).slice(0, 12).map(compactJourney),
+    entry_point_flows: (Array.isArray(facts.entry_point_flows) ? facts.entry_point_flows : []).slice(0, 12).map(compactJourney),
     entities: (Array.isArray(facts.entities) ? facts.entities : []).slice(0, 18).map(compactEntity),
     candidate_route_areas: [] as Record<string, unknown>[],
     required_behavior_candidate_ids: [] as string[],
@@ -193,7 +193,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     includedCandidates.pop();
     omittedCandidateIds.push(candidateId);
   }
-  const shrinkableArrays = ['entities', 'user_journeys', 'external_services'] as const;
+  const shrinkableArrays = ['entities', 'entry_point_flows', 'external_services'] as const;
   while (byteLength(buildContext()) > maxBytes) {
     const key = shrinkableArrays
       .filter(candidateKey => (boundedFacts[candidateKey] as unknown[]).length > 0)

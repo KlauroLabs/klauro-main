@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CASOutput, CASTerminalityMember, FlowConcept } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
-import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
+import { projectEntryPointFlowsFromCas } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-flow-projection';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { buildSummary } from './query';
@@ -50,7 +50,7 @@ function flowEvidence(flow: FlowConcept, entryFiles: Map<string, string | undefi
 }
 
 export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
-  const journeys = projectUserJourneysFromCas(cas).journeys;
+  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   const summary = buildSummary(cas);
   const readiness = evaluateAgentReadiness(cas, projectPath);
   const answerPack = runAnswerPack(cas, projectPath);
@@ -125,12 +125,12 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       terminal_signal: terminalSignal,
     },
     journey_evidence: [...journeys]
-      .sort((left, right) => Number(right.journey_kind === 'user-facing') - Number(left.journey_kind === 'user-facing'))
+      .sort((left, right) => Number(right.flow_kind === 'user-facing') - Number(left.flow_kind === 'user-facing'))
       .slice(0, 16)
       .map(journey => ({
         id: journey.id,
         name: journey.name,
-        kind: journey.journey_kind,
+        kind: journey.flow_kind,
         entry: journey.entry,
         steps: journey.steps,
         terminal_effects: journey.terminal_effects,

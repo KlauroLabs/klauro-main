@@ -11,7 +11,7 @@
     },
     {
       "file": "apps/mcp-server/src/server.ts",
-      "ceiling": 7992
+      "ceiling": 8015
     },
     {
       "file": "apps/mcp-server/src/query.ts",
@@ -27,7 +27,7 @@
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
-      "ceiling": 5028
+      "ceiling": 5041
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",
@@ -186,7 +186,7 @@
       "ceiling": 1496
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "ceiling": 1492
     },
     {

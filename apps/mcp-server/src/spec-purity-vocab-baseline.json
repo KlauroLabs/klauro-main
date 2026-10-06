@@ -767,39 +767,39 @@
       "name": "<inline:q0xu90coyx34>"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "FRAMEWORK_LIFECYCLE_NAMES"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "FRONTEND_STRUCTURE_SEGMENTS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "FRONTEND_SUBJECT_VERBS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "GENERIC_API_TAIL_SEGMENTS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "GENERIC_CLI_COMMAND_LABELS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "JUNK_CALL_TARGET_NAMES"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "STD_TRAIT_METHOD_NAMES"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "TRAVERSAL_EDGE_TYPES"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
       "name": "WALK_EXCLUDED_NODE_TYPES"
     },
     {

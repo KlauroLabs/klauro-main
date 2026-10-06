@@ -1,4 +1,4 @@
-import type { CASUserJourney, CASUserJourneyStep, CASGuardKind } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASEntryPointFlow, CASEntryPointFlowStep, CASGuardKind } from '../../../packages/analyzer-core/src/types/cas.types';
 import { classifyGuardKind } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 
 
@@ -30,28 +30,28 @@ export function humanizeIdentifier(value: string): string {
     .join(' ');
 }
 
-export function journeyStepLabel(step: Pick<CASUserJourneyStep, 'name'>): string {
+export function entryPointFlowStepLabel(step: Pick<CASEntryPointFlowStep, 'name'>): string {
   return humanizeIdentifier(step?.name || '');
 }
 
-export function journeyEntryLabel(journey: Pick<CASUserJourney, 'entry'>): string {
-  const entry = journey.entry;
+export function entryPointFlowEntryLabel(entryPointFlow: Pick<CASEntryPointFlow, 'entry'>): string {
+  const entry = entryPointFlow.entry;
   if (!entry) return '';
   if (entry.method && entry.path_or_trigger) return `${entry.method} ${entry.path_or_trigger}`;
   if (entry.path_or_trigger) return entry.path_or_trigger;
   return entry.name || '';
 }
 
-export function journeyTitle(journey: Pick<CASUserJourney, 'name' | 'entry'>): string {
-  const stored = String(journey.name || '').trim();
+export function entryPointFlowTitle(entryPointFlow: Pick<CASEntryPointFlow, 'name' | 'entry'>): string {
+  const stored = String(entryPointFlow.name || '').trim();
   const beforeArrow = stored.split('->')[0].trim();
   const withoutEntrySuffix = beforeArrow.replace(/\s*\((GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s[^)]*\)\s*$/i, '').trim();
   if (withoutEntrySuffix) {
     return withoutEntrySuffix.charAt(0).toUpperCase() + withoutEntrySuffix.slice(1);
   }
-  const entry = journeyEntryLabel(journey);
+  const entry = entryPointFlowEntryLabel(entryPointFlow);
   const fallback = humanizeIdentifier(entry);
-  return fallback ? fallback.charAt(0).toUpperCase() + fallback.slice(1) : 'Journey';
+  return fallback ? fallback.charAt(0).toUpperCase() + fallback.slice(1) : 'Entry-point flow';
 }
 
 function joinWithMore(names: string[], cap: number): string {
@@ -66,10 +66,10 @@ const ACCESS_VERBS: Record<string, string> = {
   read: 'reads',
 };
 
-export function journeyOutcomePhrase(
-  journey: Pick<CASUserJourney, 'terminal_entities' | 'terminal_effects'>
+export function entryPointFlowOutcomePhrase(
+  entryPointFlow: Pick<CASEntryPointFlow, 'terminal_entities' | 'terminal_effects'>
 ): string {
-  const terminals = journey.terminal_entities || [];
+  const terminals = entryPointFlow.terminal_entities || [];
   const byAccess = new Map<string, string[]>();
   for (const terminal of terminals) {
     if (!terminal?.name) continue;
@@ -83,9 +83,9 @@ export function journeyOutcomePhrase(
     if (names?.length) writes.push(`${ACCESS_VERBS[access]} ${joinWithMore(names, 3)}`);
   }
   if (writes.length > 0) return writes.join(', ');
-  const written = journey.terminal_effects?.entities_written || [];
+  const written = entryPointFlow.terminal_effects?.entities_written || [];
   if (written.length > 0) return `writes ${joinWithMore(written, 3)}`;
-  const readNames = byAccess.get('read') || journey.terminal_effects?.entities_read || [];
+  const readNames = byAccess.get('read') || entryPointFlow.terminal_effects?.entities_read || [];
   if (readNames.length > 0) return `reads ${joinWithMore(readNames, 3)}`;
   return '';
 }
@@ -140,57 +140,57 @@ export function guardPhraseForBoundaries(boundaries: GuardBoundary[]): string {
   return `guarded (${segments.join('; ')})${hasAuth ? '' : ', no auth guard'}`;
 }
 
-export function journeyGuardPhrase(journey: Pick<CASUserJourney, 'security_boundaries'>): string {
-  return guardPhraseForBoundaries(journey.security_boundaries || []);
+export function entryPointFlowGuardPhrase(entryPointFlow: Pick<CASEntryPointFlow, 'security_boundaries'>): string {
+  return guardPhraseForBoundaries(entryPointFlow.security_boundaries || []);
 }
 
-export function journeyTestPhrase(journey: Pick<CASUserJourney, 'tests_covering'>): string {
-  const count = (journey.tests_covering || []).length;
+export function entryPointFlowTestPhrase(entryPointFlow: Pick<CASEntryPointFlow, 'tests_covering'>): string {
+  const count = (entryPointFlow.tests_covering || []).length;
   if (count === 0) return 'no tests';
   return count === 1 ? '1 test' : `${count} tests`;
 }
 
-export function journeyHeadline(journey: CASUserJourney): string {
-  const title = journeyTitle(journey);
-  const entry = journeyEntryLabel(journey);
-  const outcome = journeyOutcomePhrase(journey);
-  const stepCount = (journey.steps || []).length;
+export function entryPointFlowHeadline(entryPointFlow: CASEntryPointFlow): string {
+  const title = entryPointFlowTitle(entryPointFlow);
+  const entry = entryPointFlowEntryLabel(entryPointFlow);
+  const outcome = entryPointFlowOutcomePhrase(entryPointFlow);
+  const stepCount = (entryPointFlow.steps || []).length;
   const chain = [entry, outcome].filter(Boolean).join(' -> ');
   const facts = [
     stepCount > 0 ? `${stepCount} step${stepCount === 1 ? '' : 's'}` : '',
-    journeyGuardPhrase(journey),
-    journeyTestPhrase(journey),
+    entryPointFlowGuardPhrase(entryPointFlow),
+    entryPointFlowTestPhrase(entryPointFlow),
   ].filter(Boolean).join(', ');
   return `${title}: ${chain}${facts ? `; ${facts}` : ''}`;
 }
 
-export interface CompressedJourneySteps {
-  leading: CASUserJourneyStep[];
+export interface CompressedEntryPointFlowSteps {
+  leading: CASEntryPointFlowStep[];
   omitted: number;
-  trailing: CASUserJourneyStep[];
+  trailing: CASEntryPointFlowStep[];
 }
 
 
 
 
-export function displayJourneySteps(
-  journey: Pick<CASUserJourney, 'steps' | 'entry'>
-): CASUserJourneyStep[] {
-  const entryLabel = journeyEntryLabel(journey).toLowerCase();
-  const result: CASUserJourneyStep[] = [];
+export function displayEntryPointFlowSteps(
+  entryPointFlow: Pick<CASEntryPointFlow, 'steps' | 'entry'>
+): CASEntryPointFlowStep[] {
+  const entryLabel = entryPointFlowEntryLabel(entryPointFlow).toLowerCase();
+  const result: CASEntryPointFlowStep[] = [];
   let previousLabel = '';
-  for (const step of journey.steps || []) {
-    const label = journeyStepLabel(step).toLowerCase();
+  for (const step of entryPointFlow.steps || []) {
+    const label = entryPointFlowStepLabel(step).toLowerCase();
     if (!label) continue;
     if (label === entryLabel) continue;
     if (label === previousLabel) continue;
     result.push(step);
     previousLabel = label;
   }
-  return result.length > 0 ? result : (journey.steps || []);
+  return result.length > 0 ? result : (entryPointFlow.steps || []);
 }
 
-export function compressJourneySteps(steps: CASUserJourneyStep[]): CompressedJourneySteps {
+export function compressEntryPointFlowSteps(steps: CASEntryPointFlowStep[]): CompressedEntryPointFlowSteps {
   const all = steps || [];
   if (all.length <= STEP_COMPRESSION_THRESHOLD) {
     return { leading: all, omitted: 0, trailing: [] };
@@ -202,18 +202,18 @@ export function compressJourneySteps(steps: CASUserJourneyStep[]): CompressedJou
   };
 }
 
-export function journeyStepPhrase(journey: Pick<CASUserJourney, 'steps' | 'entry'>): string {
-  const { leading, omitted, trailing } = compressJourneySteps(displayJourneySteps(journey));
-  const parts = leading.map(journeyStepLabel).filter(Boolean);
+export function entryPointFlowStepPhrase(entryPointFlow: Pick<CASEntryPointFlow, 'steps' | 'entry'>): string {
+  const { leading, omitted, trailing } = compressEntryPointFlowSteps(displayEntryPointFlowSteps(entryPointFlow));
+  const parts = leading.map(entryPointFlowStepLabel).filter(Boolean);
   if (omitted > 0) {
     parts.push(`(${omitted} intermediate step${omitted === 1 ? '' : 's'})`);
-    parts.push(...trailing.map(journeyStepLabel).filter(Boolean));
+    parts.push(...trailing.map(entryPointFlowStepLabel).filter(Boolean));
   }
   return parts.join(' -> ');
 }
 
-export function journeyEffectPhrases(journey: Pick<CASUserJourney, 'terminal_effects'>): string[] {
-  const effects = journey.terminal_effects;
+export function entryPointFlowEffectPhrases(entryPointFlow: Pick<CASEntryPointFlow, 'terminal_effects'>): string[] {
+  const effects = entryPointFlow.terminal_effects;
   if (!effects) return [];
   const phrases: string[] = [];
   if (effects.entities_written?.length) phrases.push(`writes ${joinWithMore(effects.entities_written, 4)}`);
@@ -223,34 +223,34 @@ export function journeyEffectPhrases(journey: Pick<CASUserJourney, 'terminal_eff
   return phrases;
 }
 
-export function journeyProvenanceLine(journey: CASUserJourney): string {
+export function entryPointFlowProvenanceLine(entryPointFlow: CASEntryPointFlow): string {
   const parts = [
-    journey.entry_point_id ? `entry_point: ${journey.entry_point_id}` : '',
-    journey.entry?.handler_node_id ? `handler: ${journey.entry.handler_node_id}` : '',
-    `${(journey.call_chain_ids || []).length} call chain${(journey.call_chain_ids || []).length === 1 ? '' : 's'}`,
-    `${(journey.exit_point_ids || []).length} exit point${(journey.exit_point_ids || []).length === 1 ? '' : 's'}`,
+    entryPointFlow.entry_point_id ? `entry_point: ${entryPointFlow.entry_point_id}` : '',
+    entryPointFlow.entry?.handler_node_id ? `handler: ${entryPointFlow.entry.handler_node_id}` : '',
+    `${(entryPointFlow.call_chain_ids || []).length} call chain${(entryPointFlow.call_chain_ids || []).length === 1 ? '' : 's'}`,
+    `${(entryPointFlow.exit_point_ids || []).length} exit point${(entryPointFlow.exit_point_ids || []).length === 1 ? '' : 's'}`,
   ].filter(Boolean);
   return parts.join(' | ');
 }
 
-export function journeyDetailMarkdown(journey: CASUserJourney): string {
+export function entryPointFlowDetailMarkdown(entryPointFlow: CASEntryPointFlow): string {
   const lines: string[] = [];
-  lines.push(`## ${journeyTitle(journey)}`);
+  lines.push(`## ${entryPointFlowTitle(entryPointFlow)}`);
   lines.push('');
-  lines.push(journeyHeadline(journey));
+  lines.push(entryPointFlowHeadline(entryPointFlow));
   lines.push('');
-  const entry = journeyEntryLabel(journey);
-  lines.push(`- Entry: ${journey.entry?.type || 'unknown'}${entry ? ` ${entry}` : ''}`);
-  lines.push(`- Kind: ${journey.journey_kind}, criticality ${journey.criticality}${journey.risk ? `, risk ${journey.risk}` : ''}`);
-  const stepPhrase = journeyStepPhrase(journey);
+  const entry = entryPointFlowEntryLabel(entryPointFlow);
+  lines.push(`- Entry: ${entryPointFlow.entry?.type || 'unknown'}${entry ? ` ${entry}` : ''}`);
+  lines.push(`- Kind: ${entryPointFlow.flow_kind}, criticality ${entryPointFlow.criticality}${entryPointFlow.risk ? `, risk ${entryPointFlow.risk}` : ''}`);
+  const stepPhrase = entryPointFlowStepPhrase(entryPointFlow);
   if (stepPhrase) {
-    lines.push(`- Steps (${displayJourneySteps(journey).length}): ${stepPhrase}`);
+    lines.push(`- Steps (${displayEntryPointFlowSteps(entryPointFlow).length}): ${stepPhrase}`);
   }
-  const effects = journeyEffectPhrases(journey);
+  const effects = entryPointFlowEffectPhrases(entryPointFlow);
   if (effects.length > 0) {
     lines.push(`- Effects: ${effects.join('; ')}`);
   }
-  const boundaries = (journey.security_boundaries || [])
+  const boundaries = (entryPointFlow.security_boundaries || [])
     .map(boundary => {
       if (!boundary.name) return '';
       const qualifiers = [guardBoundaryKind(boundary), boundary.mechanism].filter(Boolean);
@@ -258,33 +258,33 @@ export function journeyDetailMarkdown(journey: CASUserJourney): string {
     })
     .filter(Boolean);
   lines.push(`- Boundaries: ${boundaries.length > 0 ? boundaries.join(', ') : 'none recorded'}`);
-  lines.push(`- Tests: ${journeyTestPhrase(journey)}`);
+  lines.push(`- Tests: ${entryPointFlowTestPhrase(entryPointFlow)}`);
   lines.push('');
-  lines.push(`_${journeyProvenanceLine(journey)}_`);
+  lines.push(`_${entryPointFlowProvenanceLine(entryPointFlow)}_`);
   return lines.join('\n');
 }
 
-export function journeyListLineMarkdown(journey: CASUserJourney): string {
-  return `- ${journeyHeadline(journey)} [${journey.journey_kind}, ${journey.criticality}] (id: ${journey.id})`;
+export function entryPointFlowListLineMarkdown(entryPointFlow: CASEntryPointFlow): string {
+  return `- ${entryPointFlowHeadline(entryPointFlow)} [${entryPointFlow.flow_kind}, ${entryPointFlow.criticality}] (id: ${entryPointFlow.id})`;
 }
 
-export function journeyListMarkdown(
-  journeys: CASUserJourney[],
+export function entryPointFlowListMarkdown(
+  entryPointFlows: CASEntryPointFlow[],
   opts: { total: number; offset: number; byKind?: Record<string, number> } = { total: 0, offset: 0 }
 ): string {
   const lines: string[] = [];
-  lines.push('# User Journeys');
+  lines.push('# Entry-point flows');
   lines.push('');
   const kinds = opts.byKind
     ? Object.entries(opts.byKind).filter(([, count]) => typeof count === 'number' && count > 0).map(([kind, count]) => `${count} ${kind}`).join(', ')
     : '';
-  lines.push(`${opts.total} journey${opts.total === 1 ? '' : 's'}${kinds ? ` (${kinds})` : ''}, showing ${journeys.length}${opts.offset ? ` from offset ${opts.offset}` : ''}.`);
+  lines.push(`${opts.total} entry-point flow${opts.total === 1 ? '' : 's'}${kinds ? ` (${kinds})` : ''}, showing ${entryPointFlows.length}${opts.offset ? ` from offset ${opts.offset}` : ''}.`);
   lines.push('');
-  for (const journey of journeys) {
-    lines.push(journeyListLineMarkdown(journey));
+  for (const entryPointFlow of entryPointFlows) {
+    lines.push(entryPointFlowListLineMarkdown(entryPointFlow));
   }
-  if (journeys.length === 0) {
-    lines.push('_No journeys matched._');
+  if (entryPointFlows.length === 0) {
+    lines.push('_No entry-point flows matched._');
   }
   return lines.join('\n');
 }
@@ -292,7 +292,7 @@ export function journeyListMarkdown(
 
 
 
-export function storedJourneyNameParts(name: string): { title: string; outcome: string; entry: string } {
+export function storedEntryPointFlowNameParts(name: string): { title: string; outcome: string; entry: string } {
   const raw = String(name || '').trim();
   const entryMatch = /\(((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s[^)]*)\)\s*$/i.exec(raw);
   const entry = entryMatch ? entryMatch[1] : '';
@@ -304,8 +304,8 @@ export function storedJourneyNameParts(name: string): { title: string; outcome: 
   return { title, outcome, entry };
 }
 
-export function storedJourneyNameHeadline(name: string): string {
-  const { title, outcome, entry } = storedJourneyNameParts(name);
+export function storedEntryPointFlowNameHeadline(name: string): string {
+  const { title, outcome, entry } = storedEntryPointFlowNameParts(name);
   const chain = [entry, outcome].filter(Boolean).join(' -> ');
   return chain ? `${title}: ${chain}` : title;
 }

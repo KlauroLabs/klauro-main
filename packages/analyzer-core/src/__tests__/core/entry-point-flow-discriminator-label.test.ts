@@ -1,14 +1,14 @@
-// A journey discriminator is rendered inside the journey title a customer
+// A entryPointFlow discriminator is rendered inside the entryPointFlow title a customer
 // reads first, so a repo path must never reach it. Measured live on a Python
-// app whose journeys shipped as `Config (<dir>/<file>.py)`.
-import { discriminatorLabel } from '../../analyzer/core/journey-builder';
+// app whose entryPointFlows shipped as `Config (<dir>/<file>.py)`.
+import { discriminatorLabel } from '../../analyzer/core/entry-point-flow-builder';
 
-describe('journey discriminator label', () => {
+describe('entryPointFlow discriminator label', () => {
   it('turns a source path into a readable name instead of exposing the path', () => {
     const label = discriminatorLabel('rvc-webui/api_231006.py');
     expect(label).not.toContain('/');
     expect(label).not.toContain('.py');
-    // The distinguishing token survives — two such journeys must still differ.
+    // The distinguishing token survives — two such entryPointFlows must still differ.
     expect(label).toContain('231006');
   });
 

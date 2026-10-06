@@ -14,11 +14,11 @@ function pillarCas(): any {
     edges: [],
     entry_points: [],
     exit_points: [],
-    user_journeys: [
+    entry_point_flows: [
       {
         id: 'journey_create_order',
         name: 'Create order -> Order created',
-        journey_kind: 'user-facing',
+        flow_kind: 'user-facing',
         entry_point_id: 'entry_post_orders',
         entry: { type: 'http', name: 'OrdersController#create', method: 'POST', path_or_trigger: '/orders', handler_node_id: 'method_orders_create' },
         steps: [
@@ -36,7 +36,7 @@ function pillarCas(): any {
         exit_point_ids: ['exit_stripe'],
       },
     ],
-    user_journey_summary: { total_discovered: 9, included: 1, by_kind: { 'user-facing': 7, system: 1, scheduled: 1 } },
+    entry_point_flow_summary: { total_discovered: 9, included: 1, by_kind: { 'user-facing': 7, system: 1, scheduled: 1 } },
     data_lineage: [
       {
         entity_id: 'entity_customer',
@@ -76,9 +76,9 @@ function pillarCas(): any {
         unanalyzed_languages: [{ name: 'CoffeeScript', files: 3, share_of_source: 0.02 }],
       },
       capabilities: [
-        { name: 'Order Management', description: 'Order placement and fulfillment.', description_source: 'deterministic', category: 'core', criticality: 'critical', journeys: [{ id: 'journey_create_order', name: 'Create order' }], entities: ['Order'], tests_present: true, risk_level: 'medium' },
+        { name: 'Order Management', description: 'Order placement and fulfillment.', description_source: 'deterministic', category: 'core', criticality: 'critical', entry_point_flows: [{ id: 'journey_create_order', name: 'Create order' }], entities: ['Order'], tests_present: true, risk_level: 'medium' },
       ],
-      journeys: { total: 9, user_facing: 7, system: 1, scheduled: 1, top: [{ id: 'journey_create_order', name: 'Create order', kind: 'user-facing', criticality: 'critical', boundaries: ['require_user'], tests: 1 }] },
+      entry_point_flows: { total: 9, user_facing: 7, system: 1, scheduled: 1, top: [{ id: 'journey_create_order', name: 'Create order', kind: 'user-facing', criticality: 'critical', boundaries: ['require_user'], tests: 1 }] },
       data: { entities: 4, sensitive: ['Customer'], exposure_highlights: [{ entity: 'Customer', sensitive_fields: ['email'], unguarded_paths: 1, external_transfer: true, external_recipients: ['stripe'] }] },
       conventions: { paradigms: [{ paradigm: 'controller-service-repository', description: 'Service-mediated writes.', adoption_rate: 0.9, following_count: 18, comparable_count: 20 }], open_deviations: { error: 0, warning: 1, info: 0 } },
       health: { status: 'healthy', score: 88, tests: { total: 40, passing: 40, failing: 0 }, implementation: { complete: 30, partial: 2, stubs: 0, not_implemented: 0, deprecated: 1 }, top_risks: [{ name: 'Legacy controller writes', level: 'medium', type: 'paradigm-deviation', recommendation: 'Route writes through OrderService.' }] },
@@ -100,8 +100,8 @@ function prePillarCas(): any {
 
 const indexEntry = { name: 'orders-app', file: 'orders-app-abc123.json', analyzed_at: '2026-06-11T00:00:00.000Z', system_type: 'service' };
 
-test('journeyData maps stored journey fields without recomputation', () => {
-  const journeys = inspector.journeyData(pillarCas());
+test('entryPointFlowData maps stored entry-point flow fields without recomputation', () => {
+  const journeys = inspector.entryPointFlowData(pillarCas());
   assert.equal(journeys.present, true);
   assert.equal(journeys.notice, '');
   assert.equal(journeys.summary.total_discovered, 9);
@@ -167,7 +167,7 @@ test('productMapData maps the stored capability spec view', () => {
   assert.equal(product.map.capabilities[0].name, 'Order Management');
   assert.equal(product.map.capabilities[0].category, 'core');
   assert.equal(product.map.capabilities[0].tests_present, true);
-  assert.equal(product.map.journeys.total, 9);
+  assert.equal(product.map.entry_point_flows.total, 9);
   assert.deepEqual(product.map.data.sensitive, ['Customer']);
   assert.equal(product.map.data.exposure_highlights[0].entity, 'Customer');
   assert.equal(product.map.conventions.open_deviations.warning, 1);
@@ -178,7 +178,7 @@ test('productMapData maps the stored capability spec view', () => {
 test('pre-pillar analyses get an explicit version notice, never silent emptiness', () => {
   const cas = prePillarCas();
   for (const [data, label] of [
-    [inspector.journeyData(cas), 'user journeys'],
+    [inspector.entryPointFlowData(cas), 'entry-point flows'],
     [inspector.lineageData(cas), 'data lineage'],
     [inspector.conformanceData(cas), 'paradigm conformance'],
     [inspector.productMapData(cas), 'the stored product map'],
@@ -194,8 +194,8 @@ test('pre-pillar analyses get an explicit version notice, never silent emptiness
 test('current-version analyses with genuinely no pillar data carry no version notice', () => {
   const cas = prePillarCas();
   cas.cas_version = '1.11.0';
-  assert.equal(inspector.journeyData(cas).present, false);
-  assert.equal(inspector.journeyData(cas).notice, '');
+  assert.equal(inspector.entryPointFlowData(cas).present, false);
+  assert.equal(inspector.entryPointFlowData(cas).notice, '');
   assert.equal(inspector.lineageData(cas).notice, '');
   assert.equal(inspector.conformanceData(cas).notice, '');
   assert.equal(inspector.productMapData(cas).notice, '');
@@ -223,7 +223,7 @@ test('renderHtml embeds pillar sections and payload for a pillar-rich analysis',
 test('renderHtml embeds the version notice for a pre-pillar analysis', () => {
   const entry = inspector.buildAnalysisEntry(prePillarCas(), { ...indexEntry, name: 'older-app', file: 'older-app-def456.json' }, '/repo/older-app');
   const html = inspector.renderHtml({ generated_at: new Date().toISOString(), analysis_count: 1, analyses: [entry] });
-  assert.ok(html.includes('predates user journeys'));
+  assert.ok(html.includes('predates entry-point flows'));
   assert.ok(html.includes('Re-run analyze_codebase'));
 });
 
@@ -233,7 +233,7 @@ test('buildAnalysisEntry records the stored cas_version and keeps legacy section
   assert.ok(entry.capabilities);
   assert.ok(entry.composition);
   assert.ok(entry.tests);
-  assert.equal(entry.journeys.present, true);
+  assert.equal(entry.entry_point_flows.present, true);
   assert.equal(entry.lineage.present, true);
   assert.equal(entry.conformance.present, true);
   assert.equal(entry.product_map.present, true);

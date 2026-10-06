@@ -7,23 +7,23 @@ import {
   CASBehaviorDiffParadigmDeviation,
   CASEntityLineage,
   CASOutput,
-  CASUserJourney,
+  CASEntryPointFlow,
   SystemCapability,
 } from '../../types/cas.types';
-import { projectUserJourneysFromCas } from './journey-projection';
+import { projectEntryPointFlowsFromCas } from './entry-point-flow-projection';
 
 const CAPABILITY_NAME_STOPWORDS = new Set([
   'management', 'manage', 'service', 'services', 'api', 'data', 'system',
   'support', 'core', 'handling', 'processing', 'the', 'and', 'of', 'for',
 ]);
 
-function entryDescriptor(journey: CASUserJourney): string {
+function entryDescriptor(journey: CASEntryPointFlow): string {
   const method = journey.entry.method ? `${journey.entry.method.toUpperCase()} ` : '';
   const target = journey.entry.path_or_trigger || journey.entry.name;
   return `${journey.entry.type}:${method}${target}`;
 }
 
-function entryKey(journey: CASUserJourney): string {
+function entryKey(journey: CASEntryPointFlow): string {
   return [
     journey.entry.type,
     (journey.entry.method || '').toUpperCase(),
@@ -31,7 +31,7 @@ function entryKey(journey: CASUserJourney): string {
   ].join('|').toLowerCase();
 }
 
-function terminalEntityNames(journey: CASUserJourney): string[] {
+function terminalEntityNames(journey: CASEntryPointFlow): string[] {
   const names = new Set<string>();
   for (const terminal of journey.terminal_entities || []) {
     names.add(terminal.name);
@@ -39,11 +39,11 @@ function terminalEntityNames(journey: CASUserJourney): string[] {
   return [...names].sort((a, b) => a.localeCompare(b));
 }
 
-function journeyIdentityKey(journey: CASUserJourney): string {
+function journeyIdentityKey(journey: CASEntryPointFlow): string {
   return `${entryKey(journey)}=>${terminalEntityNames(journey).map(name => name.toLowerCase()).join(',')}`;
 }
 
-function entitiesWritten(journey: CASUserJourney): string[] {
+function entitiesWritten(journey: CASEntryPointFlow): string[] {
   const written = new Set<string>();
   for (const terminal of journey.terminal_entities || []) {
     if (terminal.access !== 'read' && terminal.terminal_kind === 'entity') {
@@ -56,17 +56,17 @@ function entitiesWritten(journey: CASUserJourney): string[] {
   return [...written].sort((a, b) => a.localeCompare(b));
 }
 
-function boundaryLabels(journey: CASUserJourney): string[] {
+function boundaryLabels(journey: CASEntryPointFlow): string[] {
   return (journey.security_boundaries || [])
     .map(boundary => `${boundary.name} (${boundary.mechanism})`)
     .sort((a, b) => a.localeCompare(b));
 }
 
-function isGuarded(journey: CASUserJourney): boolean {
+function isGuarded(journey: CASEntryPointFlow): boolean {
   return (journey.security_boundaries || []).length > 0;
 }
 
-function toDiffJourney(journey: CASUserJourney): CASBehaviorDiffJourney {
+function toDiffJourney(journey: CASEntryPointFlow): CASBehaviorDiffJourney {
   return {
     id: journey.id,
     name: journey.name,
@@ -77,17 +77,17 @@ function toDiffJourney(journey: CASUserJourney): CASBehaviorDiffJourney {
 }
 
 interface JourneyMatch {
-  before: CASUserJourney;
-  after: CASUserJourney;
+  before: CASEntryPointFlow;
+  after: CASEntryPointFlow;
 }
 
-function matchJourneys(beforeJourneys: CASUserJourney[], afterJourneys: CASUserJourney[]): {
+function matchJourneys(beforeJourneys: CASEntryPointFlow[], afterJourneys: CASEntryPointFlow[]): {
   matches: JourneyMatch[];
-  added: CASUserJourney[];
-  removed: CASUserJourney[];
+  added: CASEntryPointFlow[];
+  removed: CASEntryPointFlow[];
 } {
   const matches: JourneyMatch[] = [];
-  const unmatchedBefore = new Map<string, CASUserJourney[]>();
+  const unmatchedBefore = new Map<string, CASEntryPointFlow[]>();
   for (const journey of beforeJourneys) {
     const key = journeyIdentityKey(journey);
     const bucket = unmatchedBefore.get(key) || [];
@@ -95,19 +95,19 @@ function matchJourneys(beforeJourneys: CASUserJourney[], afterJourneys: CASUserJ
     unmatchedBefore.set(key, bucket);
   }
 
-  const afterLeftover: CASUserJourney[] = [];
+  const afterLeftover: CASEntryPointFlow[] = [];
   for (const journey of afterJourneys) {
     const key = journeyIdentityKey(journey);
     const bucket = unmatchedBefore.get(key);
     if (bucket && bucket.length > 0) {
-      matches.push({ before: bucket.shift() as CASUserJourney, after: journey });
+      matches.push({ before: bucket.shift() as CASEntryPointFlow, after: journey });
       if (bucket.length === 0) unmatchedBefore.delete(key);
     } else {
       afterLeftover.push(journey);
     }
   }
 
-  const beforeLeftoverByEntry = new Map<string, CASUserJourney[]>();
+  const beforeLeftoverByEntry = new Map<string, CASEntryPointFlow[]>();
   for (const bucket of unmatchedBefore.values()) {
     for (const journey of bucket) {
       const key = entryKey(journey);
@@ -117,19 +117,19 @@ function matchJourneys(beforeJourneys: CASUserJourney[], afterJourneys: CASUserJ
     }
   }
 
-  const added: CASUserJourney[] = [];
+  const added: CASEntryPointFlow[] = [];
   for (const journey of afterLeftover) {
     const key = entryKey(journey);
     const bucket = beforeLeftoverByEntry.get(key);
     if (bucket && bucket.length > 0) {
-      matches.push({ before: bucket.shift() as CASUserJourney, after: journey });
+      matches.push({ before: bucket.shift() as CASEntryPointFlow, after: journey });
       if (bucket.length === 0) beforeLeftoverByEntry.delete(key);
     } else {
       added.push(journey);
     }
   }
 
-  const removed: CASUserJourney[] = [];
+  const removed: CASEntryPointFlow[] = [];
   for (const bucket of beforeLeftoverByEntry.values()) {
     removed.push(...bucket);
   }
@@ -175,14 +175,14 @@ function describeJourneyChange(match: JourneyMatch): CASBehaviorDiffJourneyChang
   return { id: match.after.id, name: match.after.name, what };
 }
 
-function guardingIsTheNorm(journeys: CASUserJourney[], candidate: CASUserJourney): boolean {
+function guardingIsTheNorm(journeys: CASEntryPointFlow[], candidate: CASEntryPointFlow): boolean {
   const others = journeys.filter(journey => journey.id !== candidate.id);
   if (others.length === 0) return false;
   const guarded = others.filter(isGuarded).length;
   return guarded >= 1 && guarded * 2 >= others.length;
 }
 
-function allBoundaryLabels(journeys: CASUserJourney[]): Set<string> {
+function allBoundaryLabels(journeys: CASEntryPointFlow[]): Set<string> {
   const labels = new Set<string>();
   for (const journey of journeys) {
     for (const label of boundaryLabels(journey)) {
@@ -423,8 +423,8 @@ function buildRiskFlags(diff: Omit<CASBehaviorDiff, 'summary'>): string[] {
 }
 
 export function diffBehavior(before: CASOutput, after: CASOutput): CASBehaviorDiff {
-  const beforeJourneys = projectUserJourneysFromCas(before).journeys;
-  const afterJourneys = projectUserJourneysFromCas(after).journeys;
+  const beforeJourneys = projectEntryPointFlowsFromCas(before).entryPointFlows;
+  const afterJourneys = projectEntryPointFlowsFromCas(after).entryPointFlows;
 
   const { matches, added, removed } = matchJourneys(beforeJourneys, afterJourneys);
 

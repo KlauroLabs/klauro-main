@@ -267,7 +267,7 @@ export function computeEntrenchment(
       | 'deployable_evidence'
       | 'call_chains'
       | 'flows'
-      | 'user_journeys'
+      | 'entry_point_flows'
       | 'repository_links'
       | 'cross_repository_links'
     >
@@ -439,7 +439,7 @@ export function computeEntrenchment(
       }
     }
   } else {
-    for (const journey of output.user_journeys || []) {
+    for (const journey of output.entry_point_flows || []) {
       joinFlow(journey.entry?.handler_node_id, journey.id);
       for (const step of journey.steps || []) joinFlow(step.node_id, journey.id);
     }

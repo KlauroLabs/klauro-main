@@ -547,7 +547,7 @@ test('capability map rejects a published catalog below its structural family min
       { name: 'Analyze codebases', description: 'Explains codebase behavior and relationships.', operations: [{ action: 'analyze' }] },
       { name: 'Assess changes', description: 'Explains likely effects before implementation.', operations: [{ action: 'assess' }] },
     ],
-    user_journeys: [{ id: 'journey' }],
+    entry_point_flows: [{ id: 'journey' }],
   } as any, profile);
 
   assert.equal(gate.status, 'fail');
@@ -568,7 +568,7 @@ test('capability map accepts an evidence-free catalog without inventing a minimu
       capability_reconciliation: { proposals: [], undocumented_capabilities: [] },
     },
     capabilities: [],
-    user_journeys: [],
+    entry_point_flows: [],
   } as any, profile);
 
   assert.equal(gate.status, 'pass');

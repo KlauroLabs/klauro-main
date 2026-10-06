@@ -1,7 +1,7 @@
 import type {
   CASDataEntity,
   CASEntryPoint,
-  CASUserJourney,
+  CASEntryPointFlow,
   EnhancedSystemPurpose,
   SystemCapability,
 } from '../../types/cas.types';
@@ -299,7 +299,7 @@ export function capabilityCatalogIntegrationTerms(libraryNames: string[]): strin
 export function groundedCapabilityAudience(
   capability: SystemCapability,
   productText: CapabilityCatalogProductText | undefined,
-  userJourneys: readonly CASUserJourney[],
+  entryPointFlows: readonly CASEntryPointFlow[],
   entryPoints: readonly CASEntryPoint[] = [],
   artifactType?: string,
 ): string | undefined {
@@ -336,7 +336,7 @@ export function groundedCapabilityAudience(
     Boolean(entryPoint.source_node && entryPoint.handler?.node_id === entryPoint.source_node) &&
     String(entryPoint.metadata?.component || '') === String(entryPoint.handler?.method_name || ''));
   if (hasExactReactPage) return 'Users';
-  return userJourneys.some(journey => journey.journey_kind === 'user-facing' && operationEntryPoints.has(journey.entry_point_id))
+  return entryPointFlows.some(journey => journey.flow_kind === 'user-facing' && operationEntryPoints.has(journey.entry_point_id))
     ? 'Users'
     : undefined;
 }
@@ -346,7 +346,7 @@ export function evaluateCapabilityCatalogAudience(
   dataEntities: CASDataEntity[],
   libraryNames: string[],
   productTerms: string[],
-  context: { productText?: CapabilityCatalogProductText; userJourneys?: readonly CASUserJourney[]; entryPoints?: readonly CASEntryPoint[]; artifactType?: string } = {},
+  context: { productText?: CapabilityCatalogProductText; entryPointFlows?: readonly CASEntryPointFlow[]; entryPoints?: readonly CASEntryPoint[]; artifactType?: string } = {},
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
   const integrationTerms = capabilityCatalogIntegrationTerms(libraryNames);
@@ -488,7 +488,7 @@ export function evaluateCapabilityCatalogAudience(
     }
     if (descriptionVerdict.failsAudienceTest) {
       const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
-      const groundedAudience = groundedCapabilityAudience(capability, context.productText, context.userJourneys || [], context.entryPoints, context.artifactType);
+      const groundedAudience = groundedCapabilityAudience(capability, context.productText, context.entryPointFlows || [], context.entryPoints, context.artifactType);
       rejections.push({
         capabilityId: capability.id,
         capabilityIndex,

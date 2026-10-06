@@ -1,5 +1,5 @@
-import { buildUserJourneys } from '../../analyzer/core/journey-builder';
-import { projectUserJourneysFromFlows } from '../../analyzer/core/journey-projection';
+import { buildEntryPointFlows } from '../../analyzer/core/entry-point-flow-builder';
+import { projectEntryPointFlowsFromFlows } from '../../analyzer/core/entry-point-flow-projection';
 import {
   CASNode,
   CASEdge,
@@ -45,9 +45,9 @@ function chain(id: string, entryNodeId: string, entryPointId: string, path: Arra
   } as CASCallChain;
 }
 
-describe('buildUserJourneys', () => {
+describe('buildEntryPointFlows', () => {
   it('retains a single-step path whose only call has unresolved dependency effects', () => {
-    const result = buildUserJourneys({
+    const result = buildEntryPointFlows({
       nodes: [node('handler', 'handleDelivery', 'function')],
       edges: [],
       entryPoints: [{ id: 'entry', source_node: 'handler', type: 'http', name: 'POST /delivery' }] as CASEntryPoint[],
@@ -55,10 +55,10 @@ describe('buildUserJourneys', () => {
       callChains: [],
       dataEntities: [],
     });
-    expect(result.journeys).toHaveLength(1);
-    expect(result.journeys[0].terminal_effects.external_services).toEqual([]);
-    expect(result.journeys[0].exit_point_ids).toEqual(['dependency']);
-    expect(result.journeys[0].unresolved_exit_point_ids).toEqual(['dependency']);
+    expect(result.entryPointFlows).toHaveLength(1);
+    expect(result.entryPointFlows[0].terminal_effects.external_services).toEqual([]);
+    expect(result.entryPointFlows[0].exit_point_ids).toEqual(['dependency']);
+    expect(result.entryPointFlows[0].unresolved_exit_point_ids).toEqual(['dependency']);
   });
   const nodes: CASNode[] = [
     node('n_controller', 'WorkOrdersController', 'controller'),
@@ -137,54 +137,54 @@ describe('buildUserJourneys', () => {
     changeRisks: [changeRisk],
   };
 
-  it('composes an end-to-end journey from entry through service to terminal entity', () => {
-    const { journeys, summary } = buildUserJourneys(baseInput);
+  it('composes an end-to-end entryPointFlow from entry through service to terminal entity', () => {
+    const { entryPointFlows, summary } = buildEntryPointFlows(baseInput);
 
-    expect(journeys).toHaveLength(1);
+    expect(entryPointFlows).toHaveLength(1);
     expect(summary.total_discovered).toBe(1);
     expect(summary.included).toBe(1);
 
-    const journey = journeys[0];
-    expect(journey.entry_point_id).toBe('entry_create_work_order');
-    expect(journey.journey_kind).toBe('user-facing');
-    expect(journey.call_chain_ids).toEqual(['chain_1']);
-    expect(journey.exit_point_ids).toContain('exit_work_order_db');
+    const entryPointFlow = entryPointFlows[0];
+    expect(entryPointFlow.entry_point_id).toBe('entry_create_work_order');
+    expect(entryPointFlow.flow_kind).toBe('user-facing');
+    expect(entryPointFlow.call_chain_ids).toEqual(['chain_1']);
+    expect(entryPointFlow.exit_point_ids).toContain('exit_work_order_db');
 
-    const stepIds = journey.steps.map(step => step.node_id);
+    const stepIds = entryPointFlow.steps.map(step => step.node_id);
     expect(stepIds).toEqual(['n_controller', 'n_service', 'n_repo']);
-    expect(journey.steps[0].layer).toBe('entry');
-    expect(journey.steps[1].layer).toBe('business');
-    expect(journey.steps[2].layer).toBe('data');
+    expect(entryPointFlow.steps[0].layer).toBe('entry');
+    expect(entryPointFlow.steps[1].layer).toBe('business');
+    expect(entryPointFlow.steps[2].layer).toBe('data');
   });
 
-  it('names the journey from the entry action and the terminal entity', () => {
-    const { journeys } = buildUserJourneys(baseInput);
-    expect(journeys[0].name).toBe('Create work order -> WorkOrder created');
-    expect(journeys[0].terminal_entities).toEqual([
+  it('names the entryPointFlow from the entry action and the terminal entity', () => {
+    const { entryPointFlows } = buildEntryPointFlows(baseInput);
+    expect(entryPointFlows[0].name).toBe('Create work order -> WorkOrder created');
+    expect(entryPointFlows[0].terminal_entities).toEqual([
       { entity_id: 'entity_work_order', name: 'WorkOrder', access: 'created', node_id: 'n_repo', terminal_kind: 'entity' },
     ]);
-    expect(journeys[0].terminal_effects.entities_written).toEqual(['WorkOrder']);
+    expect(entryPointFlows[0].terminal_effects.entities_written).toEqual(['WorkOrder']);
   });
 
   it('captures security boundaries crossed on the path', () => {
-    const { journeys } = buildUserJourneys(baseInput);
-    const boundaryNames = journeys[0].security_boundaries.map(boundary => boundary.name);
+    const { entryPointFlows } = buildEntryPointFlows(baseInput);
+    const boundaryNames = entryPointFlows[0].security_boundaries.map(boundary => boundary.name);
     expect(boundaryNames).toContain('authenticate_user');
-    const guardBoundary = journeys[0].security_boundaries.find(boundary => boundary.node_id === 'n_guard');
+    const guardBoundary = entryPointFlows[0].security_boundaries.find(boundary => boundary.node_id === 'n_guard');
     expect(guardBoundary?.mechanism).toBe('guarded_by');
   });
 
   it('links covering tests via tests edges on path nodes', () => {
-    const { journeys } = buildUserJourneys(baseInput);
-    expect(journeys[0].tests_covering).toEqual(['n_suite']);
+    const { entryPointFlows } = buildEntryPointFlows(baseInput);
+    expect(entryPointFlows[0].tests_covering).toEqual(['n_suite']);
   });
 
   it('surfaces the maximum change risk found on the path', () => {
-    const { journeys } = buildUserJourneys(baseInput);
-    expect(journeys[0].risk).toBe('high');
+    const { entryPointFlows } = buildEntryPointFlows(baseInput);
+    expect(entryPointFlows[0].risk).toBe('high');
   });
 
-  it('classifies scheduled entry points as scheduled journeys', () => {
+  it('classifies scheduled entry points as scheduled entryPointFlows', () => {
     const scheduledEntry: CASEntryPoint = {
       id: 'entry_nightly_cleanup',
       source_node: 'n_service',
@@ -194,7 +194,7 @@ describe('buildUserJourneys', () => {
       handler: { node_id: 'n_service', method_name: 'cleanup' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: [scheduledEntry],
       callChains: [
@@ -202,18 +202,18 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].journey_kind).toBe('scheduled');
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].flow_kind).toBe('scheduled');
   });
 
   it('does not stutter the "Scheduled" prefix when the entry point name already starts with it', () => {
-    // Live junk-name defect: buildJourneyName's schedule template
+    // Live junk-name defect: buildEntryPointFlowName's schedule template
     // (`Scheduled ${humanizeLabel(entryPoint.name)}`) combined with an
     // entry-point name that ALREADY carries a "scheduled" word (e.g. a cron
     // handler literally named `scheduled_scan`, or upstream naming that
     // already prefixed "Scheduled") produced "Scheduled Scheduled Scan" —
     // flow/step names already get this hygiene via dedupeAdjacentWords in
-    // flow-concepts.ts; journey names were missing it.
+    // flow-concepts.ts; entryPointFlow names were missing it.
     const scheduledEntry: CASEntryPoint = {
       id: 'entry_scheduled_scan',
       source_node: 'n_service',
@@ -223,7 +223,7 @@ describe('buildUserJourneys', () => {
       handler: { node_id: 'n_service', method_name: 'scan' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: [scheduledEntry],
       callChains: [
@@ -231,17 +231,17 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
+    expect(entryPointFlows).toHaveLength(1);
     // dedupeAdjacentWords only collapses the stutter in the ACTION portion of
     // the name; the ` -> <outcome>` suffix (from baseInput's shared call
     // chain fixture, terminating in a WorkOrder write) is unaffected.
-    expect(journeys[0].name.startsWith('Scheduled scan')).toBe(true);
-    expect(journeys[0].name).not.toMatch(/scheduled\s+scheduled/i);
+    expect(entryPointFlows[0].name.startsWith('Scheduled scan')).toBe(true);
+    expect(entryPointFlows[0].name).not.toMatch(/scheduled\s+scheduled/i);
   });
 
   it('classifies a CLI entry rooted in a shell script as system (operational), not user-facing', () => {
     // Live leak: release.sh / install.sh / *-smoke.sh surfaced as user-facing/high
-    // journeys. A `.sh` deploy/install/release/smoke script is an operator surface,
+    // entryPointFlows. A `.sh` deploy/install/release/smoke script is an operator surface,
     // not a product CLI — evidence = entry TYPE (cli) + a script-file root.
     const scriptEntry: CASEntryPoint = {
       id: 'entry_release_script',
@@ -251,7 +251,7 @@ describe('buildUserJourneys', () => {
       handler: { node_id: 'n_service', method_name: 'main', file: 'apps/mcp-server/scripts/release.sh' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: [scriptEntry],
       callChains: [
@@ -259,8 +259,8 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].journey_kind).toBe('system');
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].flow_kind).toBe('system');
   });
 
   it('classifies a generic main bootstrap with no domain effects as system', () => {
@@ -277,7 +277,7 @@ describe('buildUserJourneys', () => {
       id: 'exit_framework_bootstrap', source_node: 'fn_main', type: 'api',
       name: 'External call: Framework.start', operation: { action: 'call' },
     } as CASExitPoint;
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       nodes: bootstrapNodes,
       edges: [edge('contains_main', 'file_main', 'fn_main', 'contains')],
       entryPoints: [bootstrapEntry],
@@ -285,8 +285,8 @@ describe('buildUserJourneys', () => {
       callChains: [chain('chain_main', 'fn_main', 'entry_main', [['file_main', 0], ['fn_main', 0]], 'exit_framework_bootstrap', 'fn_main')],
       dataEntities: [],
     });
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].journey_kind).toBe('system');
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].flow_kind).toBe('system');
   });
 
   it('keeps a genuine product CLI (bin entry rooted in a source file) user-facing', () => {
@@ -298,7 +298,7 @@ describe('buildUserJourneys', () => {
       handler: { node_id: 'n_controller', method_name: 'main', file: 'apps/mcp-server/src/cli.ts' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: [cliEntry],
       callChains: [
@@ -306,8 +306,8 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].journey_kind).toBe('user-facing');
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].flow_kind).toBe('user-facing');
   });
 
   it('reclassifies a CLI console-command entry as scheduled when a kubernetes_cronjob references its command (k8s CronJob evidence)', () => {
@@ -333,7 +333,7 @@ describe('buildUserJourneys', () => {
       metadata: { framework: 'symfony', kind: 'command', commandName: 'app:cron:process-bookings' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       nodes: [...nodes, cronJobNode],
       entryPoints: [consoleCommandEntry],
@@ -342,9 +342,9 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].journey_kind).toBe('scheduled');
-    expect(journeys[0].entry.path_or_trigger).toBe('*/15 * * * *');
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].flow_kind).toBe('scheduled');
+    expect(entryPointFlows[0].entry.path_or_trigger).toBe('*/15 * * * *');
   });
 
   it('leaves a bare CLI console command with NO CronJob reference un-rescheduled (no fabrication from naming alone)', () => {
@@ -367,7 +367,7 @@ describe('buildUserJourneys', () => {
       metadata: { framework: 'symfony', kind: 'command', commandName: 'app:manual:import' },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       nodes: [...nodes, unrelatedCronJobNode],
       entryPoints: [consoleCommandEntry],
@@ -376,22 +376,22 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(1);
+    expect(entryPointFlows).toHaveLength(1);
     // No CronJob evidence references this command -> stays the default CLI
     // classification (user-facing), never 'scheduled'.
-    expect(journeys[0].journey_kind).not.toBe('scheduled');
+    expect(entryPointFlows[0].flow_kind).not.toBe('scheduled');
   });
 
   it('falls back to call edges when no call chains exist for an entry point', () => {
-    const { journeys } = buildUserJourneys({ ...baseInput, callChains: [] });
-    expect(journeys).toHaveLength(1);
-    const stepIds = journeys[0].steps.map(step => step.node_id);
+    const { entryPointFlows } = buildEntryPointFlows({ ...baseInput, callChains: [] });
+    expect(entryPointFlows).toHaveLength(1);
+    const stepIds = entryPointFlows[0].steps.map(step => step.node_id);
     expect(stepIds).toContain('n_service');
     expect(stepIds).toContain('n_repo');
-    expect(journeys[0].terminal_entities[0]?.name).toBe('WorkOrder');
+    expect(entryPointFlows[0].terminal_entities[0]?.name).toBe('WorkOrder');
   });
 
-  it('caps included journeys while reporting the total discovered', () => {
+  it('caps included entryPointFlows while reporting the total discovered', () => {
     const manyEntryPoints: CASEntryPoint[] = [];
     const manyChains: CASCallChain[] = [];
     for (let i = 0; i < 5; i++) {
@@ -408,19 +408,19 @@ describe('buildUserJourneys', () => {
       );
     }
 
-    const { journeys, summary } = buildUserJourneys(
+    const { entryPointFlows, summary } = buildEntryPointFlows(
       { ...baseInput, entryPoints: manyEntryPoints, callChains: manyChains },
-      { maxJourneys: 3 }
+      { maxEntryPointFlows: 3 }
     );
 
     expect(summary.total_discovered).toBe(5);
     expect(summary.included).toBe(3);
-    expect(journeys).toHaveLength(3);
+    expect(entryPointFlows).toHaveLength(3);
   });
 
   it('is deterministic across repeated runs', () => {
-    const first = buildUserJourneys(baseInput);
-    const second = buildUserJourneys(baseInput);
+    const first = buildEntryPointFlows(baseInput);
+    const second = buildEntryPointFlows(baseInput);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
   });
 
@@ -455,16 +455,16 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const terminalNames = journeys[0].terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const terminalNames = entryPointFlows[0].terminal_entities.map(t => t.name);
     expect(terminalNames[0]).toBe('WorkOrder');
     expect(terminalNames).toContain('Customer');
-    const primary = journeys[0].terminal_entities[0];
+    const primary = entryPointFlows[0].terminal_entities[0];
     expect(primary.entity_id).toBe('entity_work_order');
     expect(primary.access).toBe('created');
     expect(primary.terminal_kind).toBe('entity');
-    expect(journeys[0].name).toBe('Create work order -> WorkOrder created (+1 more)');
+    expect(entryPointFlows[0].name).toBe('Create work order -> WorkOrder created (+1 more)');
   });
 
   it('resolves terminal entities through a controller, service, repository chain', () => {
@@ -494,12 +494,12 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].terminal_entities).toEqual([
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].terminal_entities).toEqual([
       { entity_id: 'entity_inspectionconfig', name: 'InspectionConfig', access: 'created', node_id: 'n_entity2', terminal_kind: 'entity' },
     ]);
-    expect(journeys[0].name).toBe('Create inspection -> InspectionConfig created');
+    expect(entryPointFlows[0].name).toBe('Create inspection -> InspectionConfig created');
   });
 
   it('matches database exit point resources to entities by table name', () => {
@@ -532,15 +532,15 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].terminal_entities[0].name).toBe('WorkOrder');
-    expect(journeys[0].terminal_entities[0].entity_id).toBe('entity_work_order');
-    expect(journeys[0].terminal_entities[0].access).toBe('read');
-    expect(journeys[0].exit_point_ids).toContain('exit_db');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].terminal_entities[0].name).toBe('WorkOrder');
+    expect(entryPointFlows[0].terminal_entities[0].entity_id).toBe('entity_work_order');
+    expect(entryPointFlows[0].terminal_entities[0].access).toBe('read');
+    expect(entryPointFlows[0].exit_point_ids).toContain('exit_db');
   });
 
-  it('composes journeys from handler classes by expanding contained methods', () => {
+  it('composes entryPointFlows from handler classes by expanding contained methods', () => {
     const input = {
       nodes: [
         node('n_msg_handler', 'AsyncReportHandler', 'message_handler'),
@@ -566,12 +566,12 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const stepIds = journeys[0].steps.map(step => step.node_id);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const stepIds = entryPointFlows[0].steps.map(step => step.node_id);
     expect(stepIds).toContain('n_invoke');
-    expect(journeys[0].terminal_entities[0].name).toBe('Report');
-    expect(journeys[0].name).toMatch(/^Handle report request/);
+    expect(entryPointFlows[0].terminal_entities[0].name).toBe('Report');
+    expect(entryPointFlows[0].name).toMatch(/^Handle report request/);
   });
 
   it('falls back to the deepest non-framework node labeled as a node terminal', () => {
@@ -595,13 +595,13 @@ describe('buildUserJourneys', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].terminal_entities).toEqual([
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].terminal_entities).toEqual([
       { name: 'SupersetClient', access: 'read', node_id: 'n_client', terminal_kind: 'node' },
     ]);
-    expect(journeys[0].terminal_effects.entities_written).toEqual([]);
-    expect(journeys[0].terminal_effects.entities_read).toEqual([]);
+    expect(entryPointFlows[0].terminal_effects.entities_written).toEqual([]);
+    expect(entryPointFlows[0].terminal_effects.entities_read).toEqual([]);
   });
 
   it('produces unique names when entry actions collide', () => {
@@ -624,7 +624,7 @@ describe('buildUserJourneys', () => {
       } as CASEntryPoint,
     ];
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: collidingEntryPoints,
       callChains: [
@@ -633,8 +633,8 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(2);
-    const names = journeys.map(journey => journey.name);
+    expect(entryPointFlows).toHaveLength(2);
+    const names = entryPointFlows.map(entryPointFlow => entryPointFlow.name);
     expect(new Set(names).size).toBe(2);
     expect(names.some(name => name.includes('PUT /work_orders/:id'))).toBe(true);
     expect(names.some(name => name.includes('PATCH /work_orders/:id'))).toBe(true);
@@ -669,14 +669,14 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const byName = new Map(journeys[0].terminal_entities.map(item => [item.name, item]));
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const byName = new Map(entryPointFlows[0].terminal_entities.map(item => [item.name, item]));
     expect(byName.get('Address')?.access).toBe('deleted');
     expect(byName.get('Country')?.access).toBe('read');
-    expect(journeys[0].terminal_effects.entities_written).toEqual(['Address']);
-    expect(journeys[0].terminal_effects.entities_read).toContain('Country');
-    expect(journeys[0].name).toBe('Delete address -> Address deleted (+1 more)');
+    expect(entryPointFlows[0].terminal_effects.entities_written).toEqual(['Address']);
+    expect(entryPointFlows[0].terminal_effects.entities_read).toContain('Country');
+    expect(entryPointFlows[0].name).toBe('Delete address -> Address deleted (+1 more)');
   });
 
   it('honors explicit write edges on the path for non-route entities', () => {
@@ -708,14 +708,14 @@ describe('buildUserJourneys', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const byName = new Map(journeys[0].terminal_entities.map(item => [item.name, item]));
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const byName = new Map(entryPointFlows[0].terminal_entities.map(item => [item.name, item]));
     expect(byName.get('Shipment')?.access).toBe('created');
-    expect(journeys[0].terminal_effects.entities_written).toContain('Shipment');
+    expect(entryPointFlows[0].terminal_effects.entities_written).toContain('Shipment');
   });
 
-  it('names GET /new and GET /:id/edit routes as forms, not list journeys', () => {
+  it('names GET /new and GET /:id/edit routes as forms, not list entryPointFlows', () => {
     const formEntryPoints: CASEntryPoint[] = [
       {
         id: 'entry_new',
@@ -735,7 +735,7 @@ describe('buildUserJourneys', () => {
       } as CASEntryPoint,
     ];
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...baseInput,
       entryPoints: formEntryPoints,
       callChains: [
@@ -744,8 +744,8 @@ describe('buildUserJourneys', () => {
       ],
     });
 
-    expect(journeys).toHaveLength(2);
-    const names = journeys.map(journey => journey.name);
+    expect(entryPointFlows).toHaveLength(2);
+    const names = entryPointFlows.map(entryPointFlow => entryPointFlow.name);
     expect(names.some(name => name.startsWith('New address form'))).toBe(true);
     expect(names.some(name => name.startsWith('Edit address form'))).toBe(true);
     expect(names.some(name => name.toLowerCase().includes('list news'))).toBe(false);
@@ -758,17 +758,17 @@ describe('buildUserJourneys', () => {
 // controller class with many actions — carries a `route_handler`-relationship
 // `calls` edge to EVERY sibling entry's resolved handler (linkRouteHandlers
 // mints one such edge per entry point, all sourced at that entry's
-// source_node). Before this fix, journey-builder's own walk seeded from
+// source_node). Before this fix, entryPointFlow-builder's own walk seeded from
 // entryPoint.source_node at depth 0 and followed ALL of a shared source_node's
 // outgoing edges — including its siblings' route_handler edges — so every
-// journey rooted at that shared node inherited every sibling handler's whole
+// entryPointFlow rooted at that shared node inherited every sibling handler's whole
 // downstream path. Symptom measured live: "Update entry" (PUT /v1/entries)
 // reported entities_written for User/APIKey/Feed/Category alongside Entry,
-// and capability_ids identical across unrelated journeys (Rails: 4/7
+// and capability_ids identical across unrelated entryPointFlows (Rails: 4/7
 // capabilities sharing byte-identical 22-entity lists). The fix filters
 // REGISTRATION_HANDLER_EDGE_RELATIONSHIPS edges out of the walk unless the
 // edge target is THIS entry's own already-seeded handler.
-describe('buildUserJourneys: sibling fan-out through a shared registration node', () => {
+describe('buildEntryPointFlows: sibling fan-out through a shared registration node', () => {
   it('does not pull in a sibling handler registered on the same file/class node', () => {
     const registrationFile = node('file_api_go', 'api.go', 'file');
     const updateEntryHandler = node('fn_update_entry', 'setEntryStatusAndStarredHandler', 'function');
@@ -819,7 +819,7 @@ describe('buildUserJourneys: sibling fan-out through a shared registration node'
       security: { authenticated: true },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       nodes,
       edges,
       entryPoints: [updateEntryEntry, createUserEntry],
@@ -832,29 +832,29 @@ describe('buildUserJourneys: sibling fan-out through a shared registration node'
       ],
     });
 
-    expect(journeys).toHaveLength(2);
-    const updateJourney = journeys.find(j => j.entry_point_id === updateEntryEntry.id)!;
-    const createUserJourney = journeys.find(j => j.entry_point_id === createUserEntry.id)!;
+    expect(entryPointFlows).toHaveLength(2);
+    const updateEntryPointFlow = entryPointFlows.find(j => j.entry_point_id === updateEntryEntry.id)!;
+    const createEntryPointFlow = entryPointFlows.find(j => j.entry_point_id === createUserEntry.id)!;
 
-    const updateStepIds = updateJourney.steps.map(s => s.node_id);
+    const updateStepIds = updateEntryPointFlow.steps.map(s => s.node_id);
     expect(updateStepIds).toContain(updateEntryHandler.id);
     expect(updateStepIds).not.toContain(createUserHandler.id);
     expect(updateStepIds).not.toContain(createAPIKeyHandler.id);
-    expect(updateJourney.terminal_effects.entities_written).toEqual(['Entry']);
+    expect(updateEntryPointFlow.terminal_effects.entities_written).toEqual(['Entry']);
 
-    const createUserStepIds = createUserJourney.steps.map(s => s.node_id);
+    const createUserStepIds = createEntryPointFlow.steps.map(s => s.node_id);
     expect(createUserStepIds).not.toContain(updateEntryHandler.id);
     expect(createUserStepIds).not.toContain(createAPIKeyHandler.id);
-    expect(createUserJourney.terminal_effects.entities_written).toEqual(['User']);
+    expect(createEntryPointFlow.terminal_effects.entities_written).toEqual(['User']);
 
-    // The two journeys must not carry identical entity lists.
-    expect(updateJourney.terminal_effects.entities_written).not.toEqual(
-      createUserJourney.terminal_effects.entities_written
+    // The two entryPointFlows must not carry identical entity lists.
+    expect(updateEntryPointFlow.terminal_effects.entities_written).not.toEqual(
+      createEntryPointFlow.terminal_effects.entities_written
     );
   });
 });
 
-describe('buildUserJourneys frontend entry naming', () => {
+describe('buildEntryPointFlows frontend entry naming', () => {
   const pageEntry = (
     id: string,
     sourceNode: string,
@@ -891,11 +891,11 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name).toBe('View decision list -> DecisionHistory read');
-    expect(journeys[0].name).not.toContain('.tsx');
-    expect(journeys[0].entry.path_or_trigger).toBe('/activity/decision-list.tsx');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name).toBe('View decision list -> DecisionHistory read');
+    expect(entryPointFlows[0].name).not.toContain('.tsx');
+    expect(entryPointFlows[0].entry.path_or_trigger).toBe('/activity/decision-list.tsx');
   });
 
   it('drops structural directories like components and widgets from the subject', () => {
@@ -918,8 +918,8 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('View stop loss -> AutomationConfig read');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('View stop loss -> AutomationConfig read');
   });
 
   it('uses the parent segment when an index page is the entry file', () => {
@@ -942,8 +942,8 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('View activity -> ActivityFeed read');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('View activity -> ActivityFeed read');
   });
 
   it('contextualizes generic tail segments like settings with the owning resource', () => {
@@ -961,8 +961,8 @@ describe('buildUserJourneys frontend entry naming', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Update machine settings -> Machine updated');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Update machine settings -> Machine updated');
   });
 
   it('keeps verb-led route subjects as the action without a stacked verb', () => {
@@ -986,8 +986,8 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Update billing -> App');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Update billing -> App');
   });
 
   it('falls back to the component display name for root and wildcard routes', () => {
@@ -1011,8 +1011,8 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Login -> App');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Login -> App');
   });
 
   it('keeps the Visit fallback when neither path segments nor a component exist', () => {
@@ -1036,12 +1036,12 @@ describe('buildUserJourneys frontend entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Visit ** -> AdminComponent');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Visit ** -> AdminComponent');
   });
 });
 
-describe('buildUserJourneys state machine walking', () => {
+describe('buildEntryPointFlows state machine walking', () => {
   const file = '/repo/core/app/models/spree/order.rb';
   const stateNode = (id: string, name: string, initial = false): CASNode => ({
     id,
@@ -1098,9 +1098,9 @@ describe('buildUserJourneys state machine walking', () => {
   };
 
   it('walks from a model step into its state machine through transitions_to', () => {
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const stepNames = journeys[0].steps.map(step => step.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const stepNames = entryPointFlows[0].steps.map(step => step.name);
     expect(stepNames).toContain('Order');
     const cartIndex = stepNames.indexOf('cart');
     const addressIndex = stepNames.indexOf('address');
@@ -1111,14 +1111,14 @@ describe('buildUserJourneys state machine walking', () => {
   });
 
   it('renders state steps with the state name and keeps terminal grounding on the entity', () => {
-    const { journeys } = buildUserJourneys(input);
-    const journey = journeys[0];
-    const stateSteps = journey.steps.filter(step => ['cart', 'address', 'complete'].includes(step.name));
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    const entryPointFlow = entryPointFlows[0];
+    const stateSteps = entryPointFlow.steps.filter(step => ['cart', 'address', 'complete'].includes(step.name));
     expect(stateSteps).toHaveLength(3);
     for (const step of stateSteps) {
       expect(step.layer).toBe('business');
     }
-    const terminalNames = journey.terminal_entities.map(entity => entity.name);
+    const terminalNames = entryPointFlow.terminal_entities.map(entity => entity.name);
     expect(terminalNames).toContain('Order');
     expect(terminalNames).not.toContain('cart');
     expect(terminalNames).not.toContain('address');
@@ -1131,17 +1131,17 @@ describe('buildUserJourneys state machine walking', () => {
       { id: 'n_other_class', name: 'Other', type: 'class', source: { file: otherFile, line: 1 } } as CASNode,
       { id: 'n_other_state', name: 'pending', type: 'state', source: { file: otherFile, line: 5 }, metadata: { attributes: { initial: true } } } as CASNode,
     ];
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       ...input,
       nodes: [...stateMachineNodes, ...unrelated],
       edges: [...stateMachineEdges, edge('e_other', 'n_other_class', 'n_other_state', 'contains')],
     });
-    const stepNames = journeys[0].steps.map(step => step.name);
+    const stepNames = entryPointFlows[0].steps.map(step => step.name);
     expect(stepNames).not.toContain('pending');
   });
 });
 
-describe('buildUserJourneys entry guard truth', () => {
+describe('buildEntryPointFlows entry guard truth', () => {
   const httpEntry = (overrides: Partial<CASEntryPoint>): CASEntryPoint => ({
     id: 'entry_update_config',
     source_node: 'n_controller',
@@ -1165,64 +1165,64 @@ describe('buildUserJourneys entry guard truth', () => {
   });
 
   it('renders security.guards set by the analyzer as entry-guard boundaries', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: false, authorized_roles: [], guards: ['ThrottlerGuard'] },
       metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['ThrottlerGuard'] },
     })));
-    expect(journeys[0].security_boundaries).toEqual([
+    expect(entryPointFlows[0].security_boundaries).toEqual([
       { name: 'ThrottlerGuard', mechanism: 'entry-guard', kind: 'rate-limiting' },
     ]);
   });
 
   it('reads metadata.guards as the same guard truth the route table renders', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: false, authorized_roles: [] },
       metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['ThrottlerGuard', 'ApiKeyGuard'] },
     })));
-    const names = journeys[0].security_boundaries.map(boundary => boundary.name);
+    const names = entryPointFlows[0].security_boundaries.map(boundary => boundary.name);
     expect(names).toEqual(['ApiKeyGuard', 'ThrottlerGuard']);
-    const kinds = journeys[0].security_boundaries.map(boundary => boundary.kind);
+    const kinds = entryPointFlows[0].security_boundaries.map(boundary => boundary.kind);
     expect(kinds).toEqual(['authentication', 'rate-limiting']);
   });
 
   it('names global guards applied by the framework instead of the generic authentication label', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: true, authorized_roles: [], guards: ['GlobalAuthGuard'] },
       metadata: { controller: 'AutoPilotController', handler: 'updateConfig', guards: ['GlobalAuthGuard'], global_guards: ['GlobalAuthGuard'] },
     })));
-    expect(journeys[0].security_boundaries).toEqual([
+    expect(entryPointFlows[0].security_boundaries).toEqual([
       { name: 'GlobalAuthGuard', mechanism: 'entry-guard', kind: 'authentication' },
     ]);
   });
 
   it('deduplicates guards present in both security and metadata', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: true, authorized_roles: [], guards: ['LocalAuthGuard', 'ThrottlerGuard'] },
       metadata: { guards: ['LocalAuthGuard', 'ThrottlerGuard'] },
     })));
-    const names = journeys[0].security_boundaries.map(boundary => boundary.name);
+    const names = entryPointFlows[0].security_boundaries.map(boundary => boundary.name);
     expect(names).toEqual(['LocalAuthGuard', 'ThrottlerGuard']);
   });
 
   it('keeps the authentication fallback when authenticated with no named guards', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: true, authorized_roles: [] },
     })));
-    expect(journeys[0].security_boundaries).toEqual([
+    expect(entryPointFlows[0].security_boundaries).toEqual([
       { name: 'authentication', mechanism: 'entry-guard', kind: 'authentication' },
     ]);
   });
 
   it('keeps anonymous opted-out entries unguarded', () => {
-    const { journeys } = buildUserJourneys(input(httpEntry({
+    const { entryPointFlows } = buildEntryPointFlows(input(httpEntry({
       security: { authenticated: false, authorized_roles: [], guards: [] },
       metadata: { guards: [] },
     })));
-    expect(journeys[0].security_boundaries).toEqual([]);
+    expect(entryPointFlows[0].security_boundaries).toEqual([]);
   });
 });
 
-describe('buildUserJourneys page-component entries', () => {
+describe('buildEntryPointFlows page-component entries', () => {
   it('names a page-component entry from its trigger pattern and keeps it free of HTTP framing', () => {
     const input = {
       nodes: [
@@ -1244,18 +1244,18 @@ describe('buildUserJourneys page-component entries', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
     // The hook node carries no product identity: it must not be promoted to
     // a terminal outcome, so the name stays at the entry action.
-    expect(journeys[0].name).toBe('View profit machine');
-    expect(journeys[0].terminal_entities).toEqual([]);
-    expect(journeys[0].entry.method).toBeUndefined();
-    expect(journeys[0].entry.path_or_trigger).toBe('/profit-machine');
+    expect(entryPointFlows[0].name).toBe('View profit machine');
+    expect(entryPointFlows[0].terminal_entities).toEqual([]);
+    expect(entryPointFlows[0].entry.method).toBeUndefined();
+    expect(entryPointFlows[0].entry.path_or_trigger).toBe('/profit-machine');
   });
 });
 
-describe('buildUserJourneys CLI entry naming', () => {
+describe('buildEntryPointFlows CLI entry naming', () => {
   const cliEntry = (
     id: string,
     sourceNode: string,
@@ -1289,10 +1289,10 @@ describe('buildUserJourneys CLI entry naming', () => {
       entryPoints: [cliEntry('entry:main:bin/coordinator/src/main.rs', 'n_main', 'main', { crate: 'coordinator', binary: 'coordinator' })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name).toBe('Run coordinator -> run_loop');
-    expect(journeys[0].name).not.toMatch(/\bmain\b/);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name).toBe('Run coordinator -> run_loop');
+    expect(entryPointFlows[0].name).not.toMatch(/\bmain\b/);
   });
 
   it('names a build script entry as a build of its crate', () => {
@@ -1301,8 +1301,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       entryPoints: [cliEntry('entry:main:bin/agent/build.rs', 'n_main', 'main', { crate: 'agent', build_script: true })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Build agent -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Build agent -> run_loop');
   });
 
   it('names a clap subcommand variant with binary plus subcommand intent', () => {
@@ -1313,8 +1313,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Agent connect -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Agent connect -> run_loop');
   });
 
   it('humanizes multi-word subcommand variants', () => {
@@ -1325,8 +1325,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Scan target -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Scan target -> run_loop');
   });
 
   it('falls back to the binary when the clap command struct name is generic', () => {
@@ -1337,8 +1337,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run zeracd -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run zeracd -> run_loop');
   });
 
   it('strips clap type suffixes from descriptive command struct names', () => {
@@ -1349,8 +1349,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run agent -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run agent -> run_loop');
   });
 
   it('derives the program from the entry file path when metadata is absent', () => {
@@ -1359,8 +1359,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       entryPoints: [cliEntry('entry:main:bin/agent/src/main.rs', 'n_main', 'main')],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run agent -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run agent -> run_loop');
   });
 
   it('derives the binary stem for src/bin targets without metadata', () => {
@@ -1369,8 +1369,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       entryPoints: [cliEntry('entry:main:src/bin/zerac-ngrok.rs', 'n_main', 'main')],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run zerac-ngrok -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run zerac-ngrok -> run_loop');
   });
 
   it('keeps non-file trigger patterns from other CLI analyzers', () => {
@@ -1379,8 +1379,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       entryPoints: [cliEntry('entry_cli_app_user_promote', 'n_main', 'bin/console app:user:promote', undefined, { pattern: 'app:user:promote' })],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run app:user:promote -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run app:user:promote -> run_loop');
   });
 
   it('drops a zero-signal main terminal outcome', () => {
@@ -1396,23 +1396,23 @@ describe('buildUserJourneys CLI entry naming', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys[0].name).toBe('Run hello');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows[0].name).toBe('Run hello');
   });
 
-  it('builds a single journey when the same entry point id appears twice', () => {
+  it('builds a single entryPointFlow when the same entry point id appears twice', () => {
     const duplicate = cliEntry('entry:main:bin/agent/build.rs', 'n_main', 'main', { crate: 'agent', build_script: true });
     const input = {
       ...callGraph(),
       entryPoints: [duplicate, { ...duplicate }],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name).toBe('Build agent -> run_loop');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name).toBe('Build agent -> run_loop');
   });
 
-  it('disambiguates same-named CLI journeys with binary context instead of main', () => {
+  it('disambiguates same-named CLI entryPointFlows with binary context instead of main', () => {
     const graph = {
       nodes: [
         node('n_main_a', 'main', 'function'),
@@ -1435,8 +1435,8 @@ describe('buildUserJourneys CLI entry naming', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    const names = journeys.map(j => j.name).sort();
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    const names = entryPointFlows.map(j => j.name).sort();
     expect(names).toHaveLength(2);
     expect(names[0]).not.toContain('(main)');
     expect(names[1]).not.toContain('(main)');
@@ -1444,7 +1444,7 @@ describe('buildUserJourneys CLI entry naming', () => {
   });
 });
 
-describe('buildUserJourneys terminal data hygiene', () => {
+describe('buildEntryPointFlows terminal data hygiene', () => {
   it('never stores an HTTP verb as a terminal entity and classifies verb handlers as entry steps', () => {
     // Next.js App Router style: the route handler is a function literally
     // named GET; the walk also reaches a same-name alias node with another id.
@@ -1471,13 +1471,13 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const terminalNames = journeys[0].terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const terminalNames = entryPointFlows[0].terminal_entities.map(t => t.name);
     expect(terminalNames).not.toContain('GET');
-    expect(journeys[0].terminal_effects.entities_read).not.toContain('GET');
-    expect(journeys[0].terminal_effects.entities_written).not.toContain('GET');
-    for (const step of journeys[0].steps) {
+    expect(entryPointFlows[0].terminal_effects.entities_read).not.toContain('GET');
+    expect(entryPointFlows[0].terminal_effects.entities_written).not.toContain('GET');
+    for (const step of entryPointFlows[0].steps) {
       if (step.name === 'GET') expect(step.layer).toBe('entry');
     }
   });
@@ -1507,23 +1507,23 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const journey = journeys[0];
-    const terminalNames = journey.terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const entryPointFlow = entryPointFlows[0];
+    const terminalNames = entryPointFlow.terminal_entities.map(t => t.name);
     for (const name of terminalNames) {
       expect(name).not.toMatch(/^use[A-Z]/);
       expect(name).not.toContain(' usage');
     }
-    expect(journey.terminal_effects.entities_read).toEqual([]);
-    expect(journey.terminal_effects.entities_written).toEqual([]);
-    const hookUsageStep = journey.steps.find(step => step.name === 'useEffect usage');
+    expect(entryPointFlow.terminal_effects.entities_read).toEqual([]);
+    expect(entryPointFlow.terminal_effects.entities_written).toEqual([]);
+    const hookUsageStep = entryPointFlow.steps.find(step => step.name === 'useEffect usage');
     expect(hookUsageStep?.layer).toBe('infrastructure');
-    const hookStep = journey.steps.find(step => step.name === 'useAutomationConfig');
+    const hookStep = entryPointFlow.steps.find(step => step.name === 'useAutomationConfig');
     expect(hookStep?.layer).toBe('infrastructure');
   });
 
-  it('resolves a frontend journey terminal to the data entity behind its API call', () => {
+  it('resolves a frontend entryPointFlow terminal to the data entity behind its API call', () => {
     const input = {
       nodes: [
         node('n_page', 'PortfolioPage', 'react_page'),
@@ -1553,14 +1553,14 @@ describe('buildUserJourneys terminal data hygiene', () => {
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const terminal = journeys[0].terminal_entities[0];
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const terminal = entryPointFlows[0].terminal_entities[0];
     expect(terminal.name).toBe('Portfolio');
     expect(terminal.entity_id).toBe('entity_portfolio');
     expect(terminal.terminal_kind).toBe('entity');
     expect(terminal.access).toBe('created');
-    expect(journeys[0].terminal_effects.entities_written).toContain('Portfolio');
+    expect(entryPointFlows[0].terminal_effects.entities_written).toContain('Portfolio');
   });
 
   it('falls back to the API resource noun when no data entity matches', () => {
@@ -1591,8 +1591,8 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    const terminal = journeys[0].terminal_entities[0];
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    const terminal = entryPointFlows[0].terminal_entities[0];
     expect(terminal.name).toBe('Holding');
     expect(terminal.access).toBe('read');
   });
@@ -1628,8 +1628,8 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    const terminal = journeys[0].terminal_entities[0];
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    const terminal = entryPointFlows[0].terminal_entities[0];
     expect(terminal.name).not.toBe('LoginA');
     expect(terminal.name).toBe('LoginAs');
   });
@@ -1662,20 +1662,20 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    const terminal = journeys[0].terminal_entities[0];
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    const terminal = entryPointFlows[0].terminal_entities[0];
     expect(terminal.name).not.toBe('Aw');
     expect(terminal.name).toBe('Aws');
   });
 
   // REGRESSION (live, deployed build): a bare generic error/exception TYPE
   // ("enum Error") is not a domain terminus — it carries no information about
-  // what the journey actually produces. When it is the ONLY terminal
-  // candidate the walk finds, the journey must report an honest empty
+  // what the entryPointFlow actually produces. When it is the ONLY terminal
+  // candidate the walk finds, the entryPointFlow must report an honest empty
   // terminus (never substitute the generic type name), and must not be
   // rated 'critical' on the strength of a call chain that merely passes
   // through centrally-important code without producing any observed effect.
-  it('never reports a generic Error type as a journey terminus, and never rates an effect-less journey critical', () => {
+  it('never reports a generic Error type as a entryPointFlow terminus, and never rates an effect-less entryPointFlow critical', () => {
     const input = {
       nodes: [
         node('n_entry', 'agent', 'method'),
@@ -1699,12 +1699,12 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const journey = journeys[0];
-    const terminalNames = journey.terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const entryPointFlow = entryPointFlows[0];
+    const terminalNames = entryPointFlow.terminal_entities.map(t => t.name);
     expect(terminalNames).not.toContain('Error');
-    expect(journey.criticality).not.toBe('critical');
+    expect(entryPointFlow.criticality).not.toBe('critical');
   });
 
   it('never promotes Flutter lifecycle methods or widget builders to terminals and demotes them from business stages', () => {
@@ -1738,16 +1738,16 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const journey = journeys[0];
-    const terminalNames = journey.terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const entryPointFlow = entryPointFlows[0];
+    const terminalNames = entryPointFlow.terminal_entities.map(t => t.name);
     for (const banned of ['initState', 'build', 'dispose', '_buildHeader']) {
       expect(terminalNames).not.toContain(banned);
     }
     // The fallback resolves past lifecycle plumbing to the deepest node with identity.
     expect(terminalNames).toContain('AgentDirectory');
-    for (const step of journey.steps) {
+    for (const step of entryPointFlow.steps) {
       if (['initState', 'build', 'dispose', '_buildHeader'].includes(step.name)) {
         expect(step.layer).toBe('infrastructure');
       }
@@ -1784,15 +1784,15 @@ describe('buildUserJourneys terminal data hygiene', () => {
       dataEntities: [],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const journey = journeys[0];
-    const terminalNames = journey.terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const entryPointFlow = entryPointFlows[0];
+    const terminalNames = entryPointFlow.terminal_entities.map(t => t.name);
     for (const banned of ['ClaimsPrincipalExtensions', 'PathHelper', 'GetIntOrDefault', 'GetServerPath']) {
       expect(terminalNames).not.toContain(banned);
     }
     expect(terminalNames).toContain('AddressesService');
-    for (const step of journey.steps) {
+    for (const step of entryPointFlow.steps) {
       if (['GetIntOrDefault', 'GetServerPath', 'ClaimsPrincipalExtensions', 'PathHelper'].includes(step.name)) {
         expect(step.layer).toBe('infrastructure');
       }
@@ -1800,14 +1800,14 @@ describe('buildUserJourneys terminal data hygiene', () => {
   });
 });
 
-describe('buildUserJourneys summary by_kind over the discovered set', () => {
-  it('computes by_kind over ALL discovered journeys, not just the included top-N', () => {
+describe('buildEntryPointFlows summary by_kind over the discovered set', () => {
+  it('computes by_kind over ALL discovered entryPointFlows, not just the included top-N', () => {
     const nodes: CASNode[] = [node('n_ctrl', 'ThingsController', 'controller')];
     const entryPoints: CASEntryPoint[] = [];
     const callChains: CASCallChain[] = [];
 
-    // 9 high-criticality user-facing journeys (each writes 3 entities, so they
-    // dominate the criticality ranking) plus 1 lower-signal scheduled journey.
+    // 9 high-criticality user-facing entryPointFlows (each writes 3 entities, so they
+    // dominate the criticality ranking) plus 1 lower-signal scheduled entryPointFlow.
     for (let i = 0; i < 9; i++) {
       entryPoints.push({
         id: `entry_uf_${i}`,
@@ -1833,15 +1833,15 @@ describe('buildUserJourneys summary by_kind over the discovered set', () => {
       lifecycle: { created_by: ['n_ctrl'], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity));
 
-    const { summary } = buildUserJourneys(
+    const { summary } = buildEntryPointFlows(
       { nodes, edges: [], entryPoints, exitPoints: [], callChains, dataEntities },
-      { maxJourneys: 5 }
+      { maxEntryPointFlows: 5 }
     );
 
     expect(summary.total_discovered).toBe(10);
     // The discovered set genuinely has 9 user-facing + 1 scheduled; by_kind
     // must reflect that even though the top-5 slice may not include the
-    // scheduled journey.
+    // scheduled entryPointFlow.
     expect(summary.by_kind['user-facing'] + summary.by_kind.scheduled).toBe(10);
     expect(summary.by_kind.scheduled).toBe(1);
     expect(summary.by_kind['user-facing']).toBe(9);
@@ -1853,9 +1853,9 @@ describe('buildUserJourneys summary by_kind over the discovered set', () => {
     const callChains: CASCallChain[] = [];
     const dataEntities: CASDataEntity[] = [];
 
-    // 20 user-facing journeys with strong write signal (outrank the lone
-    // system journey on every criticality tiebreaker) and exactly ONE system
-    // journey (an operational CLI/script-rooted entry) with weaker signal.
+    // 20 user-facing entryPointFlows with strong write signal (outrank the lone
+    // system entryPointFlow on every criticality tiebreaker) and exactly ONE system
+    // entryPointFlow (an operational CLI/script-rooted entry) with weaker signal.
     for (let i = 0; i < 20; i++) {
       entryPoints.push({
         id: `entry_uf_${i}`,
@@ -1881,22 +1881,22 @@ describe('buildUserJourneys summary by_kind over the discovered set', () => {
     } as CASEntryPoint);
     callChains.push(chain('chain_sys', 'n_ctrl', 'entry_system_sole', [['n_ctrl', 0]]));
 
-    const { journeys, summary } = buildUserJourneys(
+    const { entryPointFlows, summary } = buildEntryPointFlows(
       { nodes, edges: [], entryPoints, exitPoints: [], callChains, dataEntities },
-      { maxJourneys: 10 }
+      { maxEntryPointFlows: 10 }
     );
 
     expect(summary.total_discovered).toBe(21);
     expect(summary.by_kind.system).toBe(1);
     expect(summary.by_kind['user-facing']).toBe(20);
-    // The sole system journey must survive top-N selection even though a
+    // The sole system entryPointFlow must survive top-N selection even though a
     // pure global criticality ranking would rank it below all 20 stronger
-    // user-facing journeys.
-    expect(journeys.some(j => j.journey_kind === 'system')).toBe(true);
+    // user-facing entryPointFlows.
+    expect(entryPointFlows.some(j => j.flow_kind === 'system')).toBe(true);
   });
 });
 
-describe('buildUserJourneys with partially materialized flows', () => {
+describe('buildEntryPointFlows with partially materialized flows', () => {
   const flow = (flowId: string, entryPoint: string, functionIds: string[], capabilityId?: string): FlowConcept => ({
     flow_id: flowId,
     name: `Flow ${flowId}`,
@@ -1937,7 +1937,7 @@ describe('buildUserJourneys with partially materialized flows', () => {
     } : {}),
   } as FlowConcept);
 
-  it('classifies mixed interactive, external-tool, worker, and parser journeys from structural evidence', () => {
+  it('classifies mixed interactive, external-tool, worker, and parser entryPointFlows from structural evidence', () => {
     const surfaces = [
       { id: 'ui', type: 'event', nodeType: 'component', root: 'ui_component', next: 'ui_service', name: 'submit' },
       { id: 'api', type: 'http', nodeType: 'controller', root: 'api_route', next: 'api_service', name: 'POST /records' },
@@ -1969,7 +1969,7 @@ describe('buildUserJourneys with partially materialized flows', () => {
       [[surface.root, 0], [surface.next, 1]]
     ));
 
-    const { journeys, summary } = buildUserJourneys({
+    const { entryPointFlows, summary } = buildEntryPointFlows({
       nodes,
       edges,
       entryPoints,
@@ -1982,16 +1982,16 @@ describe('buildUserJourneys with partially materialized flows', () => {
 
     expect(summary.total_discovered).toBe(5);
     expect(summary.by_kind).toEqual({ 'user-facing': 3, system: 2, scheduled: 0 });
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_ui')?.journey_kind).toBe('user-facing');
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_api')?.journey_kind).toBe('user-facing');
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_tool')?.journey_kind).toBe('user-facing');
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_worker')?.journey_kind).toBe('system');
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_parser')?.journey_kind).toBe('system');
-    const parserSteps = journeys.find(journey => journey.entry_point_id === 'entry_parser')?.steps || [];
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_ui')?.flow_kind).toBe('user-facing');
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_api')?.flow_kind).toBe('user-facing');
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_tool')?.flow_kind).toBe('user-facing');
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_worker')?.flow_kind).toBe('system');
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_parser')?.flow_kind).toBe('system');
+    const parserSteps = entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_parser')?.steps || [];
     expect(parserSteps[parserSteps.length - 1]?.node_id).toBe('parser_service');
   });
 
-  it('projects only canonical flows and does not invent an unmatched structural journey', () => {
+  it('projects only canonical flows and does not invent an unmatched structural entryPointFlow', () => {
     const nodes = [
       node('workspace_route', 'workspace route', 'controller'),
       node('workspace_service', 'workspace service', 'service'),
@@ -2003,7 +2003,7 @@ describe('buildUserJourneys with partially materialized flows', () => {
       { id: 'entry_worker', source_node: 'worker_entry', type: 'message', name: 'worker event' },
     ] as CASEntryPoint[];
 
-    const { journeys } = projectUserJourneysFromFlows({
+    const { entryPointFlows } = projectEntryPointFlowsFromFlows({
       nodes,
       edges: [
         edge('workspace_edge', 'workspace_route', 'workspace_service', 'calls'),
@@ -2018,15 +2018,15 @@ describe('buildUserJourneys with partially materialized flows', () => {
       flows: [flow('workspace_flow', 'entry_workspace', ['workspace_route', 'workspace_service'], 'capability_workspace')],
     });
 
-    expect(journeys).toHaveLength(1);
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_workspace')?.capability_relationships).toEqual([
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows.find(entryPointFlow => entryPointFlow.entry_point_id === 'entry_workspace')?.capability_relationships).toEqual([
       expect.objectContaining({ capability_id: 'capability_workspace', role: 'primary', evidence: 'operation' }),
     ]);
-    expect(journeys.some(journey => journey.entry_point_id === 'entry_worker')).toBe(false);
+    expect(entryPointFlows.some(entryPointFlow => entryPointFlow.entry_point_id === 'entry_worker')).toBe(false);
   });
 });
 
-describe('buildUserJourneys terminal effects scoped to the traced call chain', () => {
+describe('buildEntryPointFlows terminal effects scoped to the traced call chain', () => {
   it('does not union in a sibling controller action reached only via containment, not the traced chain', () => {
     const input = {
       nodes: [
@@ -2066,12 +2066,12 @@ describe('buildUserJourneys terminal effects scoped to the traced call chain', (
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    const terminalNames = journeys[0].terminal_entities.map(t => t.name);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    const terminalNames = entryPointFlows[0].terminal_entities.map(t => t.name);
     expect(terminalNames).toContain('Inspection');
     expect(terminalNames).not.toContain('Driver');
-    expect(journeys[0].terminal_effects.entities_written).not.toContain('Driver');
+    expect(entryPointFlows[0].terminal_effects.entities_written).not.toContain('Driver');
   });
 
   it('still expands contained methods as a fallback when no call chain exists for the entry', () => {
@@ -2103,13 +2103,13 @@ describe('buildUserJourneys terminal effects scoped to the traced call chain', (
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].terminal_entities[0].name).toBe('Report');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].terminal_entities[0].name).toBe('Report');
   });
 });
 
-describe('buildUserJourneys action-verb route naming from handler evidence', () => {
+describe('buildEntryPointFlows action-verb route naming from handler evidence', () => {
   it('names an RPC-style /complete action route from the handler function name, not "Create complete"', () => {
     const input = {
       nodes: [
@@ -2134,10 +2134,10 @@ describe('buildUserJourneys action-verb route naming from handler evidence', () 
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name.startsWith('Complete maintenance issue')).toBe(true);
-    expect(journeys[0].name).not.toContain('Create complete');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name.startsWith('Complete maintenance issue')).toBe(true);
+    expect(entryPointFlows[0].name).not.toContain('Create complete');
   });
 
   it('names an /oauth/grant action route from the handler function name, not "Create grant"', () => {
@@ -2164,10 +2164,10 @@ describe('buildUserJourneys action-verb route naming from handler evidence', () 
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name.startsWith('Grant oauth access')).toBe(true);
-    expect(journeys[0].name).not.toContain('Create grant');
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name.startsWith('Grant oauth access')).toBe(true);
+    expect(entryPointFlows[0].name).not.toContain('Create grant');
   });
 
   it('keeps ordinary CRUD naming when the handler name does not share the route action word', () => {
@@ -2194,13 +2194,13 @@ describe('buildUserJourneys action-verb route naming from handler evidence', () 
       ],
     };
 
-    const { journeys } = buildUserJourneys(input);
-    expect(journeys).toHaveLength(1);
-    expect(journeys[0].name.startsWith('Create comment')).toBe(true);
+    const { entryPointFlows } = buildEntryPointFlows(input);
+    expect(entryPointFlows).toHaveLength(1);
+    expect(entryPointFlows[0].name.startsWith('Create comment')).toBe(true);
   });
 });
 
-describe('buildUserJourneys coherent single guard verdict', () => {
+describe('buildEntryPointFlows coherent single guard verdict', () => {
   it('never reports "no auth guard" when the entry point is independently authenticated, even with a named authorization guard', () => {
     const nodes: CASNode[] = [
       node('n_ctrl', 'GrantsController', 'controller'),
@@ -2221,7 +2221,7 @@ describe('buildUserJourneys coherent single guard verdict', () => {
       security: { authenticated: true, authorized_roles: [], guards: ['IsGranted'] },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       nodes,
       edges,
       entryPoints: [entryPoint],
@@ -2230,8 +2230,8 @@ describe('buildUserJourneys coherent single guard verdict', () => {
       dataEntities: [],
     });
 
-    expect(journeys).toHaveLength(1);
-    const boundaries = journeys[0].security_boundaries;
+    expect(entryPointFlows).toHaveLength(1);
+    const boundaries = entryPointFlows[0].security_boundaries;
     const kinds = boundaries.map(b => b.kind);
     expect(kinds).toContain('authorization');
     expect(kinds).toContain('authentication');
@@ -2254,7 +2254,7 @@ describe('buildUserJourneys coherent single guard verdict', () => {
       security: { authenticated: false, authorized_roles: [], guards: ['IsGranted'] },
     } as CASEntryPoint;
 
-    const { journeys } = buildUserJourneys({
+    const { entryPointFlows } = buildEntryPointFlows({
       nodes,
       edges: [edge('e1', 'n_ctrl', 'n_service', 'calls')],
       entryPoints: [entryPoint],
@@ -2263,14 +2263,14 @@ describe('buildUserJourneys coherent single guard verdict', () => {
       dataEntities: [],
     });
 
-    expect(journeys).toHaveLength(1);
-    const boundaries = journeys[0].security_boundaries;
+    expect(entryPointFlows).toHaveLength(1);
+    const boundaries = entryPointFlows[0].security_boundaries;
     expect(boundaries.map(b => b.kind)).toEqual(['authorization']);
     expect(boundaries.some(b => b.kind === 'authentication')).toBe(false);
   });
 });
 
-describe('buildUserJourneys external_services evidence-only standard', () => {
+describe('buildEntryPointFlows external_services evidence-only standard', () => {
   const nodes: CASNode[] = [
     node('n_ctrl', 'AccountsController', 'controller'),
     node('n_svc', 'AccountsService', 'service'),
@@ -2284,8 +2284,8 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
   } as CASEntryPoint;
   const edges: CASEdge[] = [edge('e1', 'n_ctrl', 'n_svc', 'calls')];
 
-  function journeyFor(exitPoint: CASExitPoint) {
-    const { journeys } = buildUserJourneys({
+  function entryPointFlowFor(exitPoint: CASExitPoint) {
+    const { entryPointFlows } = buildEntryPointFlows({
       nodes,
       edges,
       entryPoints: [entryPoint],
@@ -2293,34 +2293,34 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
       callChains: [chain('chain_login', 'n_ctrl', 'entry_client_login', [['n_ctrl', 0], ['n_svc', 1]], 'exit_x', 'n_svc')],
       dataEntities: [],
     });
-    expect(journeys).toHaveLength(1);
-    return journeys[0];
+    expect(entryPointFlows).toHaveLength(1);
+    return entryPointFlows[0];
   }
 
   it('omits a same-process helper/stdlib exit point with no resolved target (raw source-expression name, e.g. hmac/store calls)', () => {
-    const journey = journeyFor({
+    const entryPointFlow = entryPointFlowFor({
       id: 'exit_x',
       source_node: 'n_svc',
       type: 'sdk',
       name: 'External call: hmac.New(sha256.New, []byte(username+password)).Sum',
     } as CASExitPoint);
 
-    expect(journey.terminal_effects.external_services).toEqual([]);
+    expect(entryPointFlow.terminal_effects.external_services).toEqual([]);
   });
 
   it('omits a same-process store/accessor call even when it reads as a clean identifier (e.g. r.Form.Get, h.store.SetLastLogin)', () => {
-    const journey = journeyFor({
+    const entryPointFlow = entryPointFlowFor({
       id: 'exit_x',
       source_node: 'n_svc',
       type: 'sdk',
       name: 'External call: h.store.SetLastLogin',
     } as CASExitPoint);
 
-    expect(journey.terminal_effects.external_services).toEqual([]);
+    expect(entryPointFlow.terminal_effects.external_services).toEqual([]);
   });
 
   it('includes a genuine external destination that resolved a structured service_id', () => {
-    const journey = journeyFor({
+    const entryPointFlow = entryPointFlowFor({
       id: 'exit_x',
       source_node: 'n_svc',
       type: 'api',
@@ -2328,11 +2328,11 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
       target: { service_id: 'stripe' },
     } as CASExitPoint);
 
-    expect(journey.terminal_effects.external_services).toEqual(['stripe']);
+    expect(entryPointFlow.terminal_effects.external_services).toEqual(['stripe']);
   });
 
   it('keeps an SDK package boundary unresolved without declared destination evidence', () => {
-    const journey = journeyFor({
+    const entryPointFlow = entryPointFlowFor({
       id: 'exit_x',
       source_node: 'n_svc',
       type: 'sdk',
@@ -2340,8 +2340,8 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
       target: { sdk: 'sendgrid' },
     } as CASExitPoint);
 
-    expect(journey.terminal_effects.external_services).toEqual([]);
-    expect(journey.exit_point_ids).toEqual(['exit_x']);
-    expect(journey.unresolved_exit_point_ids).toEqual(['exit_x']);
+    expect(entryPointFlow.terminal_effects.external_services).toEqual([]);
+    expect(entryPointFlow.exit_point_ids).toEqual(['exit_x']);
+    expect(entryPointFlow.unresolved_exit_point_ids).toEqual(['exit_x']);
   });
 });

@@ -2,7 +2,7 @@ import { diffBehavior } from '../../analyzer/core/behavior-diff';
 import {
   CASEntityLineage,
   CASOutput,
-  CASUserJourney,
+  CASEntryPointFlow,
   SystemCapability,
 } from '../../types/cas.types';
 
@@ -15,11 +15,11 @@ function journey(overrides: {
   read?: string[];
   boundaries?: Array<{ name: string; mechanism: string }>;
   tests?: string[];
-}): CASUserJourney {
+}): CASEntryPointFlow {
   return {
     id: overrides.id,
     name: overrides.name,
-    journey_kind: 'user-facing',
+    flow_kind: 'user-facing',
     entry_point_id: `ep_${overrides.id}`,
     entry: {
       type: 'http',
@@ -128,9 +128,9 @@ const guardedBase = [
 
 describe('diffBehavior', () => {
   it('flags an added journey writing an entity without any security boundary when guarding is the norm', () => {
-    const before = cas({ user_journeys: guardedBase });
+    const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
-      user_journeys: [
+      entry_point_flows: [
         ...guardedBase,
         journey({
           id: 'journey_bulk',
@@ -162,9 +162,9 @@ describe('diffBehavior', () => {
   });
 
   it('detects a journey losing its auth boundary between analyses', () => {
-    const before = cas({ user_journeys: guardedBase });
+    const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
-      user_journeys: [
+      entry_point_flows: [
         guardedBase[0],
         journey({
           id: 'journey_create_v2',
@@ -264,7 +264,7 @@ describe('diffBehavior', () => {
 
   it('returns an empty diff for identical analyses', () => {
     const build = () => cas({
-      user_journeys: guardedBase.map(j => ({ ...j })),
+      entry_point_flows: guardedBase.map(j => ({ ...j })),
       capabilities: [
         capability({ id: 'cap_invoicing', name: 'Invoice Billing', entities: ['Invoice'] }),
       ],
@@ -305,9 +305,9 @@ describe('diffBehavior', () => {
   });
 
   it('reports dropped tests and matches journeys despite changed ids', () => {
-    const before = cas({ user_journeys: guardedBase });
+    const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
-      user_journeys: [
+      entry_point_flows: [
         journey({
           id: 'regenerated_id_1',
           name: 'List invoices',

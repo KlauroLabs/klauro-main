@@ -21,7 +21,7 @@ describe('catalog operation citation scope', () => {
     return local.aiExtractCapabilityCatalog({
       systemName: 'Article Publisher',
       enhancedSystemPurpose: { primary_domain: 'publishing', core_concepts: [] },
-      frameworks: [], userJourneys: [], externalServices: [], budgetMs: 30000,
+      frameworks: [], entryPointFlows: [], externalServices: [], budgetMs: 30000,
       dataEntities: [{ id: 'article', name: 'Article', kind: 'persisted-entity', fields: [] }],
       candidateCapabilities: [evidence], behaviorSurfaces: [],
       projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Organize articles by topic and publication date.' },
@@ -615,7 +615,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     systemName: 'sys',
     enhancedSystemPurpose: { primary_domain: 'analysis', core_concepts: [] },
     frameworks: [],
-    userJourneys: [],
+    entryPointFlows: [],
     dataEntities: [],
     candidateSnapshot: [
       'Manage orders', 'Track portfolios', 'Settle payments', 'View invoices',
@@ -1178,7 +1178,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       { id: 'entity_changehistoryentry', name: 'ChangeHistoryEntry', kind: 'record', fields: [] },
       { id: 'entity_unrelated', name: 'UnrelatedWorkspace', kind: 'record', fields: [] },
     ];
-    args.userJourneys = [{ name: 'Configure unrelated workspace' }];
+    args.entryPointFlows = [{ name: 'Configure unrelated workspace' }];
     args.externalServices = ['UnrelatedService'];
     args.candidateSnapshot.push(cap({
       id: 'cap_history', name: 'History', structural_label: 'History Management',
@@ -1343,7 +1343,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     args.behaviorSurfaces = [];
     args.dataEntities = [{ id: 'entity_category', name: 'Category', kind: 'persisted-entity', attributes: [] }];
     args.projectTextSignal = { concepts: ['spending categories', 'budgets'], evidence: [], summary: 'Users organize spending with categories and budgets.' };
-    args.userJourneys = [{ name: 'Organize spending categories' }];
+    args.entryPointFlows = [{ name: 'Organize spending categories' }];
     const repaired = cap({
       id: 'organize-categories', name: 'Organize spending categories',
       description: 'Users organize spending categories while retaining the ability to add, review, revise, and remove categories.',

@@ -31,7 +31,7 @@ import { aiService } from '../../ai/ai-service';
  *     candidate pool a similar tie to break.
  *
  * Regression contract asserted here: the exact JSON facts bundle handed to
- * the capability-catalog AI call (`candidate_route_areas`, `user_journeys`,
+ * the capability-catalog AI call (`candidate_route_areas`, `entry_point_flows`,
  * `data_entities`) is BYTE-IDENTICAL across two independent, from-scratch
  * analyses of the same unchanged source — proving the prompt input is a
  * total, stable function of the CAS, not an accident of one process's
@@ -258,7 +258,7 @@ describe('capability-catalog prompt input ordering is a total, stable function o
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  it('sends byte-identical candidate_route_areas / user_journeys / entities across two independent from-scratch analyses', async () => {
+  it('sends byte-identical candidate_route_areas / entry_point_flows / entities across two independent from-scratch analyses', async () => {
     const first = await captureCatalogFacts();
     const second = await captureCatalogFacts();
 
@@ -276,7 +276,7 @@ describe('capability-catalog prompt input ordering is a total, stable function o
     expect(first.entities.map((entity: any) => entity.name)).toEqual(['Customer', 'Order']);
 
     expect(JSON.stringify(second.candidate_route_areas)).toBe(JSON.stringify(first.candidate_route_areas));
-    expect(JSON.stringify(second.user_journeys)).toBe(JSON.stringify(first.user_journeys));
+    expect(JSON.stringify(second.entry_point_flows)).toBe(JSON.stringify(first.entry_point_flows));
     expect(JSON.stringify(second.entities)).toBe(JSON.stringify(first.entities));
     expect(JSON.stringify(second.external_services)).toBe(JSON.stringify(first.external_services));
 

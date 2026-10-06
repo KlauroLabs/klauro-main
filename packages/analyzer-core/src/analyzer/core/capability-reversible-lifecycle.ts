@@ -1,5 +1,5 @@
 import type { CASEntryPoint, SystemCapability } from '../../types/cas.types';
-import { USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { USER_FACING_ENTRY_TYPES } from './entry-point-flow-builder';
 
 export function capabilityHasReversibleUserActionLifecycle(
   capability: SystemCapability,
