@@ -5,6 +5,7 @@ mod arms;
 mod builtins;
 mod callbacks;
 mod capabilities;
+mod ci;
 mod audit;
 mod author;
 mod comprehend;
@@ -157,6 +158,8 @@ struct Index {
     dead: Vec<dead::Dead>,
     dependencies: Option<dependencies::Dependencies>,
     services: Vec<services::Service>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ci: Vec<ci::Pipeline>,
     layering: Vec<layers::Layering>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     architectural_conflicts: Vec<conflicts::Conflict>,
@@ -543,6 +546,7 @@ fn read_it() {
         dead: Vec::new(),
         dependencies: None,
         services: Vec::new(),
+        ci: Vec::new(),
         layering: Vec::new(),
         architectural_conflicts: Vec::new(),
         layering_violations: Vec::new(),
@@ -1095,6 +1099,11 @@ fn read_it() {
     index.entry_points.extend(delivered.into_iter().filter(|entry| !handled.contains(&(entry.handler.clone(), entry.kind))));
     let dispatched = derived.dispatched;
     index.patterns = Some(derived.patterns);
+
+    let ci_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let found_ci = ci::extract(&root, &ci_paths);
+    drop(ci_paths);
+    index.ci = found_ci;
 
     let services_started = Instant::now();
     let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
