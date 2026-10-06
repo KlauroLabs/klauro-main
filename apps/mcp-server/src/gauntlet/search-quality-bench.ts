@@ -52,7 +52,7 @@ export interface SearchQualityReport {
 export const SEARCH_QUALITY_CASES: SearchQualityCase[] = [
   { query: 'buildSummary', expectedName: 'buildSummary', expectedFile: 'query.ts' },
   { query: 'searchNodes', expectedName: 'searchNodes', expectedFile: 'query.ts' },
-  { query: 'getFreshAnalysisForAgent', expectedName: 'getFreshAnalysisForAgent', expectedFile: 'server.ts' },
+  { query: 'analyzeProjectLayered', expectedName: 'analyzeProjectLayered', expectedFile: 'analyzer.ts' },
   { query: 'fuseAndRank', expectedName: 'fuseAndRank', expectedFile: 'semantic-search.ts' },
   { query: 'semanticSearch', expectedName: 'semanticSearch', expectedFile: 'semantic-search.ts' },
   { query: 'getSecurityOverview', expectedName: 'getSecurityOverview', expectedFile: 'query.ts' },
