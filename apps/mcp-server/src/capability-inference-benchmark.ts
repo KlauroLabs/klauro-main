@@ -58,7 +58,7 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
     const descriptionStatus = cas.enhanced_system_purpose?.description_generation?.status || '';
     const domainProvenanceOk = primaryDomain
       ? domainSource === 'ai' || domainSource === 'ai-refined'
-      : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus);
+      : ['ai_applied', 'ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus);
     const genericCapabilities = capabilities.filter(capability => isGenericCapabilityName(capability.name));
     const isolatedDomainCapabilities = ['vehicle', 'fuel', 'invoice'].filter(domain =>
       names.some(name => name.toLowerCase().includes(domain) &&

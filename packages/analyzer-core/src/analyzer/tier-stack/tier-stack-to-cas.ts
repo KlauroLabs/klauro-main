@@ -645,6 +645,7 @@ function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] 
   if (comprehension === undefined) return undefined;
   const capabilities = whatTheSystemDelivers(index);
   const product = (comprehension.products ?? [])[0];
+  const authored = (product?.description ?? '').trim() !== '';
   return {
     primary_type: 'application',
     primary_domain: '',
@@ -652,6 +653,9 @@ function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] 
     evidence: capabilities.map(capability => capability.name ?? capability.id),
     inferred_description: product?.description ?? '',
     description_source: 'ai',
+    description_generation: authored
+      ? { status: 'ai_applied', attempted: true }
+      : { status: 'ai_skipped', attempted: false, reason: 'no AI-authored description reached this analysis, so the system description stays empty' },
     core_concepts: (comprehension.entities ?? [])
       .map(entity => entity.name)
       .filter((name): name is string => name !== undefined),
