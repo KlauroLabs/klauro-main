@@ -644,6 +644,8 @@ mod tests {
             description: Some(format!("{name} for someone.")),
             grounding: None,
             standing: crate::comprehend::PUBLISHED,
+            level: crate::capabilities::PART,
+            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,

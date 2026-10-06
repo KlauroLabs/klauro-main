@@ -37,6 +37,7 @@ struct Tally<'a> {
     samples: BTreeMap<&'static str, Vec<&'a str>>,
     set_aside: usize,
     exits: BTreeMap<&'static str, usize>,
+    reaches: BTreeMap<&'static str, Vec<&'a str>>,
     languages: BTreeMap<&'static str, usize>,
     presentation_files: usize,
     code_files: usize,
@@ -91,7 +92,7 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
         return ("tooling", "it holds the files that sit outside every declared part".to_string());
     }
     let screens = tally.of_kinds(&["ui"]) + tally.screen_events;
-    if screens > 0 && share(screens, entered) >= DOMINANT {
+    if screens * 2 > entered {
         return ("presentation", format!("{screens} of its {entered} entry points are screens or reactions to what someone does on one"));
     }
     if tally.presentation_files > 0 && share(tally.presentation_files, tally.code_files) >= INTERFACE_SHARE && tally.of_kinds(SERVING_KINDS) == 0 {
@@ -254,7 +255,8 @@ fn facts_of(project: &SubProject, tally: &Tally, role: &str, basis: &str, facts:
     let mut exits: Vec<(&&str, &usize)> = tally.exits.iter().collect();
     exits.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
     for (kind, count) in exits.into_iter().take(3) {
-        told.push_str(&format!("outward calls of kind {kind}: {count}\n"));
+        let reached = tally.reaches.get(kind).map(|held| held.join(", ")).unwrap_or_default();
+        told.push_str(&format!("outward calls of kind {kind}: {count}, reaching {reached}\n"));
     }
     if !project.consumed_by.is_empty() {
         told.push_str(&format!("used by: {}\n", project.consumed_by.join(", ")));
@@ -334,6 +336,11 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
         let Some(path) = path_of(exit.file).or_else(|| Some(file_of(&exit.source))) else { continue };
         let Some(at) = deepest(path) else { continue };
         *tallies[at].exits.entry(exit.kind).or_default() += 1;
+        let reached = exit.service.as_deref().or(exit.addressed.as_deref()).unwrap_or(exit.name.as_str());
+        let samples = tallies[at].reaches.entry(exit.kind).or_default();
+        if samples.len() < SAMPLES_TOLD && !samples.contains(&reached) {
+            samples.push(reached);
+        }
     }
     let reads: Vec<Reading> = tallies
         .iter()
@@ -482,6 +489,12 @@ mod tests {
         let mut library = project("packages/sdk", "sdk", "library");
         library.consumed_by = vec!["subproject:apps/app".to_string()];
         assert_eq!(role_of(&library, &tally(&[("export", 8)])).0, "library");
+    }
+
+    #[test]
+    fn a_part_whose_screens_are_only_half_its_entry_points_is_not_presentation() {
+        let held = tally(&[("ui", 2), ("lifecycle", 2)]);
+        assert_ne!(role_of(&project("crates/accounts", "accounts", "executable"), &held).0, "presentation");
     }
 
     #[test]

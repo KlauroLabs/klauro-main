@@ -90,6 +90,8 @@ const RECORDS_DESCRIBED: usize = 4;
 
 static SERVED_KINDS: &[&str] = &["background", "cli", "event", "graphql", "http", "message", "rpc", "schedule", "websocket"];
 
+pub(crate) const PART: &str = "part";
+pub(crate) const WHOLE: &str = "whole";
 pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
 
 fn recalled(key: &str) -> Option<Remembered> {
@@ -211,12 +213,13 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
 const WORKS_IN: &str = "within:";
 const STAGE: &str = "stage:";
 const FUNCTIONS_TOLD: usize = 14;
-const SPLIT_FROM_FLOWS: usize = 40;
+const SPLIT_FROM_FLOWS: usize = 30;
+const REFUSE_MERGE_FROM_FLOWS: usize = 40;
 const SPLIT_FROM_STAGES: usize = 12;
 const SPLIT_OUTCOMES_SHOWN: usize = 80;
 const SPLIT_LINES_PER_OUTCOME: usize = 4;
 const OUTCOMES_PER_SPLIT: usize = 12;
-const STAGES_AT_LEAST: usize = 6;
+const STAGES_AT_LEAST: usize = 1;
 const STAGED_PART_FLOWS_AT_MOST: usize = 6;
 
 fn is_a_program_with_stages(flow: &Flow, flows_in_part: usize) -> bool {
@@ -228,9 +231,10 @@ fn evidence_of_stage(flow: &Flow, module: &str) -> String {
         return format!("  outcome (proximal): {module}, which is the stage of its work done there");
     };
     format!(
-        "  outcome (terminal): the work {} does in {}, which is a stage of what it carries out\n  the functions it runs there: {}\n  it reaches out through: {}\n  units of its {} that run there: {}",
+        "  outcome (terminal): the work {} does in {}, which is a stage of what it carries out\n  what its whole path does: {}\n  the functions it runs there: {}\n  it reaches out through: {}\n  units of its {} that run there: {}",
         surface_of(flow),
         stage.module,
+        told_steps(flow),
         stage.names.join(", "),
         match stage.leaves.is_empty() {
             true => "nothing outside this program".to_string(),
@@ -954,6 +958,8 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         description: Some(held.description.trim().to_string()).filter(|description| !description.is_empty()),
         grounding: None,
         standing: PUBLISHED,
+        level: crate::capabilities::PART,
+        stages: Vec::new(),
         touches: Vec::new(),
         terminality: None,
         confidence: None,
@@ -969,6 +975,9 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
             capability.terminality = Some(terminality);
         }
         let serving = held.roles.get(family_id);
+        if let Some(module) = family.key.strip_prefix(STAGE) {
+            capability.stages.push(module.to_string());
+        }
         for flow in lane.iter() {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
             capability.delivered.push(Delivery {
@@ -1004,6 +1013,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
     settle(&mut capability.records);
     settle(&mut capability.touches);
     settle(&mut capability.changes);
+    capability.stages.sort();
     Some(capability)
 }
 
@@ -1577,7 +1587,8 @@ pub(crate) fn the_same_among(
 
 const FILLER_WORDS: [&str; 12] = ["with", "and", "of", "for", "to", "in", "on", "by", "from", "into", "or", "via"];
 const NEAR_EXTRA_WORDS: usize = 2;
-const NEAR_FLOW_SHARE: f64 = 0.6;
+const NEAR_FLOW_SHARE: f64 = 0.5;
+const NEAR_WORD_SHARE: f64 = 0.6;
 
 fn content_words(name: &str) -> BTreeSet<String> {
     name_key(name).split(' ').filter(|word| !word.is_empty() && !FILLER_WORDS.contains(word)).map(str::to_string).collect()
@@ -1585,22 +1596,31 @@ fn content_words(name: &str) -> BTreeSet<String> {
 
 fn near_in_name(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
     let (shorter, longer) = if left.len() <= right.len() { (left, right) } else { (right, left) };
-    shorter.len() >= 2 && shorter.is_subset(longer) && longer.len() - shorter.len() <= NEAR_EXTRA_WORDS
+    let shared = shorter.intersection(longer).count();
+    let by_subset = shorter.len() >= 2 && shorter.is_subset(longer) && longer.len() - shorter.len() <= NEAR_EXTRA_WORDS;
+    by_subset || (shared >= 2 && shared as f64 >= NEAR_WORD_SHARE * shorter.len() as f64)
+}
+
+fn head_of(name: &str) -> Option<String> {
+    name_key(name).split(' ').find(|word| !word.is_empty() && !FILLER_WORDS.contains(word)).map(str::to_string)
 }
 
 fn near_in_flows(left: &[String], right: &[String]) -> bool {
     let shared = left.iter().filter(|flow| right.contains(flow)).count();
     let smaller = left.len().min(right.len());
-    smaller >= 2 && shared as f64 >= NEAR_FLOW_SHARE * smaller as f64
+    smaller >= 1 && shared as f64 >= NEAR_FLOW_SHARE * smaller as f64
 }
 
 fn near_duplicates(capabilities: &[Capability]) -> Vec<usize> {
     let words: Vec<BTreeSet<String>> =
         capabilities.iter().map(|capability| content_words(capability.name.as_deref().unwrap_or(""))).collect();
+    let heads: Vec<Option<String>> =
+        capabilities.iter().map(|capability| head_of(capability.name.as_deref().unwrap_or(""))).collect();
     let mut near: BTreeSet<usize> = BTreeSet::new();
     for first in 0..capabilities.len() {
         for second in first + 1..capabilities.len() {
-            if near_in_name(&words[first], &words[second]) || near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
+            let same_head = heads[first].is_some() && heads[first] == heads[second];
+            if same_head || near_in_name(&words[first], &words[second]) || near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
                 near.insert(first);
                 near.insert(second);
             }
@@ -1626,16 +1646,47 @@ fn united(groups: Vec<Joined>) -> Vec<Joined> {
     united
 }
 
-pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
-    one_of_each_asking(capabilities, |offered| crate::author::same_capability(said, offered));
+pub(crate) fn keep_levels_apart(parts: &mut [Capability], whole: &mut [Capability]) {
+    let mut renamed: BTreeMap<(String, String), String> = BTreeMap::new();
+    for part in parts.iter_mut() {
+        part.level = PART;
+        let Some(project) = part.project.as_deref() else { continue };
+        let scoped = format!(
+            "capability:{}/{}",
+            project.strip_prefix("subproject:").unwrap_or(project),
+            part.id.strip_prefix("capability:").unwrap_or(&part.id)
+        );
+        renamed.insert((project.to_string(), std::mem::replace(&mut part.id, scoped.clone())), scoped);
+    }
+    for capability in whole.iter_mut() {
+        capability.level = WHOLE;
+        for source in capability.composition_provenance.iter_mut() {
+            if let Some(scoped) = renamed.get(&(source.source_child.clone(), source.source_capability_id.clone())) {
+                source.source_capability_id = scoped.clone();
+            }
+        }
+    }
 }
 
+pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec<Joined> {
+    groups_of_the_same(capabilities, |offered| crate::author::same_capability(said, offered))
+}
+
+#[cfg(test)]
 fn one_of_each_asking(
     capabilities: &mut Vec<Capability>,
     ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
 ) {
+    let groups = groups_of_the_same(capabilities, ask);
+    merge_the_same(capabilities, groups);
+}
+
+fn groups_of_the_same(
+    capabilities: &[Capability],
+    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
+) -> Vec<Joined> {
     if capabilities.len() < 2 {
-        return;
+        return Vec::new();
     }
     let listed: Vec<(String, String)> = capabilities
         .iter()
@@ -1653,9 +1704,15 @@ fn one_of_each_asking(
         });
         groups = united(groups.into_iter().chain(again).collect());
     }
+    groups
+}
+
+pub(crate) fn merge_the_same(capabilities: &mut Vec<Capability>, groups: Vec<Joined>) {
     if groups.is_empty() {
         return;
     }
+    let every_flow: BTreeSet<String> =
+        capabilities.iter().flat_map(|held| held.flows.iter().cloned()).collect();
     let mut slots: Vec<Option<Capability>> = std::mem::take(capabilities).into_iter().map(Some).collect();
     let mut kept: Vec<Capability> = Vec::new();
     for group in groups {
@@ -1665,7 +1722,13 @@ fn one_of_each_asking(
             .filter_map(|at| slots[*at].as_ref())
             .flat_map(|held| held.flows.iter().map(String::as_str))
             .collect();
-        if together_flows.len() > SPLIT_FROM_FLOWS {
+        if together_flows.len() > REFUSE_MERGE_FROM_FLOWS && together_flows.len() * 2 > every_flow.len() {
+            eprintln!(
+                "  one of each: kept apart for holding {} of {} flows together: {}",
+                together_flows.len(),
+                every_flow.len(),
+                group.members.iter().filter_map(|at| slots[*at].as_ref()).map(|held| held.name.as_deref().unwrap_or("")).collect::<Vec<_>>().join(" | ")
+            );
             continue;
         }
         let keeper = group
@@ -1747,6 +1810,26 @@ mod command_family_tests {
             project: None,
             unshipped: None,
         }
+    }
+
+    #[test]
+    fn a_directory_whose_work_is_almost_all_programs_nothing_ships_is_tooling_though_one_product_flow_starts_there() {
+        let in_directory = |id: &str, directory: &str, units: u32, aside: bool| {
+            let mut held = flow(id, "lifecycle", None, id, &[], &[]);
+            held.path = vec![crate::comprehend::Step { unit: format!("{directory}/{id}.ts:function:main"), depth: 0, leaves: Vec::new() }];
+            held.units = units;
+            held.unshipped = aside.then(|| crate::entry_exit::Unshipped { role: "benchmark", basis: "shipping-evidence", evidence: String::new() });
+            held
+        };
+        let flows = vec![
+            in_directory("sweep", "src/bench", 1000, true),
+            in_directory("watch", "src/bench", 40, false),
+            in_directory("serve", "src/app", 300, false),
+            in_directory("tool", "src/app", 400, true),
+        ];
+        let tooling = crate::comprehend::tooling_directories(&flows);
+        assert!(tooling.contains("src/bench"));
+        assert!(!tooling.contains("src/app"));
     }
 
     #[test]
@@ -2027,6 +2110,8 @@ mod command_family_tests {
             description: None,
             grounding: None,
             standing: PUBLISHED,
+            level: crate::capabilities::PART,
+            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
@@ -2080,7 +2165,39 @@ mod command_family_tests {
         let flows = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
         assert!(near_in_flows(&flows(&["a", "b", "c"]), &flows(&["b", "c", "d", "e"])));
         assert!(!near_in_flows(&flows(&["a", "b", "c"]), &flows(&["c", "d", "e"])));
-        assert!(!near_in_flows(&flows(&["a"]), &flows(&["a"])));
+        assert!(near_in_flows(&flows(&["a"]), &flows(&["a", "b"])));
+        assert!(!near_in_flows(&flows(&["a"]), &flows(&["b"])));
+    }
+
+    #[test]
+    fn capabilities_that_open_with_the_same_verb_are_put_to_the_ask_together() {
+        let capabilities = vec![
+            capability_of("Authenticate users", 3),
+            capability_of("Authenticate and maintain sessions", 3),
+            capability_of("Reset a password", 2),
+            capability_of("Access and inspect analysis results", 4),
+            capability_of("Export and inspect analysis results", 4),
+        ];
+        assert_eq!(near_duplicates(&capabilities), vec![0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn a_part_capability_and_the_whole_capability_of_one_name_keep_distinct_ids_and_provenance_follows() {
+        let mut part = capability_of("Authenticate users", 2);
+        part.project = Some("subproject:apps/api".to_string());
+        let mut whole = capability_of("Authenticate users", 2);
+        whole.composition_provenance = vec![crate::parent::Source {
+            source_child: "subproject:apps/api".to_string(),
+            source_capability_id: part.id.clone(),
+            disposition: "promoted",
+            weight: None,
+        }];
+        let mut parts = vec![part];
+        let mut wholes = vec![whole];
+        keep_levels_apart(&mut parts, &mut wholes);
+        assert_ne!(parts[0].id, wholes[0].id);
+        assert_eq!((parts[0].level, wholes[0].level), (PART, WHOLE));
+        assert_eq!(wholes[0].composition_provenance[0].source_capability_id, parts[0].id);
     }
 
     #[test]
@@ -2199,6 +2316,8 @@ mod command_family_tests {
             description: None,
             grounding: None,
             standing: PUBLISHED,
+            level: crate::capabilities::PART,
+            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
