@@ -27,6 +27,7 @@ import {
   type CASArchitectureSummary,
   type CASNode,
   type CASOutput,
+  type CASPrincipleViolation,
   type CASRouteTableEntry,
   type CASTestCase,
   type CASTestSuite,
@@ -39,6 +40,9 @@ import type {
   TierStackCapability,
   TierStackShipDeclaration,
   TierStackDeclaration,
+  TierStackEdge,
+  TierStackEntryPoint,
+  TierStackExitPoint,
   TierStackFlow,
   TierStackIndex,
   TierStackLogicalStep,
@@ -72,15 +76,41 @@ const NODE_TYPES: Record<string, string> = {
 };
 
 const EDGE_TYPES: Record<string, string> = {
-  contains: 'contains',
-  calls: 'calls',
-  imports: 'imports',
-  extends: 'extends',
-  implements: 'implements',
-  instantiates: 'instantiates',
   has_field: 'has_property',
-  has_method: 'has_method',
 };
+
+const EDGE_ENVELOPE = new Set(['source', 'target', 'kind', 'via']);
+const EDGE_METADATA_NUMBERS = ['weight', 'confidence', 'occurrences'] as const;
+const EDGE_METADATA_FLAGS = ['bidirectional', 'transitive', 'async', 'conditional'] as const;
+
+const ENTRY_ENVELOPE = new Set(['id', 'kind', 'name', 'method', 'path', 'handler', 'file', 'line', 'registrar', 'guards', 'unshipped']);
+const EXIT_ENVELOPE = new Set([
+  'id', 'kind', 'name', 'source', 'target', 'operation', 'file', 'line', 'awaited', 'addressed', 'service', 'endpoint', 'url', 'method',
+]);
+
+const CARRIED_SECTIONS: Record<string, keyof CASOutput> = {
+  architectural_conflicts: 'architectural_conflicts',
+  libraries: 'libraries',
+  type_shapes: 'type_shapes',
+};
+
+function carriedBeyond(held: object, envelope: Set<string>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(held).filter(([key, value]) => !envelope.has(key) && value !== undefined));
+}
+
+function carriedLayeringViolations(index: TierStackIndex): CASPrincipleViolation[] {
+  const held = index.layering_violations;
+  return Array.isArray(held) ? (held as CASPrincipleViolation[]) : [];
+}
+
+function carriedSectionsOf(index: TierStackIndex): Partial<CASOutput> {
+  const carried: Record<string, unknown> = {};
+  for (const [section, key] of Object.entries(CARRIED_SECTIONS)) {
+    const held = index[section];
+    if (Array.isArray(held) && held.length > 0) carried[key] = held;
+  }
+  return carried as Partial<CASOutput>;
+}
 
 export const TIER_STACK_ANALYZER = 'tier-stack';
 
@@ -119,6 +149,34 @@ function depths(nodes: TierStackNode[]): Map<string, number> {
   return found;
 }
 
+function importNodesOf(index: TierStackIndex, depth: Map<string, number>): CASNode[] {
+  return (index.imports ?? [])
+    .filter(held => !held.specifier.startsWith('.') && index.files[held.file] !== undefined)
+    .map(held => {
+      const file = index.files[held.file];
+      return {
+        id: `${file.path}:import:${held.line}:${held.specifier}`,
+        name: held.specifier,
+        type: 'import',
+        parent: file.path,
+        level: (depth.get(file.path) ?? 1) + 1,
+        analyzers: [TIER_STACK_ANALYZER],
+        primaryAnalyzer: TIER_STACK_ANALYZER,
+        source: { file: file.path, line: held.line },
+        metadata: {
+          language: file.language,
+          source: held.specifier,
+          specifiers: (held.names ?? []).map(name => ({
+            name: name.local,
+            imported: name.namespace ? '*' : name.imported ?? name.local,
+          })),
+          ...(held.type_only ? { type_only: true } : {}),
+          ...(held.resolved === undefined ? {} : { attributes: { resolved: held.resolved } }),
+        },
+      };
+    }) as CASNode[];
+}
+
 function nodesOf(index: TierStackIndex): CASNode[] {
   const depth = depths(index.nodes);
   const dead = new Map((index.dead ?? []).map(held => [held.node, held]));
@@ -142,7 +200,7 @@ function nodesOf(index: TierStackIndex): CASNode[] {
       ...(dead.has(node.id) ? { attributes: { dead_code: dead.get(node.id) } } : {}),
     },
   }));
-  return [...declared, ...securityFactNodesOf(index)];
+  return [...declared, ...importNodesOf(index, depth), ...securityFactNodesOf(index)];
 }
 
 function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNullable<CASNode['signature']> {
@@ -158,42 +216,108 @@ function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNul
   };
 }
 
+function edgeMetadataOf(edge: TierStackEdge): CASEdge['metadata'] | undefined {
+  const promoted: Record<string, unknown> = {};
+  for (const key of EDGE_METADATA_NUMBERS) if (typeof edge[key] === 'number') promoted[key] = edge[key];
+  for (const key of EDGE_METADATA_FLAGS) if (typeof edge[key] === 'boolean') promoted[key] = edge[key];
+  const attributes = {
+    ...(edge.via === undefined ? {} : { via: edge.via }),
+    ...carriedBeyond(edge, new Set([...EDGE_ENVELOPE, ...EDGE_METADATA_NUMBERS, ...EDGE_METADATA_FLAGS])),
+  };
+  const metadata = { ...promoted, ...(Object.keys(attributes).length === 0 ? {} : { attributes }) };
+  return Object.keys(metadata).length === 0 ? undefined : metadata;
+}
+
 function edgesOf(index: TierStackIndex): CASEdge[] {
-  const structural = index.edges.map((edge, at) => ({
-    id: `edge:${at}`,
-    source: edge.source,
-    target: edge.target,
-    type: EDGE_TYPES[edge.kind] ?? edge.kind,
-    ...(edge.via === undefined ? {} : { metadata: { attributes: { via: edge.via } } }),
-  }));
+  const structural = index.edges.map((edge, at) => {
+    const metadata = edgeMetadataOf(edge);
+    return {
+      id: `edge:${at}`,
+      source: edge.source,
+      target: edge.target,
+      type: EDGE_TYPES[edge.kind] ?? edge.kind,
+      ...(metadata === undefined ? {} : { metadata }),
+    };
+  });
   return [...structural, ...injectionEdgesOf(index, structural.length)];
 }
 
+function enforcingGuards(entry: TierStackEntryPoint) {
+  return (entry.guards ?? []).filter(guard => guard.kind !== 'open');
+}
+
 function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
+  const named = new Map(index.nodes.map(node => [node.id, node.name]));
   return (index.entry_points ?? []).map(entry => ({
     id: entry.id,
     source_node: entry.handler,
     source_analyzer: TIER_STACK_ANALYZER,
     type: entry.kind,
     name: entry.name,
+    handler: {
+      node_id: entry.handler,
+      method_name: named.get(entry.handler) ?? entry.name,
+      file: index.files[entry.file]?.path,
+      line: entry.line,
+    },
+    ...(enforcingGuards(entry).length === 0 ? {} : {
+      security: {
+        authenticated: true,
+        guards: enforcingGuards(entry).map(guard => guard.name),
+        enforcement: 'enforced' as const,
+      },
+    }),
     trigger: {
       method: entry.method,
       path: entry.path,
       ...(entry.kind === 'event' ? { event: entry.name } : {}),
       ...(entry.kind === 'schedule' ? { schedule: entry.name } : {}),
     },
-    metadata: { registrar: entry.registrar, ...(entry.unshipped ? { unshipped: entry.unshipped } : {}) },
+    metadata: {
+      registrar: entry.registrar,
+      ...(entry.unshipped ? { unshipped: entry.unshipped } : {}),
+      ...carriedBeyond(entry, ENTRY_ENVELOPE),
+    },
   })) as CASEntryPoint[];
 }
 
+const HTTP_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options']);
+
+function exitMethodOf(exit: TierStackExitPoint): string | undefined {
+  if (exit.method !== undefined) return exit.method.toUpperCase();
+  const verb = exit.operation?.toLowerCase();
+  return exit.kind === 'api' && verb !== undefined && HTTP_VERBS.has(verb) ? verb.toUpperCase() : undefined;
+}
+
 function exitPointsOf(index: TierStackIndex): CASExitPoint[] {
-  return (index.exit_points ?? []).map(exit => ({
-    id: exit.id,
-    source_node: exit.source,
-    type: exit.kind,
-    name: exit.target,
-    target: exit.target,
-  })) as CASExitPoint[];
+  return (index.exit_points ?? []).map(exit => {
+    const endpoint = exit.endpoint ?? exit.url ?? exit.addressed;
+    const method = exitMethodOf(exit);
+    const reachesOut = exit.kind === 'api' || exit.kind === 'webhook';
+    return {
+      id: exit.id,
+      source_node: exit.source,
+      type: exit.kind,
+      name: reachesOut && endpoint !== undefined && exit.operation !== undefined
+        ? `${exit.operation.toUpperCase()} ${endpoint}`
+        : exit.name ?? exit.target,
+      target: {
+        ...(exit.service === undefined ? {} : { service_id: exit.service }),
+        ...(endpoint === undefined ? {} : { endpoint }),
+        ...(exit.target === '' ? {} : reachesOut ? { sdk: exit.target } : { resource: exit.target }),
+      },
+      operation: {
+        ...(exit.operation === undefined ? {} : { action: exit.operation }),
+        ...(method === undefined ? {} : { method }),
+        ...(exit.awaited === undefined ? {} : { async: exit.awaited }),
+      },
+      metadata: {
+        file: index.files[exit.file]?.path,
+        line: exit.line,
+        ...carriedBeyond(exit, EXIT_ENVELOPE),
+      },
+    };
+  }) as CASExitPoint[];
 }
 
 function contractOf(flow: TierStackFlow): FlowICELOTContract {
@@ -592,7 +716,7 @@ function routesOf(index: TierStackIndex): CASRouteTableEntry[] {
   return (index.entry_points ?? [])
     .filter(entry => entry.path !== undefined)
     .map(entry => {
-      const enforcing = (entry.guards ?? []).filter(guard => guard.kind !== 'open');
+      const enforcing = enforcingGuards(entry);
       return {
         method: entry.method ?? 'ANY',
         path: entry.path as string,
@@ -662,6 +786,7 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
     ...index,
     files: index.files.map((file, at) => (ownFiles.has(at) ? file : { ...file, language: undefined })),
     nodes,
+    imports: (index.imports ?? []).filter(held => ownFiles.has(held.file)),
     dependencies: index.dependencies === undefined ? undefined : {
       ...index.dependencies,
       dependencies: (index.dependencies.dependencies ?? []).filter(held => (held.projects ?? []).includes(project)),
@@ -791,7 +916,8 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     architecture_summary: { ...architectureOf(index, nodes), architectural_patterns: patternsOf(index) },
     patterns: namedPatternsOf(index),
     paradigm_conformance,
-    principle_violations: violationsOf(index),
+    ...carriedSectionsOf(index),
+    principle_violations: [...violationsOf(index), ...carriedLayeringViolations(index)],
     route_table: routesOf(index),
     nodes,
     edges,

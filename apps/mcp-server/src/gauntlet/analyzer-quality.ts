@@ -121,8 +121,18 @@ export async function scoreFixture(fixtureDir: string): Promise<QualityReport> {
   if (expected.functions) cats.push({ category: 'functions', ...score(expected.functions, nodeNames(FN)) });
   if (expected.classes) cats.push({ category: 'types', ...score(expected.classes, nodeNames(TYPE)) });
   if (expected.types) cats.push({ category: 'types', ...score(expected.types, nodeNames(TYPE)) });
-  if (expected.entities) cats.push({ category: 'entities', ...score(expected.entities, nodeNames(ENTITY)) });
-  if (expected.routes) cats.push({ category: 'routes', ...score(expected.routes, nodeNames(ROUTE)) });
+  const entityNames = (): string[][] => [
+    ...(cas.entities || []).map((entity: any) => [entity.name, entity.schema_source].filter(Boolean).map(String)),
+    ...nodeNames(ENTITY),
+  ];
+  const routeNames = (): string[][] => [
+    ...(cas.route_table || []).map((route: any) => [route.path, route.handler, `${route.method} ${route.path}`].filter(Boolean).map(String)),
+    ...(cas.entry_points || []).filter((entry: any) => entry.trigger?.path === undefined)
+      .map((entry: any) => [entry.name, entry.handler?.method_name].filter(Boolean).map(String)),
+    ...nodeNames(ROUTE),
+  ];
+  if (expected.entities) cats.push({ category: 'entities', ...score(expected.entities, entityNames()) });
+  if (expected.routes) cats.push({ category: 'routes', ...score(expected.routes, routeNames()) });
   if (expected.calls) cats.push({ category: 'calls', ...score(expected.calls.map((c: string[]) => c.join('→')), edgePairs(/call|invoke/).map(p => [p])) });
 
   if (expected.relations) cats.push({ category: 'relations', ...score(expected.relations.map((c: string[]) => c.join('→')), edgePairs(/relat|references|belongs|foreign|association/).map(p => [p])) });

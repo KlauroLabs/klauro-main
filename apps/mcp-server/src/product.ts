@@ -769,6 +769,14 @@ function entityShapes(cas: CASOutput): EntityShape[] {
     }
     shapes.push({ name: entity.name, fields });
   }
+  const stored = new Set(shapes.map(shape => shape.name.toLowerCase()));
+  for (const held of cas.type_shapes || []) {
+    if (held.fields.length === 0 || stored.has(held.name.toLowerCase())) continue;
+    shapes.push({
+      name: held.name,
+      fields: new Map(held.fields.map(field => [field.name, { type: field.type || 'unknown', sensitive: false }] as const)),
+    });
+  }
   return shapes;
 }
 
@@ -2124,7 +2132,9 @@ function entryPointRef(entryPoint: CASEntryPoint, confidenceValue = 0.9): Eviden
   return {
     type: 'entry_point',
     id: entryPoint.id,
-    label: entryPoint.name,
+    label: entryPoint.trigger?.method && entryPoint.trigger?.path
+      ? `${entryPoint.trigger.method} ${entryPoint.trigger.path}`
+      : entryPoint.name,
     file: entryPoint.handler?.file,
     line: entryPoint.handler?.line,
     confidence: confidenceValue,

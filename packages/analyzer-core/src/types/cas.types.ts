@@ -169,6 +169,7 @@ export interface CASOutput extends CASSourceInputCatalog {
   consistency_model?: import('../analyzer/core/consistency-model').ConsistencyModelResult;
 
   libraries?: CASLibrary[];
+  type_shapes?: CASTypeShape[];
 
 
 
@@ -1610,6 +1611,15 @@ export interface CASTestCoverage {
 
 
 
+
+export interface CASTypeShape {
+  id: string;
+  name: string;
+  kind: 'class' | 'interface' | 'type' | 'struct' | 'record';
+  node_id: string;
+  file?: string;
+  fields: Array<{ name: string; type: string; optional?: boolean }>;
+}
 
 export interface CASLibrary {
   id: string;

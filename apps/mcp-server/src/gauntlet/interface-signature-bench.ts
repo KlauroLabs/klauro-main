@@ -59,7 +59,11 @@ export interface InterfaceSignatureBenchReport {
 export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBenchReport> {
   const cas: any = await analyzeForBench(FIXTURE_DIR);
 
-  const targetNodeId = 'function_src/server.ts_createUser_2';
+  const target = cas.nodes.find((node: any) =>
+    node.name === 'createUser' &&
+    ['function', 'method'].includes(node.type) &&
+    String(node.source?.file ?? '').endsWith('src/server.ts'));
+  const targetNodeId: string = target?.id ?? 'createUser:unresolved';
 
 
   const signature: any = getInterfaceSignature(cas, targetNodeId, {});

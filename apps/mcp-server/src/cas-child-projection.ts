@@ -110,6 +110,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   communication_seams: { mode: 'scope' },
   consistency_model: { mode: 'inherit' },
   libraries: { mode: 'inherit' },
+  type_shapes: { mode: 'inherit' },
   dependency_manifest: { mode: 'inherit' },
   dependency_roles: { mode: 'inherit' },
   progressive_levels: { mode: 'inherit' },

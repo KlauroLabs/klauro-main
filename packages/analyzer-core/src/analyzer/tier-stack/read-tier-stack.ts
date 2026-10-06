@@ -67,11 +67,22 @@ export interface TierStackNode {
   project?: string;
 }
 
+export interface TierStackImport {
+  file: number;
+  specifier: string;
+  line: number;
+  type_only?: boolean;
+  names?: Array<{ local: string; imported?: string; namespace?: boolean }>;
+  resolved?: string;
+  [carried: string]: unknown;
+}
+
 export interface TierStackEdge {
   source: string;
   target: string;
   kind: string;
   via?: 'name' | 'rule';
+  [carried: string]: unknown;
 }
 
 export interface TierStackUnshipped {
@@ -98,16 +109,27 @@ export interface TierStackEntryPoint {
   registrar: string;
   guards?: TierStackGuard[];
   unshipped?: TierStackUnshipped;
+  [carried: string]: unknown;
 }
 
 export interface TierStackExitPoint {
   id: string;
   kind: string;
+  name?: string;
   source: string;
   target: string;
+  operation?: string;
   file: number;
   line: number;
+  awaited?: boolean;
+  addressed?: string;
+  service?: string;
+  endpoint?: string;
+  url?: string;
+  method?: string;
+  [carried: string]: unknown;
 }
+
 
 export type TierStackDeclaration = 'type' | 'foreign key' | 'decorator' | 'call';
 
@@ -331,6 +353,7 @@ export interface TierStackIndex {
   files: Array<{ path: string; kind: string; language?: string; extracted?: boolean; generated?: boolean }>;
   nodes: TierStackNode[];
   edges: TierStackEdge[];
+  imports?: TierStackImport[];
   entry_points?: TierStackEntryPoint[];
   exit_points?: TierStackExitPoint[];
   dependencies?: {
@@ -365,6 +388,7 @@ export interface TierStackIndex {
   verification?: { cases?: TierStackTestCase[] };
   dead?: Array<{ node: string; reason: string; callers: number; open?: string; unlinked?: number }>;
   history?: { commits?: number; fix_commits?: number; files?: TierStackFileHistory[] };
+  [section: string]: unknown;
   comprehension?: {
     products?: TierStackProduct[];
     capabilities?: TierStackCapability[];

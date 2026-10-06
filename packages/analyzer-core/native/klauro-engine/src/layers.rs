@@ -38,6 +38,15 @@ pub struct Layering {
     pub transitions: Vec<Transition>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub departures: Vec<Departure>,
+    #[serde(skip)]
+    pub reaching: Vec<Reaching>,
+}
+
+#[derive(Debug)]
+pub struct Reaching {
+    pub unit: String,
+    pub layer: &'static str,
+    pub reaches: Vec<String>,
 }
 
 const HOPS_THROUGH_HELPERS: u32 = 4;
@@ -65,7 +74,7 @@ static LAYERED_ROLES: &[(&str, u32)] = &[
 static BY_CLASS_FIRST: &[&str] =
     &["controller", "repository", "service", "model", "middleware", "listener", "provider", "component"];
 
-fn rank_of(label: &str) -> u32 {
+pub fn rank_of(label: &str) -> u32 {
     if label.contains(':') {
         return 3;
     }
@@ -157,6 +166,7 @@ pub fn derive<'a>(
     let mut stamp: Vec<u32> = vec![0; nodes.len()];
     let mut generation = 0u32;
 
+    let mut reaching: HashMap<Option<&str>, Vec<Reaching>> = HashMap::default();
     let mut counted: BTreeMap<(Option<&str>, String, String), (u32, usize, usize)> = BTreeMap::new();
     let mut note = |project: Option<&'a str>, from: String, to: String, caller: usize, callee: usize| {
         counted.entry((project, from, to)).or_insert((0, caller, callee)).0 += 1;
@@ -195,6 +205,13 @@ pub fn derive<'a>(
                     None => {}
                 }
             }
+        }
+        if rank_of(label) == 0 {
+            reaching.entry(project_of(start)).or_default().push(Reaching {
+                unit: nodes[start].id.clone(),
+                layer: label,
+                reaches: reached.iter().map(|(found, _)| spoken[*found].clone()).collect(),
+            });
         }
         for (found, callee) in reached {
             note(project_of(start), label.to_string(), spoken[found].clone(), start, callee);
@@ -299,6 +316,7 @@ pub fn derive<'a>(
                     .map(|((from, to), (calls, _, _))| Transition { from, to, calls })
                     .collect(),
                 departures,
+                reaching: reaching.remove(&project).unwrap_or_default(),
             }
         })
         .collect()

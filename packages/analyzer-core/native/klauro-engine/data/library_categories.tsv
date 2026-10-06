@@ -1,0 +1,6 @@
+actor-system	Actors exchange messages asynchronously; preserve the message contract and ordering at each actor boundary.
+workflow-engine	Durable workflows must stay deterministic; keep activity and signal contracts stable and scope retries to activities.
+state-machine	State transitions define the lifecycle boundary; every event must keep the machine's transition contract.
+dependency-injection	Bindings define the construction boundary; resolve collaborators through the container and keep binding scope explicit.
+service-sdk	Calls cross a network boundary to a managed service; honour its retry, timeout and credential scope contract.
+ai-sdk	Model calls cross a network boundary; keep prompts and response contracts explicit, and bound retries and cost.

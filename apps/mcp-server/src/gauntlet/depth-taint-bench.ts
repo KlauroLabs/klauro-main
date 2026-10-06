@@ -194,7 +194,10 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
       reachable.add(nodeId);
       pending.push(...(calleesByNode.get(nodeId) || []));
     }
-    const stepNames = [...reachable].map(nodeId => nodeById.get(nodeId)?.name).filter(Boolean) as string[];
+    const stepNames = [...reachable]
+      .filter(nodeId => nodeId !== j.entry.handler_node_id && nodeById.get(nodeId)?.type !== 'external')
+      .map(nodeId => nodeById.get(nodeId)?.name)
+      .filter(Boolean) as string[];
     const hops = stepNames.filter(n => n && n !== source && !/\s\//.test(n));
     for (const t of j.terminal_entities || []) {
       const sink = t?.name;
