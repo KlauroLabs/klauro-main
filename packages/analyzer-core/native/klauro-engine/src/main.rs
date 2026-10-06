@@ -34,7 +34,6 @@ mod generated;
 mod fixes;
 mod history;
 mod jev;
-mod journeys;
 mod gomod;
 mod generic;
 mod externals;
@@ -163,7 +162,6 @@ struct Index {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     crossings: Vec<crossings::Crossing>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    journeys: Vec<journeys::Journey>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -512,7 +510,6 @@ fn read_it() {
         partition: None,
         composition: None,
         crossings: Vec::new(),
-        journeys: Vec::new(),
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -1209,15 +1206,6 @@ fn read_it() {
         index.crossings.iter().filter(|held| held.kind == "network").count(),
         index.crossings.iter().filter(|held| held.kind == "queue").count()
     );
-    let journeys_started = Instant::now();
-    let set_aside: rustc_hash::FxHashSet<u32> = index
-        .entry_points
-        .iter()
-        .filter(|entry| unshipped::is_set_aside(entry.unshipped.as_ref()))
-        .map(|entry| entry.file)
-        .collect();
-    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points, &index.entry_points, &index.calls, &set_aside);
-    eprintln!("journeys {:?} | {}", journeys_started.elapsed(), index.journeys.len());
     let composition_started = Instant::now();
     index.composition = index.partition.as_ref().and_then(|partition| {
         composition::derive(
@@ -1398,7 +1386,6 @@ fn read_it() {
             eprintln!("  part {} | {} | {} | {}", project.id, project.display_name, project.role, project.summary);
         }
     }
-    journeys::phrase(&mut index.journeys, &comprehension.flows);
     index.comprehension = Some(comprehension);
 
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {

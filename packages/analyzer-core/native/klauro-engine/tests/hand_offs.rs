@@ -31,20 +31,6 @@ fn a_job_sent_on_a_channel_reaches_the_loop_that_receives_it() {
 }
 
 #[test]
-fn a_journey_follows_the_queue_into_the_receiver_and_on_to_what_it_calls() {
-    let index = common::read("hand_offs");
-    let journey = index["journeys"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|journey| journey["steps"].as_array().unwrap().iter().any(|step| step["via"] == "queue"))
-        .expect("a journey crosses the queue");
-    let symbols: Vec<&str> = journey["steps"].as_array().unwrap().iter().map(|step| step["symbol"].as_str().unwrap()).collect();
-    assert_eq!(symbols.first(), Some(&"send_job"));
-    assert!(symbols.contains(&"start"), "{symbols:?}");
-}
-
-#[test]
 fn a_value_taken_out_of_a_keyed_collection_is_the_type_the_collection_holds() {
     let index = common::read("hand_offs");
     let reached = index["edges"].as_array().unwrap().iter().any(|edge| {
