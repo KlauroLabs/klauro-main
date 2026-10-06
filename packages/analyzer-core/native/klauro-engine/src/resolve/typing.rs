@@ -254,8 +254,8 @@ impl<'a> Resolver<'a> {
                 return (self.annotated(file, named), None);
             }
         }
-        let mut parts = segments(path);
-        let Some(first) = parts.next() else {
+        let mut parts = indexed_segments(path);
+        let Some((first, first_indexed)) = parts.next() else {
             return (Origin::Unknown, None);
         };
         let (origin, held, opening) = match self.static_path(unit, file, first) {
@@ -263,8 +263,14 @@ impl<'a> Resolver<'a> {
             None => (self.root(unit, file, first), self.held(unit, file, first), None),
         };
         let mut trail = Trail { origin, held, held_file: file };
-        for part in opening.into_iter().chain(parts) {
+        if first_indexed {
+            trail = self.indexed(trail, file);
+        }
+        for (part, indexed) in opening.into_iter().map(|tail| (tail, false)).chain(parts) {
             trail = self.follow(trail, part, file, path);
+            if indexed {
+                trail = self.indexed(trail, file);
+            }
         }
         if let Origin::Declared(owner) = trail.origin
             && self.symbols.nodes[owner as usize].kind.is_unit()
@@ -273,6 +279,13 @@ impl<'a> Resolver<'a> {
             return (self.returned_by(owner), None);
         }
         (trail.origin, trail.held.map(|annotation| (annotation, trail.held_file)))
+    }
+
+    fn indexed(&self, trail: Trail<'a>, file: u32) -> Trail<'a> {
+        match trail.held.and_then(indexed_element) {
+            Some(element) => Trail { origin: self.annotated(trail.held_file, element), held: Some(element), held_file: trail.held_file },
+            None => Trail { origin: Origin::Unknown, held: None, held_file: file },
+        }
     }
 
     fn follow(&self, trail: Trail<'a>, part: &'a str, file: u32, path: &str) -> Trail<'a> {

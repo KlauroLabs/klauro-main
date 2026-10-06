@@ -511,6 +511,10 @@ fn qualifier_of(annotation: &str) -> Option<&str> {
 }
 
 fn segments(path: &str) -> impl Iterator<Item = &str> {
+    indexed_segments(path).map(|(name, _)| name)
+}
+
+fn indexed_segments(path: &str) -> impl Iterator<Item = (&str, bool)> {
     let mut parts: Vec<&str> = Vec::new();
     let mut depth = 0usize;
     let mut begin = 0usize;
@@ -528,9 +532,21 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
     parts.push(&path[begin..]);
     parts.into_iter().map(|segment| {
         let end = segment.find(['[', '(', '!', '?']).unwrap_or(segment.len());
-        segment[..end].trim_end_matches('&')
+        let indexed = end > 0 && segment[end..].starts_with('[');
+        (segment[..end].trim_end_matches('&'), indexed)
     })
 }
+
+fn indexed_element(annotation: &str) -> Option<&str> {
+    let held = annotation.trim();
+    if let Some(element) = held.strip_suffix("[]") {
+        return Some(element.trim().trim_start_matches('(').trim_end_matches(')'));
+    }
+    let base = base_type_name(held);
+    (INDEXED_COLLECTIONS.contains(&base) || base == "Array").then(|| last_type_argument(held)).flatten()
+}
+
+static INDEXED_COLLECTIONS: &[&str] = &["Record", "ReadonlyArray", "Map", "WeakMap", "ReadonlyMap", "Dictionary", "List", "Vec", "HashMap", "BTreeMap"];
 
 impl<'a> Bindings<'a> {
     fn explicit(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {

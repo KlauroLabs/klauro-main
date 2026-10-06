@@ -22,6 +22,7 @@ pub struct Extractor<'a> {
     placed: Option<Placed>,
     speaks_the_mcp_sdk: bool,
     tool_registrar_aliases: rustc_hash::FxHashSet<String>,
+    field_defaults: rustc_hash::FxHashMap<String, String>,
     roots: rustc_hash::FxHashSet<String>,
     containers: rustc_hash::FxHashSet<String>,
     returned_paths: std::cell::OnceCell<rustc_hash::FxHashMap<String, String>>,
@@ -107,6 +108,7 @@ impl<'a> Extractor<'a> {
             placed: None,
             speaks_the_mcp_sdk: false,
             tool_registrar_aliases: rustc_hash::FxHashSet::default(),
+            field_defaults: rustc_hash::FxHashMap::default(),
             roots: rustc_hash::FxHashSet::default(),
             containers: rustc_hash::FxHashSet::default(),
             returned_paths: std::cell::OnceCell::new(),
@@ -852,7 +854,59 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn defaults_the_fields_hold(&self, body: Node) -> rustc_hash::FxHashMap<String, String> {
+        let mut held = rustc_hash::FxHashMap::default();
+        let mut cursor = body.walk();
+        let Some(constructor) = body.named_children(&mut cursor).find(|member| {
+            member.kind() == "method_definition"
+                && member.child_by_field_name("name").is_some_and(|name| self.text(name) == "constructor")
+        }) else {
+            return held;
+        };
+        let mut defaults: rustc_hash::FxHashMap<String, String> = rustc_hash::FxHashMap::default();
+        if let Some(parameters) = constructor.child_by_field_name("parameters") {
+            let mut parameter_cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut parameter_cursor) {
+                let (Some(name), Some(value)) = (parameter.child_by_field_name("pattern"), parameter.child_by_field_name("value")) else {
+                    continue;
+                };
+                if name.kind() != "identifier" || !matches!(value.kind(), "identifier" | "member_expression") {
+                    continue;
+                }
+                let name = self.text_owned(name);
+                let kept = parameter.children(&mut parameter.walk()).any(|child| child.kind() == "accessibility_modifier" || child.kind() == "readonly");
+                if kept {
+                    held.insert(name.clone(), self.text_owned(value));
+                }
+                defaults.insert(name, self.text_owned(value));
+            }
+        }
+        let mut pending: Vec<Node> = constructor.child_by_field_name("body").into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if node.kind() == "assignment_expression"
+                && let (Some(left), Some(right)) = (node.child_by_field_name("left"), node.child_by_field_name("right"))
+                && left.kind() == "member_expression"
+                && left.child_by_field_name("object").is_some_and(|object| self.text(object) == "this")
+                && right.kind() == "identifier"
+                && let Some(default) = defaults.get(self.text(right))
+                && let Some(property) = left.child_by_field_name("property")
+            {
+                held.insert(self.text_owned(property), default.clone());
+            }
+            let mut inner = node.walk();
+            pending.extend(node.named_children(&mut inner));
+        }
+        held
+    }
+
     fn class_body(&mut self, body: Node, scope: &Scope, owner: &str) {
+        let held = self.defaults_the_fields_hold(body);
+        let before = std::mem::replace(&mut self.field_defaults, held);
+        self.class_members(body, scope, owner);
+        self.field_defaults = before;
+    }
+
+    fn class_members(&mut self, body: Node, scope: &Scope, owner: &str) {
         let mut cursor = body.walk();
         for member in body.named_children(&mut cursor) {
             match member.kind() {
@@ -957,7 +1011,10 @@ impl<'a> Extractor<'a> {
                 let value = unwrap_value(node.child_by_field_name("value")?);
                 value
                     .child_by_field_name("constructor")
-                    .map(|found| self.text_owned(found))
+                    .map(|found| match value.child_by_field_name("type_arguments") {
+                        Some(arguments) => format!("{}{}", self.text(found), self.text(arguments)),
+                        None => self.text_owned(found),
+                    })
                     .or_else(|| literal_type(value.kind()))
             });
 
@@ -1444,7 +1501,13 @@ impl<'a> Extractor<'a> {
                     let from_values = initializer
                         .map(|held| crate::entities::built_from(self.text(held)))
                         .unwrap_or_default();
-                    let stands_for = initializer.filter(|held| self.reads_the_global_fetch(*held)).map(|_| crate::entry_exit::FETCH_FUNCTION.to_string());
+                    let stands_for = initializer
+                        .filter(|held| self.reads_the_global_fetch(*held))
+                        .map(|_| crate::entry_exit::FETCH_FUNCTION.to_string())
+                        .or_else(|| {
+                            let plain = annotation.is_none() && constructed.is_none() && from_call.is_none();
+                            initializer.filter(|_| plain).and_then(|held| self.read_path(held, &name))
+                        });
                     if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() || written_here.is_some() || stands_for.is_some() {
                         self.facts.locals.push(LocalBinding {
                             file: self.file,
@@ -1703,6 +1766,13 @@ impl<'a> Extractor<'a> {
                 )
             }
             _ => (None, self.text_owned(function)),
+        };
+        let (receiver, callee) = match (receiver.as_deref(), self.field_defaults.get(&callee)) {
+            (Some("this"), Some(default)) => match default.rsplit_once('.') {
+                Some((object, property)) => (Some(object.to_string()), property.to_string()),
+                None => (None, default.clone()),
+            },
+            _ => (receiver, callee),
         };
 
         if let Some(arguments) = arguments.filter(|_| crate::messages::a_delivery(&callee)) {
@@ -2001,6 +2071,16 @@ impl<'a> Extractor<'a> {
             .flatten()
             .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
+    }
+
+    fn read_path(&self, expression: Node, name: &str) -> Option<String> {
+        if !matches!(expression.kind(), "member_expression" | "subscript_expression") {
+            return None;
+        }
+        let text = self.text(expression).trim();
+        let spoken = text.len() <= 120
+            && text.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | '.' | '[' | ']' | '$' | '?' | '!'));
+        (spoken && crate::names::root(text) != name).then(|| text.to_string())
     }
 
     fn reads_the_global_fetch(&self, expression: Node) -> bool {

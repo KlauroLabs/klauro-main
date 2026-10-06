@@ -367,8 +367,8 @@ fn a_field_initialised_by_a_constructor_carries_that_type() {
     let index = index("typescript");
     let active = named(&index, "active").expect("the field is indexed");
     assert_eq!(
-        active["type_annotation"], "Map",
-        "an unannotated field takes the type it is constructed with"
+        active["type_annotation"], "Map<string, Session>",
+        "an unannotated field takes the type it is constructed with, arguments included"
     );
     let calls = edges_of(&index, "calls");
     assert!(
