@@ -2055,7 +2055,7 @@ test('agent start context carries a one-line product orientation when a product 
     const startContext = getAgentStartContext(pillarFixtureCas(), workspace, {});
     assert.ok(startContext.product_orientation);
     assert.match(String(startContext.product_orientation), /Tenant-scoped user management/);
-    assert.match(String(startContext.product_orientation), /2 journeys/);
+    assert.match(String(startContext.product_orientation), /2 entry-point flows/);
     assert.match(String(startContext.product_orientation), /1 sensitive entities/);
 
     const bare = getAgentStartContext(fixtureCas(), workspace, {});
