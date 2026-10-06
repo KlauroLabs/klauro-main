@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use crate::comprehend::{Capability, Product};
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::paths::{contains, file_of, is_test};
@@ -9,10 +11,13 @@ const SERVING_KINDS: &[&str] = &["http", "rpc", "graphql", "tool", "cli"];
 const BACKGROUND_KINDS: &[&str] = &["schedule", "message", "event", "background", "lifecycle"];
 const PRESENTATION_FILES: &[&str] = &["tsx", "jsx", "vue", "svelte", "html", "astro", "css", "scss", "xaml", "storyboard", "xib"];
 const OUTWARD_EXITS: &[&str] = &["api", "network", "message"];
+const PERSISTING_EXITS: &[&str] = &["database", "file"];
 const GENERIC_SEGMENTS: &[&str] = &["src", "lib", "apps", "app", "packages", "crates", "native"];
 const SAMPLES_TOLD: usize = 5;
 const SET_ASIDE_SHARE: f64 = 0.7;
 const DOMINANT: f64 = 0.5;
+const INTERFACE_SHARE: f64 = 1.0 / 3.0;
+const RELAYED_PER_SURFACE: usize = 2;
 const IPC_SHARE: f64 = 0.25;
 const CAPABILITIES_TOLD: usize = 8;
 
@@ -36,6 +41,7 @@ struct Tally<'a> {
     presentation_files: usize,
     code_files: usize,
     screen_events: usize,
+    shipped_elsewhere: bool,
 }
 
 impl Tally<'_> {
@@ -79,19 +85,35 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
     if screens > 0 && share(screens, entered) >= DOMINANT {
         return ("presentation", format!("{screens} of its {entered} entry points are screens or reactions to what someone does on one"));
     }
-    if tally.presentation_files > 0 && share(tally.presentation_files, tally.code_files) >= DOMINANT && tally.of_kinds(SERVING_KINDS) == 0 {
+    if tally.presentation_files > 0 && share(tally.presentation_files, tally.code_files) >= INTERFACE_SHARE && tally.of_kinds(SERVING_KINDS) == 0 {
         return ("presentation", format!("{} of its {} source files are markup, style or component files", tally.presentation_files, tally.code_files));
     }
     let serving = tally.of_kinds(SERVING_KINDS);
     let commands = tally.of_kinds(&["ipc"]);
-    if commands > 0 && share(commands, commands + serving) >= IPC_SHARE {
-        return ("ipc-bridge", format!("it exposes {commands} commands to a front end over IPC"));
-    }
-    if serving > 0 && (project.ship_backed || project.runnable) {
-        return ("core", format!("it serves {serving} routes, tools or commands and is run or shipped"));
-    }
     let outward = tally.exits_of(OUTWARD_EXITS);
     let database = tally.exits_of(&["database"]);
+    let persisting = tally.exits_of(PERSISTING_EXITS);
+    let hosted = !project.consumed_by.is_empty() && !project.ship_backed;
+    if commands > 0 && share(commands, commands + serving) >= IPC_SHARE {
+        if !hosted {
+            return ("ipc-bridge", format!("it exposes {commands} commands to a front end over IPC"));
+        }
+        if share(persisting, tally.exited()) >= DOMINANT {
+            return ("storage", format!("it offers {commands} commands to a part that hosts it and {persisting} of its {} outward calls read or write stored data", tally.exited()));
+        }
+    }
+    if serving > 0 && tally.exited() > 0 && database == 0 && share(outward, tally.exited()) >= DOMINANT && outward >= serving * RELAYED_PER_SURFACE {
+        return ("integration", format!("it serves {serving} routes or commands and {outward} of its {} outward calls reach other services, with nothing stored", tally.exited()));
+    }
+    if serving > 0 && project.ship_backed {
+        return ("core", format!("it serves {serving} routes, tools or commands and is shipped"));
+    }
+    if serving > 0 && project.runnable && !hosted && tally.shipped_elsewhere {
+        return ("tooling", format!("it serves {serving} routes or commands when run, but the repository ships other parts and nothing ships or uses this one"));
+    }
+    if serving > 0 && project.runnable {
+        return ("core", format!("it serves {serving} routes, tools or commands and is run"));
+    }
     if entered == 0 || tally.of_kinds(&["export"]) == entered {
         if database > 0 && share(database, tally.exited()) >= DOMINANT {
             return ("storage", format!("{database} of its {} outward calls read or write a database", tally.exited()));
@@ -256,9 +278,13 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
             .map(|(at, _)| *at)
             .or(residue)
     };
-    let mut tallies: Vec<Tally> = partition.sub_projects.iter().map(|_| Tally::default()).collect();
+    let shipped_elsewhere = partition.sub_projects.iter().any(|project| project.ship_backed);
+    let mut tallies: Vec<Tally> = partition.sub_projects.iter().map(|_| Tally { shipped_elsewhere, ..Tally::default() }).collect();
     for (path, language) in &facts.files {
         let Some(at) = deepest(path) else { continue };
+        if is_test(path) {
+            continue;
+        }
         if let Some(language) = language {
             *tallies[at].languages.entry(language).or_default() += 1;
             tallies[at].code_files += 1;
@@ -293,38 +319,59 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
         let Some(at) = deepest(path) else { continue };
         *tallies[at].exits.entry(exit.kind).or_default() += 1;
     }
-    for (at, tally) in tallies.iter().enumerate() {
-        let project = &partition.sub_projects[at];
-        let (role, basis) = role_of(project, tally);
-        let named = plain_name(project, facts.repository);
-        let summary = plain_summary(role, tally, project);
-        let part_products: Vec<&Product> = facts.products.iter().filter(|product| product.project.as_deref() == Some(project.id.as_str())).collect();
-        let part_capabilities: Vec<&Capability> = facts
-            .capabilities
-            .iter()
-            .filter(|capability| capability.project.as_deref() == Some(project.id.as_str()) || capability.also_in.iter().any(|held| *held == project.id))
-            .collect();
-        let told = facts_of(project, tally, role, &basis, facts, &part_products, &part_capabilities);
-        let key = format!("{}\u{1}{}", facts.scope, project.id);
-        let digest = crate::jev::named(&told);
-        let written = match project.files >= 2 {
-            true => crate::memory::unless_changed("identity", &key, &digest, || crate::author::name_a_part(&told)),
-            false => None,
-        };
-        let project = &mut partition.sub_projects[at];
-        project.role = role;
-        project.role_basis = basis;
+    let reads: Vec<Reading> = tallies
+        .iter()
+        .zip(partition.sub_projects.iter())
+        .map(|(tally, project)| {
+            let (role, basis) = role_of(project, tally);
+            let part_products: Vec<&Product> = facts.products.iter().filter(|product| product.project.as_deref() == Some(project.id.as_str())).collect();
+            let part_capabilities: Vec<&Capability> = facts
+                .capabilities
+                .iter()
+                .filter(|capability| capability.project.as_deref() == Some(project.id.as_str()) || capability.also_in.iter().any(|held| *held == project.id))
+                .collect();
+            let told = facts_of(project, tally, role, &basis, facts, &part_products, &part_capabilities);
+            Reading {
+                role,
+                basis,
+                named: plain_name(project, facts.repository),
+                summary: plain_summary(role, tally, project),
+                key: format!("{}\u{1}{}", facts.scope, project.id),
+                digest: crate::jev::named(&told),
+                told,
+            }
+        })
+        .collect();
+    let written: Vec<Option<crate::author::PartNamed>> = crate::author::asking(|| {
+        reads
+            .par_iter()
+            .map(|read| crate::memory::unless_changed("identity", &read.key, &read.digest, || crate::author::name_a_part(&read.told)))
+            .collect()
+    });
+    for ((project, read), written) in partition.sub_projects.iter_mut().zip(reads).zip(written) {
+        project.role = read.role;
+        project.role_basis = read.basis;
         match written {
             Some(written) => {
                 project.display_name = written.name;
                 project.summary = written.summary;
             }
             None => {
-                project.display_name = named;
-                project.summary = summary;
+                project.display_name = read.named;
+                project.summary = read.summary;
             }
         }
     }
+}
+
+struct Reading {
+    role: &'static str,
+    basis: String,
+    named: String,
+    summary: String,
+    key: String,
+    digest: String,
+    told: String,
 }
 
 #[cfg(test)]
@@ -409,5 +456,41 @@ mod tests {
         let mut residue = project("", "repository", "library");
         residue.declared_by = "repository-residue";
         assert_eq!(role_of(&residue, &tally(&[])).0, "tooling");
+    }
+
+    #[test]
+    fn a_part_made_mostly_of_interface_files_with_nothing_served_is_presentation() {
+        let mut held = tally(&[("event", 29), ("schedule", 3)]);
+        held.presentation_files = 33;
+        held.code_files = 72;
+        assert_eq!(role_of(&project("mobile", "mobile", "deployable"), &held).0, "presentation");
+    }
+
+    #[test]
+    fn a_part_serving_routes_whose_calls_all_reach_other_services_is_integration() {
+        let mut held = tally(&[("http", 5)]);
+        held.exits = [("api", 34), ("network", 1)].into_iter().collect();
+        assert_eq!(role_of(&project("relay", "relay", "deployable"), &held).0, "integration");
+    }
+
+    #[test]
+    fn commands_offered_to_a_hosting_part_over_stored_data_are_storage_while_the_shipped_host_is_the_bridge() {
+        let mut held = tally(&[("ipc", 17)]);
+        held.exits = [("file", 328), ("process", 2)].into_iter().collect();
+        let mut module = project("crates/store", "store", "executable");
+        module.consumed_by = vec!["subproject:src-tauri".to_string()];
+        assert_eq!(role_of(&module, &held).0, "storage");
+        let mut host = project("src-tauri", "app", "deployable");
+        host.consumed_by = vec!["subproject:app".to_string()];
+        assert_eq!(role_of(&host, &held).0, "ipc-bridge");
+    }
+
+    #[test]
+    fn a_runnable_part_nothing_ships_or_uses_beside_shipped_parts_is_tooling_but_core_when_nothing_ships() {
+        let mut held = tally(&[("http", 2)]);
+        held.shipped_elsewhere = true;
+        assert_eq!(role_of(&project("packages/harness", "harness", "executable"), &held).0, "tooling");
+        held.shipped_elsewhere = false;
+        assert_eq!(role_of(&project("packages/harness", "harness", "executable"), &held).0, "core");
     }
 }

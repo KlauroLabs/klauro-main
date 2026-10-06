@@ -127,54 +127,56 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
     if !held.is_empty() {
         batches_of.push(held);
     }
-    let batches: Vec<BTreeMap<String, Decision>> = batches_of
-        .par_iter()
-        .map(|batch| {
-            let batch = batch.as_slice();
-            let body = serde_json::json!({
-                "model": MODEL,
-                "state": state,
-                "questions": batch
-                    .iter()
-                    .map(|(named, question)| (named.clone(), question))
-                    .collect::<BTreeMap<_, _>>(),
-            });
-            let Ok(request) = serde_json::to_string(&body) else {
-                return BTreeMap::new();
-            };
-            let mut held = None;
-            let mut waited = std::time::Duration::ZERO;
-            let longest_wait = crate::reach::longest_wait();
-            let mut missed = 0u32;
-            while waited < longest_wait {
-                match ask(&request) {
-                    Reply::Answered(answered) => {
-                        held = Some(answered);
-                        break;
-                    }
-                    Reply::Refused => break,
-                    Reply::Missed => {
-                        let pause = crate::reach::pause_after(missed);
-                        std::thread::sleep(pause);
-                        waited += pause;
-                        missed += 1;
+    let batches: Vec<BTreeMap<String, Decision>> = crate::author::asking(|| {
+        batches_of
+            .par_iter()
+            .map(|batch| {
+                let batch = batch.as_slice();
+                let body = serde_json::json!({
+                    "model": MODEL,
+                    "state": state,
+                    "questions": batch
+                        .iter()
+                        .map(|(named, question)| (named.clone(), question))
+                        .collect::<BTreeMap<_, _>>(),
+                });
+                let Ok(request) = serde_json::to_string(&body) else {
+                    return BTreeMap::new();
+                };
+                let mut held = None;
+                let mut waited = std::time::Duration::ZERO;
+                let longest_wait = crate::reach::longest_wait();
+                let mut missed = 0u32;
+                while waited < longest_wait {
+                    match ask(&request) {
+                        Reply::Answered(answered) => {
+                            held = Some(answered);
+                            break;
+                        }
+                        Reply::Refused => break,
+                        Reply::Missed => {
+                            let pause = crate::reach::pause_after(missed);
+                            std::thread::sleep(pause);
+                            waited += pause;
+                            missed += 1;
+                        }
                     }
                 }
-            }
-            match held {
-                Some(answered) => answered.answers,
-                None => {
-                    UNANSWERED.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!(
-                        "  jev unanswered: {} questions in a request of {} bytes",
-                        batch.len(),
-                        request.len()
-                    );
-                    BTreeMap::new()
+                match held {
+                    Some(answered) => answered.answers,
+                    None => {
+                        UNANSWERED.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!(
+                            "  jev unanswered: {} questions in a request of {} bytes",
+                            batch.len(),
+                            request.len()
+                        );
+                        BTreeMap::new()
+                    }
                 }
-            }
-        })
-        .collect();
+            })
+            .collect()
+    });
     for batch in batches {
         answers.extend(batch);
     }

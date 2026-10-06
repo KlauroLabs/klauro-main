@@ -21,10 +21,12 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
             ordered
         })
         .collect();
-    let readings: Vec<Proposal> = orders
-        .par_iter()
-        .map(|ordered| crate::author::propose_capabilities(said, ordered))
-        .collect();
+    let readings: Vec<Proposal> = crate::author::asking(|| {
+        orders
+            .par_iter()
+            .map(|ordered| crate::author::propose_capabilities(said, ordered))
+            .collect()
+    });
     let settled = |reading: &Proposal| {
         let named: BTreeSet<&str> = reading
             .capabilities
@@ -519,10 +521,12 @@ fn place(
     }
     let standing: Vec<(String, String)> =
         held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
-    let answers: Vec<Placed> = unplaced
-        .par_chunks(FAMILIES_PER_PROPOSAL)
-        .flat_map(|chunk| crate::author::place_families(said, &standing, chunk))
-        .collect();
+    let answers: Vec<Placed> = crate::author::asking(|| {
+        unplaced
+            .par_chunks(FAMILIES_PER_PROPOSAL)
+            .flat_map(|chunk| crate::author::place_families(said, &standing, chunk))
+            .collect()
+    });
     let answered = !answers.is_empty();
     for Placed { family, capability, description, audience, role, why } in answers {
         if !told.contains_key(&family) || placed.contains(&family) {
@@ -731,10 +735,12 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             let proposing = std::time::Instant::now();
             let proposals: Vec<Proposal> = match listed.len() <= FAMILIES_PER_PROPOSAL {
                 true => vec![most_detailed_reading(said, &listed)],
-                false => listed
-                    .par_chunks(FAMILIES_PER_PROPOSAL)
-                    .map(|chunk| most_detailed_reading(said, chunk))
-                    .collect(),
+                false => crate::author::asking(|| {
+                    listed
+                        .par_chunks(FAMILIES_PER_PROPOSAL)
+                        .map(|chunk| most_detailed_reading(said, chunk))
+                        .collect()
+                }),
             };
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
@@ -1170,7 +1176,7 @@ fn asked_afresh(listed: BTreeMap<String, String>, spoken: &str) -> Vec<crate::au
         .chunks(CAPABILITIES_CONSOLIDATED_AT_ONCE)
         .map(|chunk| chunk.iter().cloned().collect())
         .collect();
-    chunks.par_iter().flat_map(|chunk| crate::author::same_outcome(spoken, chunk)).collect()
+    crate::author::asking(|| chunks.par_iter().flat_map(|chunk| crate::author::same_outcome(spoken, chunk)).collect())
 }
 
 fn grouped(
@@ -1483,18 +1489,20 @@ pub(crate) fn the_same_among(
         }
     }
     let shown: Vec<usize> = (0..listed.len()).filter(|at| found(&mut leader, *at) == *at).collect();
-    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = asked_together(&shown)
-        .into_par_iter()
-        .filter(|chunk| chunk.len() > 1)
-        .map(|chunk| {
-            let offered: BTreeMap<String, String> = chunk
-                .iter()
-                .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
-                .collect();
-            let said = ask(&offered);
-            (chunk, said)
-        })
-        .collect();
+    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = crate::author::asking(|| {
+        asked_together(&shown)
+            .into_par_iter()
+            .filter(|chunk| chunk.len() > 1)
+            .map(|chunk| {
+                let offered: BTreeMap<String, String> = chunk
+                    .iter()
+                    .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
+                    .collect();
+                let said = ask(&offered);
+                (chunk, said)
+            })
+            .collect()
+    });
     let mut named: Vec<(Vec<usize>, String, String, String)> = Vec::new();
     for (chunk, said) in answers {
         for same in said {

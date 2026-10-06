@@ -24,6 +24,16 @@ pub fn workers(limit: Option<u64>, available: usize) -> usize {
     }
 }
 
+const AI_CONCURRENCY: usize = 16;
+
+pub fn asks_in_flight(held: Option<&str>) -> usize {
+    held.and_then(|text| text.trim().parse::<usize>().ok()).filter(|places| *places > 0).unwrap_or(AI_CONCURRENCY)
+}
+
+pub fn ai_concurrency() -> usize {
+    asks_in_flight(std::env::var("KLAURO_AI_CONCURRENCY").ok().as_deref())
+}
+
 pub fn pool_size() -> usize {
     let available = std::thread::available_parallelism().map(|held| held.get()).unwrap_or(1);
     workers(limit(), available)
@@ -47,6 +57,15 @@ mod tests {
         assert_eq!(workers(None, 10), 10);
         assert_eq!(workers(Some(16 << 30), 10), 10);
         assert_eq!(workers(Some(64 << 30), 64), 64);
+    }
+
+    #[test]
+    fn asks_in_flight_follow_the_setting_and_default_to_sixteen() {
+        assert_eq!(asks_in_flight(None), 16);
+        assert_eq!(asks_in_flight(Some("24")), 24);
+        assert_eq!(asks_in_flight(Some(" 8 ")), 8);
+        assert_eq!(asks_in_flight(Some("0")), 16);
+        assert_eq!(asks_in_flight(Some("many")), 16);
     }
 
     #[test]

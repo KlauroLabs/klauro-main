@@ -21,9 +21,20 @@ const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
     match spoken_to().is_some() {
-        true => 6,
+        true => crate::budget::ai_concurrency(),
         false => over_a_network,
     }
+}
+
+static ASKING: std::sync::LazyLock<rayon::ThreadPool> = std::sync::LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(crate::budget::ai_concurrency())
+        .build()
+        .expect("a pool of threads to ask on")
+});
+
+pub fn asking<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    ASKING.install(work)
 }
 
 static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
@@ -164,10 +175,12 @@ pub fn name_them(
         .iter()
         .map(|(id, facts)| format!("- id: {id}\n{facts}"))
         .collect();
-    let batches: Vec<BTreeMap<String, Written>> = listed
-        .par_chunks(named_per_call())
-        .map(|batch| name_batch(member, spoken_for, batch, true))
-        .collect();
+    let batches: Vec<BTreeMap<String, Written>> = asking(|| {
+        listed
+            .par_chunks(named_per_call())
+            .map(|batch| name_batch(member, spoken_for, batch, true))
+            .collect()
+    });
     for batch in batches {
         named.extend(batch);
     }
@@ -327,15 +340,17 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
     }
     let listed: Vec<(&String, &String)> = listed.iter().collect();
     let per_call = per_call_for(listed.len());
-    listed
-        .par_chunks(per_call.max(1))
-        .map(|chunk| {
-            place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
-        })
-        .reduce(BTreeMap::new, |mut into, held| {
-            into.extend(held);
-            into
-        })
+    asking(|| {
+        listed
+            .par_chunks(per_call.max(1))
+            .map(|chunk| {
+                place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
+            })
+            .reduce(BTreeMap::new, |mut into, held| {
+                into.extend(held);
+                into
+            })
+    })
 }
 
 const PATHS_PER_CALL: usize = 12;
@@ -350,13 +365,15 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
     }
-    listed
-        .par_chunks(PATHS_PER_CALL)
-        .map(|chunk| tell_a_batch(spoken_for, chunk, true))
-        .reduce(BTreeMap::new, |mut into, held| {
-            into.extend(held);
-            into
-        })
+    asking(|| {
+        listed
+            .par_chunks(PATHS_PER_CALL)
+            .map(|chunk| tell_a_batch(spoken_for, chunk, true))
+            .reduce(BTreeMap::new, |mut into, held| {
+                into.extend(held);
+                into
+            })
+    })
 }
 
 fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> BTreeMap<String, Written> {
@@ -479,7 +496,15 @@ purpose running, such as scheduled and background work; administrative: it confi
 it undoes, retries, restores or repairs; observability: it reports on it, such as status, logs, metrics or audit; \
 compliance: consent, retention or other obligations; maintenance: upkeep, clean-up or migration.";
 
-pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-3";
+pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-4";
+
+pub const OUTCOME_NAMES: &str = "A capability is named for the result someone ends up with, in the product's own domain, \
+never for an operation the code performs on the way to it: hashing, encoding, parsing, serialising, validating, \
+formatting, reading or writing a file, calling a service and the like are steps inside outcomes, never a purpose. \
+When the only thing an outcome shows is such an operation, it serves the purpose that operation is in aid of, or is \
+left unassigned; it is never named as a capability. Never name one with a filler verb such as handle, manage, process \
+or support followed by a topic: say what comes out of it, like \"Index a codebase's structure\" or \"Find where \
+requests enter and what they change\".";
 
 pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
 history or whether it is still maintained; what the software does is read from the code below, and that decides. \
@@ -676,7 +701,7 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          For each capability give a name of 2-6 words that says what the purpose is — a verb and what it is for, \
          like \"Share posts with followers\" or \"Track an order\", never a bare topic or category like \
          \"Posting\", \"Orders\" or \"Engagement\", and never the name of one command or one screen —, one \
-         sentence saying what someone gets, and the audience it is for. The name and the sentence say only what the code shown does: never an option, filter, step \
+         sentence saying what someone gets, and the audience it is for. {outcome_names} The name and the sentence say only what the code shown does: never an option, filter, step \
          or result it does not show. When it only checks, simulates or records something, say it \
          checks, simulates or records it rather than that it does it. Name the capability for what the person gets, \
          never for the way in or what it is built on: nothing is called an API, a page, an endpoint, a screen, a \
@@ -685,7 +710,8 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"serves\":[{{\"id\":\"...\",\"role\":\"primary\",\"why\":\"...\"}}]}}],\"unassigned\":[\"...\"]}}\n\n\
          The outcomes:\n{}",
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
-        users_words = IN_THE_USERS_WORDS
+        users_words = IN_THE_USERS_WORDS,
+        outcome_names = OUTCOME_NAMES
     );
     let Some(held) =
         answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
@@ -742,13 +768,14 @@ pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: 
          words on why. An outcome that serves no purpose the product states is listed as unassigned. Give each \
          capability a name of 2-6 words that says what the person gets — a verb and what it is for, never a bare \
          topic and never the name of one command or screen —, one sentence saying what someone gets, and the \
-         audience it is for. {users_words} Every id below must appear in at least one capability or in \
+         audience it is for. {users_words} {outcome_names} Every id below must appear in at least one capability or in \
          unassigned, and no other id may appear.\n\
          Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"serves\":[{{\"id\":\"...\",\"role\":\"primary\",\"why\":\"...\"}}]}}],\"unassigned\":[\"...\"]}}\n\n\
          The outcomes:\n{}",
         families.len(),
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
-        users_words = IN_THE_USERS_WORDS
+        users_words = IN_THE_USERS_WORDS,
+        outcome_names = OUTCOME_NAMES
     );
     let Some(held) = answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0) else {
         return Proposal::default();
@@ -1021,52 +1048,58 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
     if !asked() || held.is_empty() {
         return Vec::new();
     }
-    held.par_chunks(CLAIMS_PER_ASK)
-        .flat_map(|chunk| {
-            let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
-            let prompt = format!(
-                "A software system describes itself like this:\n{spoken}\n\n\
-                 That description may speak of the project rather than the software; the facts below decide.\n\n\
-                 Each item below is a capability someone proposed, with the facts read from the code about what \
-                 serves it: several outcomes, each with a role in it. A capability is a purpose, so its name and \
-                 sentence say what the product is for here, and the several behaviors that serve it stand behind \
-                 that purpose without being listed in it. A careful reviewer will read the code and mark a \
-                 capability wrong when its name or sentence claims more than the code does. For each item, give \
-                 the name (2-6 words, a verb and what it is for) and one sentence that say exactly what the facts \
-                 show someone gets:\n\
-                 - drop any option, filter, step, provider or result the facts do not show, and any adjective, \
-                 example or attribute they do not name (detailed, specifications, categories, recommendations);\n\
-                 - the name states one purpose: it may cover the several behaviors that serve it, but it never \
-                 lists them, and it is never narrowed to one command or one screen of those behaviors;\n\
-                 - when the code only checks, simulates, records or shows something, say that rather than that \
-                 it does it;\n\
-                 - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
-                 wired to nothing configured, say exactly that;\n\
-                 - when the name or sentence claims a behavior that none of the outcomes shown delivers, remove \
-                 that claim, and keep every claim they do deliver;\n\
-                 - when the code and the part's setup show it can never be reached — no client, provider or \
-                 route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
-                 once an outside service or key is configured is real: keep it and say what it needs;\n\
-                 - {users_words}\n\
-                 - when the proposal is already exact, return it unchanged.\n\
-                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"drop\":false}}]}}\n\n\
-                 The items:\n{}",
-                listed.join("\n"),
-                users_words = IN_THE_USERS_WORDS
-            );
-            answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1)
-                .map(|held| {
-                    held["items"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|item| serde_json::from_value::<Tightened>(item.clone()).ok())
-                        .filter(|item| item.drop || !item.name.trim().is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
-        .collect()
+    asking(|| {
+        held.par_chunks(CLAIMS_PER_ASK)
+            .flat_map(|chunk| {
+                let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
+                let prompt = format!(
+                    "A software system describes itself like this:\n{spoken}\n\n\
+                     That description may speak of the project rather than the software; the facts below decide.\n\n\
+                     Each item below is a capability someone proposed, with the facts read from the code about what \
+                     serves it: several outcomes, each with a role in it. A capability is a purpose, so its name and \
+                     sentence say what the product is for here, and the several behaviors that serve it stand behind \
+                     that purpose without being listed in it. A careful reviewer will read the code and mark a \
+                     capability wrong when its name or sentence claims more than the code does. For each item, give \
+                     the name (2-6 words, a verb and what it is for) and one sentence that say exactly what the facts \
+                     show someone gets:\n\
+                     - drop any option, filter, step, provider or result the facts do not show, and any adjective, \
+                     example or attribute they do not name (detailed, specifications, categories, recommendations);\n\
+                     - the name states one purpose: it may cover the several behaviors that serve it, but it never \
+                     lists them, and it is never narrowed to one command or one screen of those behaviors;\n\
+                     - when the code only checks, simulates, records or shows something, say that rather than that \
+                     it does it;\n\
+                     - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
+                     wired to nothing configured, say exactly that;\n\
+                     - when the name or sentence claims a behavior that none of the outcomes shown delivers, remove \
+                     that claim, and keep every claim they do deliver;\n\
+                     - when the code and the part's setup show it can never be reached — no client, provider or \
+                     route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
+                     once an outside service or key is configured is real: keep it and say what it needs;\n\
+                     - {users_words}\n\
+                     - {outcome_names}\n\
+                     - when it is named for such an operation and the outcomes show no result someone ends up with, set drop \
+                     to true;\n\
+                     - when the proposal is already exact, return it unchanged.\n\
+                     Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"drop\":false}}]}}\n\n\
+                     The items:\n{}",
+                    listed.join("\n"),
+                    users_words = IN_THE_USERS_WORDS,
+                    outcome_names = OUTCOME_NAMES
+                );
+                answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1)
+                    .map(|held| {
+                        held["items"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| serde_json::from_value::<Tightened>(item.clone()).ok())
+                            .filter(|item| item.drop || !item.name.trim().is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    })
 }
 
 pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -> BTreeMap<String, Grounding> {
