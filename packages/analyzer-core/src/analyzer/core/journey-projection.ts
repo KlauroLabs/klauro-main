@@ -1,3 +1,4 @@
+import { unshippedRoleOf } from './unshipped-entry';
 import type {
   CASCallChain,
   CASChangeRisk,
@@ -85,6 +86,7 @@ function journeyKind(
   entryNode: CASNode | undefined,
   cronSchedule: string | undefined,
 ): CASUserJourney['journey_kind'] {
+  if (unshippedRoleOf(entryPoint)) return 'system';
   if (entryPoint.type === 'schedule' || cronSchedule) return 'scheduled';
   const genericCli = entryPoint.type === 'cli' &&
     /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim());
@@ -275,6 +277,7 @@ export function projectUserJourneysFromFlows(
     }
     const commandName = String((entryPoint.metadata as any)?.commandName || '').trim();
     const cronSchedule = entryPoint.type === 'cli' && commandName ? findCronSchedule(commandName, cronSchedules) : undefined;
+    const unshipped = unshippedRoleOf(entryPoint);
     const kind = journeyKind(entryPoint, nodesById.get(entryPoint.handler?.node_id || entryPoint.source_node), cronSchedule);
     const steps = flow.steps.map((step, index) => {
       const nodeId = step.code_mappings?.[0]?.code_region.node_id || step.functions[0]?.function_id ||
@@ -303,11 +306,12 @@ export function projectUserJourneysFromFlows(
       security_boundaries: boundaries,
       tests_covering: [...tests].sort(),
       risk,
-      criticality: flow.criticality || (entitiesWritten.length > 0 || exits.length > 0 ? 'high' : kind === 'user-facing' ? 'medium' : 'low'),
+      criticality: unshipped ? 'low' : flow.criticality || (entitiesWritten.length > 0 || exits.length > 0 ? 'high' : kind === 'user-facing' ? 'medium' : 'low'),
       call_chain_ids: chains.map(chain => chain.id),
       exit_point_ids: exits.map(exitPoint => exitPoint.id),
       ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
       derived_from_flow_id: flow.flow_id,
+      ...(unshipped ? { unshipped } : {}),
       ...(flow.capability_relationships?.length ? { capability_relationships: flow.capability_relationships } : {}),
     });
   }

@@ -40,6 +40,7 @@ export interface RemoteSyncOptions {
   wait?: boolean;
 
   readinessRequirement?: 'complete' | 'structural';
+  onProgress?: (message: string) => void;
 
 
 
@@ -234,6 +235,7 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
       undefined,
       undefined,
       options.readinessRequirement,
+      options.onProgress,
     );
     Object.assign(response, {
       status: 'success',
@@ -284,11 +286,14 @@ export async function waitForRemoteAnalysis(
   completionTimeoutMs?: number,
   requestedSections?: readonly CasSectionName[],
   readinessRequirement: 'complete' | 'structural' = 'complete',
+  onProgress?: (message: string) => void,
 ): Promise<CASOutput> {
   const token = connectorToken(explicitToken, serverUrl);
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
-  const deadline = Date.now() + remoteCompletionTimeoutMs(completionTimeoutMs);
+  const stallWindowMs = remoteCompletionTimeoutMs(completionTimeoutMs);
+  let deadline = Date.now() + stallWindowMs;
+  let progressSignature = '';
   let lastStatus = 'populating';
   let lastStatusTimingAt = 0;
   let segmentedManifestPendingSince: number | undefined;
@@ -330,6 +335,12 @@ export async function waitForRemoteAnalysis(
       throw new Error(`Remote analysis status returned ${statusResponse.status}${detail}`);
     }
     lastStatus = statusPayload.status || lastStatus;
+    const progress = describeRemoteProgress(statusPayload);
+    if (progress.signature !== progressSignature) {
+      progressSignature = progress.signature;
+      deadline = Date.now() + stallWindowMs;
+      onProgress?.(progress.message);
+    }
     if (Date.now() - lastStatusTimingAt >= 5000) {
       emitRemoteCasTiming('status', {
         status: lastStatus,
@@ -447,7 +458,7 @@ export async function waitForRemoteAnalysis(
     }
     await sleep(100);
   }
-  throw new Error(`Timed out waiting for remote analysis ${analysisId}; server status remains ${lastStatus} and analysis continues remotely`);
+  throw new Error(`Timed out waiting for remote analysis ${analysisId}: no progress for ${Math.round(stallWindowMs / 1000)}s while server status remains ${lastStatus}`);
 }
 
 function canHydrateWholeCasFallback(summary?: { node_count?: number; edge_count?: number }): boolean {
@@ -578,7 +589,26 @@ async function fetchUncompressedRemoteCas(
 function remoteCompletionTimeoutMs(explicit?: number): number {
   if (Number.isFinite(explicit) && Number(explicit) > 0) return Number(explicit);
   const override = Number(process.env.KLAURO_REMOTE_COMPLETION_TIMEOUT_MS);
-  return Number.isFinite(override) && override > 0 ? override : 180_000;
+  return Number.isFinite(override) && override > 0 ? override : 300_000;
+}
+
+interface RemoteProgressSource {
+  status?: string;
+  analysis_revision?: number;
+  last_attempt?: { state?: string; heartbeat_at?: string; queue_position?: number };
+  summary?: { node_count?: number; layers_ready?: { layers?: Array<{ layer?: string; status?: string }> } };
+}
+
+function describeRemoteProgress(payload: RemoteProgressSource): { signature: string; message: string } {
+  const layers = payload.summary?.layers_ready?.layers ?? [];
+  const ready = layers.filter(layer => layer.status === 'ready').map(layer => layer.layer);
+  const attempt = payload.last_attempt;
+  const queued = attempt?.queue_position ? `, queue position ${attempt.queue_position}` : '';
+  const layerNote = ready.length > 0 ? `, layers ready: ${ready.join(' ')}` : '';
+  return {
+    message: `${payload.status ?? 'populating'}${attempt?.state ? ` (${attempt.state})` : ''}${queued}${layerNote}`,
+    signature: JSON.stringify([payload.status, payload.analysis_revision, attempt?.state, attempt?.heartbeat_at, attempt?.queue_position, ready, payload.summary?.node_count]),
+  };
 }
 
 export async function generateElementDescriptionRemotely(options: RemoteElementDescriptionOptions): Promise<Record<string, unknown>> {

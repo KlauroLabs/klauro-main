@@ -52,6 +52,7 @@ import {
 } from './storage';
 import { clearFreshnessSummaryCache } from './freshness';
 import { publishStructuralLayer } from './structural-layer';
+import { recordAnalysisStage, timeAnalysisStage } from './analysis-phase-timings';
 import { describeAnalysisVersion } from './analysis-version';
 import { applyStoredElementDescriptions, validateDescription } from './description-enrichment';
 import { isLanguageBuiltinName } from '../../../packages/analyzer-core/src/analyzer/core/language-builtins';
@@ -859,18 +860,16 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
         await loadAnalysis(projectPath, { preferCache: true }).catch(() => null), analyzed
       ));
     result.layers_ready = buildCompletedAnalysisLayersReady(result);
-    if (options.persist !== false) {
+    if (options.persist !== false) await timeAnalysisStage(result, 'save', async () => {
       await saveAnalysis(projectPath, result);
       await saveIncrementalState(projectPath, orch.createIncrementalBaseline(projectPath, result));
       clearFreshnessSummaryCache();
       await saveAnalysisSnapshot(projectPath, result);
-    }
+    });
 
     return result;
   }, sizeHint, projectPath));
 }
-
-
 
 
 
@@ -965,7 +964,7 @@ export async function analyzeProjectLayered(
     const hasCompletePrevious = !forceFullRebuild && Boolean(
       previous && previous.layers_ready?.complete === true && (previous.nodes?.length ?? 0) > 0
     );
-    await publishStructuralLayer(projectPath, displayName);
+    const structuralMs = await publishStructuralLayer(projectPath, displayName);
     const analyzed = hasCompletePrevious
       ? await analyzeProjectIncremental(projectPath, displayName)
           .then(incremental => incremental.output)
@@ -977,6 +976,7 @@ export async function analyzeProjectLayered(
           })
       : await analyzeProject(projectPath, displayName, { reuseStoredContext: !forceFullRebuild });
 
+    recordAnalysisStage(analyzed, 'structural', structuralMs);
     analyzed.layers_ready = buildCompletedAnalysisLayersReady(analyzed);
     await saveAnalysis(projectPath, analyzed, 'main', { deferSegmentedWrite: true });
     clearFreshnessSummaryCache();

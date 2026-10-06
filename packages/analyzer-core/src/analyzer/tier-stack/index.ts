@@ -12,7 +12,11 @@ export async function analyzeWithTierStack(
   displayName?: string,
   options: { enrich?: boolean } = {}
 ): Promise<CASOutput> {
-  const cas = tierStackToCas(await readTierStack(projectPath, options), displayName);
+  const startedAt = Date.now();
+  const index = await readTierStack(projectPath, options);
+  const engineMs = Date.now() - startedAt;
+  const cas = tierStackToCas(index, displayName);
+  cas.timings = { total_ms: Date.now() - startedAt, stages: { engine: engineMs } };
   cas.analyzer_build = getBuildIdentity().version;
   return cas;
 }

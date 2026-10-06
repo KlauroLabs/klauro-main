@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPhaseTimings, hostedAiConcurrency } from './analysis-phase-timings';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { buildPhaseTimings, hostedAiConcurrency, recordAnalysisStage, timeAnalysisStage } from './analysis-phase-timings';
 
 test('phase timings split queue wait, structural, AI, engine save and landing from stage timings', () => {
   const timings = buildPhaseTimings({
@@ -16,6 +17,18 @@ test('phase timings split queue wait, structural, AI, engine save and landing fr
   assert.equal(timings.engine_save_ms, 700);
   assert.equal(timings.landing_ms, 2000);
   assert.equal(timings.total_ms, 72_000);
+});
+
+test('phase timings report the engine run and structural pass of the tier-stack pipeline', () => {
+  const timings = buildPhaseTimings({
+    queuedAt: '2026-01-01T00:00:00.000Z',
+    workerFinishedAtMs: Date.parse('2026-01-01T00:01:00.000Z'),
+    finishedAtMs: Date.parse('2026-01-01T00:01:01.000Z'),
+    stageTimingsMs: { structural: 1500, engine: 50_000, save: 900 },
+  });
+  assert.equal(timings.structural_ms, 1500);
+  assert.equal(timings.engine_ms, 50_000);
+  assert.equal(timings.engine_save_ms, 900);
 });
 
 test('phase timings omit engine stages when the worker reported none and never go negative', () => {
@@ -40,4 +53,23 @@ test('hosted AI concurrency follows the environment and defaults to the relay-sa
     if (previous === undefined) delete process.env.KLAURO_AI_CONCURRENCY;
     else process.env.KLAURO_AI_CONCURRENCY = previous;
   }
+});
+
+test('recording a stage accumulates onto the run timings', () => {
+  const output = { timings: { total_ms: 100, stages: { engine: 100 } } } as unknown as CASOutput;
+  recordAnalysisStage(output, 'save', 40);
+  recordAnalysisStage(output, 'save', 10);
+  assert.deepEqual(output.timings, { total_ms: 150, stages: { engine: 100, save: 50 } });
+  const bare = {} as unknown as CASOutput;
+  recordAnalysisStage(bare, 'structural', 7);
+  assert.deepEqual(bare.timings, { total_ms: 7, stages: { structural: 7 } });
+});
+
+test('a timed stage records its duration and ignores an unmeasured one', async () => {
+  const output = {} as unknown as CASOutput;
+  recordAnalysisStage(output, 'structural', undefined);
+  const saved = () => output.timings?.stages?.save;
+  assert.equal(saved(), undefined);
+  await timeAnalysisStage(output, 'save', async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  assert.ok((saved() ?? 0) >= 15);
 });

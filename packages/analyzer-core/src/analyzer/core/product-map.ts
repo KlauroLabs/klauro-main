@@ -202,6 +202,7 @@ function buildJourneys(projection: JourneyProjectionResult): CASProductMap['jour
       criticality: journey.criticality,
       boundaries: [...new Set((journey.security_boundaries || []).map(boundary => boundary.name))],
       tests: (journey.tests_covering || []).length,
+      ...(journey.unshipped ? { unshipped: journey.unshipped } : {}),
     }));
 
   const countByKind = (kind: CASUserJourney['journey_kind']) =>

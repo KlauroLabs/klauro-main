@@ -1,3 +1,4 @@
+import { unshippedRoleOf } from './unshipped-entry';
 import {
   CASNode,
   CASEdge,
@@ -306,7 +307,8 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     const genericBootstrapCli = entryPoint.type === 'cli' &&
       /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim());
 
-    const journeyKind: CASUserJourney['journey_kind'] = (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
+    const unshipped = unshippedRoleOf(entryPoint);
+    const journeyKind: CASUserJourney['journey_kind'] = unshipped ? 'system' : (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
       : (isUserFacingEntry(entryPoint, graph) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli && !isStructuralExecutableCliEntry(entryPoint))
         ? 'user-facing'
@@ -318,7 +320,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       ? dedupeCapabilityRelationships(matchingFlows.flatMap(flow => flow.capability_relationships || []))
       : undefined;
 
-    const criticality = scoreCriticality(effects, securityBoundaries.length, journeyKind, chains);
+    const criticality = unshipped ? 'low' : scoreCriticality(effects, securityBoundaries.length, journeyKind, chains);
 
     built.push({
       entryPoint,
@@ -351,6 +353,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         exit_point_ids: effects.exitPointIds,
         ...(effects.unresolvedExitPointIds.length > 0 ? { unresolved_exit_point_ids: effects.unresolvedExitPointIds } : {}),
         ...(matchingFlows?.length ? { derived_from_flow_id: matchingFlows[0].flow_id } : {}),
+        ...(unshipped ? { unshipped } : {}),
         ...(capabilityRelationships?.length ? { capability_relationships: capabilityRelationships } : {}),
       },
     });

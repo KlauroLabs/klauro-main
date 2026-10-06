@@ -4,17 +4,21 @@ import { loadAnalysis, withProjectAnalysisLockIfAvailable } from './storage';
 import { clearFreshnessSummaryCache } from './freshness';
 import { buildStructuralLayersReady } from './layered-analysis';
 
-export async function publishStructuralLayer(projectPath: string, displayName?: string): Promise<void> {
-  if (process.env.KLAURO_ENRICH === '0') return;
+export async function publishStructuralLayer(projectPath: string, displayName?: string): Promise<number | undefined> {
+  if (process.env.KLAURO_ENRICH === '0') return undefined;
+  let structuralMs: number | undefined;
   await withProjectAnalysisLockIfAvailable(projectPath, async () => {
     const stored = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     if ((stored?.nodes?.length ?? 0) > 0) return;
+    const startedAt = Date.now();
     const structural = await analyzeWithTierStack(projectPath, displayName, { enrich: false });
     structural.layers_ready = buildStructuralLayersReady(structural);
     await saveAnalysis(projectPath, structural);
     clearFreshnessSummaryCache();
+    structuralMs = Date.now() - startedAt;
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[Klauro] structural layer skipped for ${projectPath} (${message}); continuing to full analysis`);
   });
+  return structuralMs;
 }

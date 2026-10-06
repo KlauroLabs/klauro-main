@@ -296,6 +296,7 @@ async function main() {
       force: process.argv.includes('--force'),
       confirmScope: scope.confirmScope,
       wait: process.argv.includes('--wait'),
+      onProgress: json || process.argv.includes('--quiet') ? undefined : message => { process.stderr.write(`Waiting for analysis: ${message}\n`); },
     });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }

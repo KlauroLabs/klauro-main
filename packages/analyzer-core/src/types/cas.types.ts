@@ -1251,6 +1251,7 @@ export interface CASProductMapJourney {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   boundaries: string[];
   tests: number;
+  unshipped?: string;
 }
 
 export interface CASProductMap {
@@ -3745,7 +3746,7 @@ export interface CASUserJourney {
   call_chain_ids: string[];
   exit_point_ids: string[];
   unresolved_exit_point_ids?: string[];
-
+  unshipped?: string;
 
 
 

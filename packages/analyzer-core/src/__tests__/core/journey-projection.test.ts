@@ -152,3 +152,20 @@ test('indexed projection preserves exits, guards, tests, and entry aliases witho
   }));
   expect(result.journeys[0].tests_covering).toEqual(['edge-test', 'metadata-test']);
 });
+
+test('a journey whose entry is tagged unshipped is a low-criticality system journey carrying its tag', () => {
+  const projected = projectUserJourneysFromFlows({
+    nodes: [{ id: 'approve-node', name: 'handleReview', type: 'function' }] as any,
+    edges: [],
+    entryPoints: [{ id: 'review-entry', name: 'POST /review', type: 'http', source_node: 'approve-node', metadata: { unshipped: { role: 'benchmark' } } }] as any,
+    exitPoints: [{ id: 'dependency', source_node: 'approve-node', type: 'sdk', name: 'Call to transform', target: { sdk: 'formatting-library' } }] as any,
+    callChains: [],
+    dataEntities: [],
+    changeRisks: [],
+    flows: [flow('approve', 'dependency', 'approve-node')],
+  });
+  expect(projected.journeys[0].journey_kind).toBe('system');
+  expect(projected.journeys[0].criticality).toBe('low');
+  expect(projected.journeys[0].unshipped).toBe('benchmark');
+  expect(projected.summary.by_kind['user-facing']).toBe(0);
+});

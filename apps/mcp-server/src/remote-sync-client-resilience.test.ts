@@ -882,3 +882,56 @@ test('wait mode ignores a ready CAS from an older analysis revision', async (t) 
   assert.equal(statusRequests, 3);
   assert.equal(exportRequests, 2);
 });
+
+async function listenOnce(t: import('node:test').TestContext, handler: http.RequestListener): Promise<string> {
+  const server = http.createServer(handler);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+  return `http://127.0.0.1:${address.port}`;
+}
+
+function segmentedReadyHandler(analysisId: string, statusBody: () => unknown): http.RequestListener {
+  return (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+    if (req.url === `/v1/analyses/${analysisId}/status`) res.end(JSON.stringify(statusBody()));
+    else if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.end(JSON.stringify({
+        manifest_version: 1, cas_version: '3.0.0', analysis_id: analysisId, analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system'] }], logical_fields: ['system'],
+      }));
+    } else if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) res.end(JSON.stringify({ system: { name: 'followed-progress' } }));
+    else { res.writeHead(404).end(); }
+  };
+}
+
+test('waiting keeps following an analysis whose progress advances past the stall window', async (t) => {
+  const analysisId = 'progress-followed';
+  const startedAt = Date.now();
+  const messages: string[] = [];
+  const serverUrl = await listenOnce(t, segmentedReadyHandler(analysisId, () => {
+    const elapsed = Date.now() - startedAt;
+    return elapsed < 1500
+      ? { status: 'populating', last_attempt: { state: 'in-progress', heartbeat_at: String(Math.floor(elapsed / 100)) } }
+      : { status: 'ready', analysis_id: analysisId };
+  }));
+
+  const cas = await waitForRemoteAnalysis(serverUrl, analysisId, undefined, undefined, 600, ['identity'], 'complete', message => messages.push(message));
+
+  assert.equal(cas.system.name, 'followed-progress');
+  assert.ok(Date.now() - startedAt > 1000);
+  assert.match(messages[0], /populating \(in-progress\)/);
+});
+
+test('waiting gives up only when the server stops making progress', async (t) => {
+  const analysisId = 'progress-stalled';
+  const serverUrl = await listenOnce(t, segmentedReadyHandler(analysisId, () => ({
+    status: 'populating', last_attempt: { state: 'in-progress', heartbeat_at: 'frozen' },
+  })));
+
+  await assert.rejects(
+    waitForRemoteAnalysis(serverUrl, analysisId, undefined, undefined, 500, ['identity']),
+    /no progress for 1s while server status remains populating/,
+  );
+});
