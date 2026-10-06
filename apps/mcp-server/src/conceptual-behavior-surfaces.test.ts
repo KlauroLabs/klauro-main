@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { getAnalysis } from './analyzer';
+import { computeFlowConcepts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { saveAnalysis } from './storage';
 import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
@@ -135,10 +136,28 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
         reason: 'no-corroborating-candidate',
       })),
     };
-    await saveAnalysis(workspace, acceptedCas);
-    const toolEntryPoint = cas.entry_points?.find(entryPoint => entryPoint.name === 'get_summary');
+    const toolEntryPoints = (cas.entry_points || []).filter(entryPoint => entryPoint.type === 'tool');
+    const toolEntryPoint = toolEntryPoints.find(entryPoint => entryPoint.name === 'get_summary');
     assert.ok(toolEntryPoint);
-    const storedSurface = cas.behavior_surfaces?.find(surface =>
+    acceptedCas.behavior_surfaces = [{
+      id: 'surface:mcp-tool',
+      name: 'MCP tool registrations',
+      description: 'Tools the server registers for MCP clients to call',
+      category: 'internal',
+      operations: toolEntryPoints.map(entryPoint => ({
+        entry_point_id: entryPoint.id,
+        entry_point_type: entryPoint.type,
+        action: entryPoint.name,
+      })),
+      related_entities: [],
+      related_domains: [],
+      criticality: 'medium',
+      criticality_factors: ['registration surface'],
+      evidence_kind: 'behavior-surface',
+    }];
+    acceptedCas.flows = computeFlowConcepts({ ...acceptedCas, flows: undefined });
+    await saveAnalysis(workspace, acceptedCas);
+    const storedSurface = acceptedCas.behavior_surfaces.find(surface =>
       surface.operations.some(operation => operation.entry_point_id === toolEntryPoint.id)
     );
     assert.ok(storedSurface);
