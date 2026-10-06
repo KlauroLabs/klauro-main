@@ -523,6 +523,10 @@ fn decorator_entry(decorator: &Decorator, bare_verbs: bool) -> Option<(&'static 
     if lowered == "path" && (verb != "Path" || (qualified && !decorator.name.contains("ws.rs"))) {
         return None;
     }
+    if lowered == "restresource" {
+        let mapped = path.map(|written| written.trim_end_matches('*').trim_end_matches('/').to_string());
+        return Some(("http", "ANY".to_string(), mapped));
+    }
     if matches!(lowered.as_str(), "controller" | "path" | "request" | "route") {
         let method = decorator
             .arguments

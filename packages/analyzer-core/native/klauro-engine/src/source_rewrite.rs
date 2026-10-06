@@ -41,6 +41,52 @@ fn qualified_type_imports(source: &mut [u8]) -> u32 {
     rewritten
 }
 
+static APEX_SHARING: &[&[u8]] = &[b"inherited sharing", b"with sharing", b"without sharing"];
+
+pub fn apex_dialect(source: &mut [u8]) -> u32 {
+    let mut rewritten = 0;
+    let mut at = 0;
+    while at < source.len() {
+        match source[at] {
+            b'\'' => at = past_quoted(source, at),
+            b'/' if source.get(at + 1) == Some(&b'/') => {
+                while at < source.len() && source[at] != b'\n' {
+                    at += 1;
+                }
+            }
+            b'/' if source.get(at + 1) == Some(&b'*') => {
+                at = find_from(source, b"*/", at + 2).map_or(source.len(), |found| found + 2);
+            }
+            byte if is_identifier_byte(byte) => {
+                let start = at;
+                while at < source.len() && is_identifier_byte(source[at]) {
+                    at += 1;
+                }
+                if source[start..at].eq_ignore_ascii_case(b"global") {
+                    source[start..at].copy_from_slice(b"public");
+                    rewritten += 1;
+                } else if let Some(held) = APEX_SHARING.iter().find(|held| source[start..].len() >= held.len() && source[start..start + held.len()].eq_ignore_ascii_case(held)) {
+                    for byte in &mut source[start..start + held.len()] {
+                        *byte = b' ';
+                    }
+                    at = start + held.len();
+                    rewritten += 1;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    rewritten
+}
+
+fn past_quoted(source: &[u8], from: usize) -> usize {
+    let mut at = from + 1;
+    while at < source.len() && source[at] != b'\'' && source[at] != b'\n' {
+        at += if source[at] == b'\\' { 2 } else { 1 };
+    }
+    (at + 1).min(source.len())
+}
+
 static PROMISE_METHODS: &[&[u8]] = &[b"catch", b"finally", b"then"];
 
 fn continues_a_promise(source: &[u8], from: usize) -> bool {
@@ -379,6 +425,21 @@ mod razor {
         }
         assert!(!renders.contains("EditForm();"), "{renders}");
         assert!(!renders.contains("true"), "{renders}");
+    }
+}
+
+#[cfg(test)]
+mod apex_modifiers {
+    use super::apex_dialect;
+
+    #[test]
+    fn a_global_class_and_its_sharing_clause_read_as_the_dialect_the_grammar_knows() {
+        let mut held = b"global with sharing class A { global static String go() { return 'global with sharing'; } }".to_vec();
+        assert_eq!(apex_dialect(&mut held), 3);
+        assert_eq!(
+            String::from_utf8(held).unwrap(),
+            "public              class A { public static String go() { return 'global with sharing'; } }"
+        );
     }
 }
 

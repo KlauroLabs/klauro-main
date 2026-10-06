@@ -148,7 +148,7 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
     let language: Language = match id {
         "python" => tree_sitter_python::LANGUAGE.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
-        "java" => tree_sitter_java::LANGUAGE.into(),
+        "java" | "apex" => tree_sitter_java::LANGUAGE.into(),
         "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
         "rust" => tree_sitter_rust::LANGUAGE.into(),
         "ruby" => tree_sitter_ruby::LANGUAGE.into(),
@@ -234,6 +234,7 @@ pub fn spec_for(id: &str) -> Option<&'static LanguageSpec> {
         "cuda" => "cpp",
         "luau" => "lua",
         "hack" => "php",
+        "apex" => "java",
         "purescript" => "haskell",
         other => other,
     };

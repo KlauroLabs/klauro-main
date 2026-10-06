@@ -66,3 +66,11 @@ fn a_namespace_block_prefixes_the_routes_it_holds() {
 fn a_router_macro_whose_controller_is_elsewhere_still_serves() {
     assert_eq!(served("route-dsls/phoenix"), vec![pair("GET", "/users"), pair("POST", "/users")]);
 }
+
+#[test]
+fn an_apex_rest_resource_serves_the_verbs_its_methods_are_annotated_with() {
+    assert_eq!(
+        served("route-dsls/apex"),
+        vec![pair("DELETE", "/users"), pair("GET", "/users"), pair("POST", "/users")]
+    );
+}

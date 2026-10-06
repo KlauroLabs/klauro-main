@@ -314,6 +314,9 @@ fn read(
     parser.set_language(&language).ok()?;
     let tree = parser.parse(&source, None)?;
     let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
+    if declared == Some("apex") {
+        source_rewrite::apex_dialect(source);
+    }
     facts.tables.extend(tables::declared(source, path, file));
     Some(facts)
 }
