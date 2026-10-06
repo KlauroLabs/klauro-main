@@ -66,6 +66,7 @@ pub struct Sources<'a> {
     pub nodes: &'a [IndexNode],
     pub edges: &'a [IndexEdge],
     pub calls: &'a [CallFact],
+    pub metrics: &'a [UnitMetricsEntry],
     pub type_references: &'a [TypeReferenceFact],
     pub locals: &'a [LocalBinding],
     pub entry_points: &'a [EntryPoint],
@@ -95,10 +96,6 @@ static DISPATCHES: &[&str] = &[
 ];
 static MEDIATES: &[&str] = &["dispatcher", "mediator", "sender"];
 static CARRIES_MESSAGES: &[&str] = &["bus", "broker", "publisher", "queue"];
-static REGISTERS_A_DEPENDENCY: &[&str] = &[
-    "addscoped", "addsingleton", "addtransient", "bind", "provide", "register", "registersingleton",
-    "registertype", "tryaddscoped", "tryaddsingleton", "tryaddtransient",
-];
 static COMMITS_A_UNIT_OF_WORK: &[&str] = &["commit", "commitasync", "saveentitiesasync", "savechanges", "savechangesasync"];
 
 fn plain(named: &str) -> &str {
@@ -350,6 +347,24 @@ pub fn derive(sources: &Sources) -> Derived {
     if !repositories.is_empty() {
         found_here.push(found("repository", "data", "data kept behind repositories", repositories.len() as u32));
     }
+    let mut hands_on: HashSet<usize> = HashSet::default();
+    let mut served: HashSet<usize> = HashSet::default();
+    for at in (0..nodes.len()).filter(|at| nodes[*at].kind.is_type() && !graph.tested[*at]) {
+        if graph.role_of[at] != Some("controller") {
+            continue;
+        }
+        for member in graph.members[at].iter().filter(|member| nodes[**member].kind == NodeKind::Property) {
+            let Some(held) = nodes[*member].type_annotation.as_deref().and_then(|typed| graph.declared_as.get(plain(typed))) else { continue };
+            if graph.role_of[*held] == Some("service") {
+                hands_on.insert(at);
+                served.insert(*held);
+            }
+        }
+    }
+    if !hands_on.is_empty() {
+        found_here.push(found("controller", "architecture", "requests taken in by controllers that hand the work to services", hands_on.len() as u32));
+        found_here.push(found("service layer", "architecture", "business rules kept in services between the controllers and the data", served.len() as u32));
+    }
     let committed = sources
         .calls
         .iter()
@@ -364,7 +379,7 @@ pub fn derive(sources: &Sources) -> Derived {
         .calls
         .iter()
         .filter(|call| !tested(call.file))
-        .filter(|call| crate::shared::named_one_of(crate::names::leaf(&call.callee), REGISTERS_A_DEPENDENCY))
+        .filter(|call| crate::injection::registers(crate::names::leaf(&call.callee)))
         .filter(|call| call.callee.contains('<') || call.literals.len() >= 1 || call.argument_count >= 1)
         .filter(|call| call.receiver.as_deref().is_some_and(|within| {
             let lowered = within.to_ascii_lowercase();
@@ -382,7 +397,7 @@ pub fn derive(sources: &Sources) -> Derived {
     }
 
     lap("topics and found");
-    found_here.extend(crate::design_patterns::derive(graph, sources.edges));
+    found_here.extend(crate::design_patterns::derive(graph, sources.edges, sources.metrics, sources.calls));
     lap("design");
     found_here.extend(crate::practices::derive(&crate::practices::Sources {
         graph,

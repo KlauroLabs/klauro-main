@@ -1,0 +1,5 @@
+managed_annotation	AndroidEntryPoint,ApiController,ApplicationScoped,Component,Configuration,Controller,ControllerAdvice,Dependent,Directive,HiltViewModel,Injectable,ManagedBean,Named,Path,Pipe,Prototype,Repository,RequestScoped,RestController,RestControllerAdvice,Service,SessionScoped,Singleton,Stateful,Stateless
+managed_base	ApiController,BackgroundService,Controller,ControllerBase,Hub,PageModel,ViewComponent
+inject_marker	Autowired,Inject,InjectConnection,InjectModel,InjectRepository,Resource
+registration	AddDbContext,AddHostedService,AddHttpClient,AddScoped,AddSingleton,AddTransient,Bind,Provide,Register,RegisterSingleton,RegisterType,TryAddScoped,TryAddSingleton,TryAddTransient
+provider_call	Depends,Security

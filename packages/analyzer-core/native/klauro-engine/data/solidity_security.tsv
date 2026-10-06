@@ -1,0 +1,9 @@
+access_modifier	onlyOwner,onlyRole
+reentrancy_modifier	nonReentrant
+access_base	Ownable,Ownable2Step,AccessControl,AccessControlEnumerable,AccessControlDefaultAdminRules
+access_check	_checkOwner,_checkRole,hasRole,onlyRole
+external_call	call,delegatecall,staticcall,transfer,send
+low_level_call	call,delegatecall,staticcall,send
+standard	ERC20	transfer,approve,transferFrom,balanceOf,totalSupply,allowance
+standard	ERC721	balanceOf,ownerOf,safeTransferFrom,transferFrom,approve,getApproved,setApprovalForAll,isApprovedForAll
+standard	ERC1155	balanceOf,balanceOfBatch,setApprovalForAll,isApprovedForAll,safeTransferFrom,safeBatchTransferFrom

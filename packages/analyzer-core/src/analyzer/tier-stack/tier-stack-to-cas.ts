@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { databaseSchemaOf } from './tier-stack-schema';
+import { factsWithin, injectionEdgesOf, securityFactNodesOf } from './tier-stack-facts';
 import { conformanceOf, namedPatternsOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
 import { seamsOf } from './tier-stack-seams';
@@ -121,7 +122,7 @@ function depths(nodes: TierStackNode[]): Map<string, number> {
 function nodesOf(index: TierStackIndex): CASNode[] {
   const depth = depths(index.nodes);
   const dead = new Map((index.dead ?? []).map(held => [held.node, held]));
-  return index.nodes.map(node => ({
+  const declared = index.nodes.map(node => ({
     id: node.id,
     name: node.name,
     type: NODE_TYPES[node.kind] ?? node.kind,
@@ -141,6 +142,7 @@ function nodesOf(index: TierStackIndex): CASNode[] {
       ...(dead.has(node.id) ? { attributes: { dead_code: dead.get(node.id) } } : {}),
     },
   }));
+  return [...declared, ...securityFactNodesOf(index)];
 }
 
 function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNullable<CASNode['signature']> {
@@ -157,13 +159,14 @@ function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNul
 }
 
 function edgesOf(index: TierStackIndex): CASEdge[] {
-  return index.edges.map((edge, at) => ({
+  const structural = index.edges.map((edge, at) => ({
     id: `edge:${at}`,
     source: edge.source,
     target: edge.target,
     type: EDGE_TYPES[edge.kind] ?? edge.kind,
     ...(edge.via === undefined ? {} : { metadata: { attributes: { via: edge.via } } }),
   }));
+  return [...structural, ...injectionEdgesOf(index, structural.length)];
 }
 
 function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
@@ -677,6 +680,7 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
     },
     conformance: { conventions: [] },
     edges: (index.edges ?? []).filter(edge => held.has(edge.source) && held.has(edge.target)),
+    ...factsWithin(index, held, ownFiles),
     entry_points: (index.entry_points ?? []).filter(entry => held.has(entry.handler)),
     exit_points: (index.exit_points ?? []).filter(exit => held.has(exit.source)),
     ...(comprehension === undefined ? {} : {

@@ -61,7 +61,7 @@ async function klauroInjections(dir: string): Promise<{ injections: string[]; by
   const time_ms = Date.now() - t0;
   const byId = new Map((cas.nodes || []).map((n: any) => [n.id, n]));
   const injections: string[] = (cas.edges || [])
-    .filter((e: any) => /depend/i.test(String(e.type || '')) && (e.metadata?.dependency_type === 'injection'))
+    .filter((e: any) => /depend/i.test(String(e.type || '')) && ((e.metadata?.attributes?.dependency_type ?? e.metadata?.dependency_type) === 'injection'))
     .map((e: any) => {
       const s: any = byId.get(e.source);
       const t: any = byId.get(e.target);

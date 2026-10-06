@@ -72,6 +72,8 @@ mod service_catalog;
 mod services;
 mod tables;
 mod told_paths;
+mod injection;
+mod solidity_security;
 mod source_rewrite;
 mod steps;
 mod dataset;
@@ -163,6 +165,10 @@ struct Index {
     composition: Option<composition::Composition>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     crossings: Vec<crossings::Crossing>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    security: Vec<solidity_security::SecurityFact>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    injections: Vec<injection::Injection>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
@@ -518,6 +524,8 @@ fn read_it() {
         partition: None,
         composition: None,
         crossings: Vec::new(),
+        security: Vec::new(),
+        injections: Vec::new(),
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -994,6 +1002,7 @@ fn read_it() {
         nodes: &index.nodes,
         edges: &index.edges,
         calls: &index.calls,
+        metrics: &index.metrics,
         type_references: &index.type_references,
         locals: &index.locals,
         entry_points: &index.entry_points,
@@ -1092,6 +1101,7 @@ fn read_it() {
         }
     }
     index.principles = Some(principles);
+    index.security = solidity_security::derive(&root, &paths);
 
     let layers_started = Instant::now();
     let layering = layers::derive(
@@ -1104,6 +1114,7 @@ fn read_it() {
     );
     eprintln!("layers {:?} | projects {}", layers_started.elapsed(), layering.len());
     index.layering = layering;
+    index.injections = injection::derive(&pattern_graph, &index.calls);
     drop(pattern_graph);
     index.edges.extend(dispatched);
 
