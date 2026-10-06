@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::comprehend::{Capability, Flow};
 use crate::composition::{Composition, Seam};
 
-pub const PARENT_CONTRACT_VERSION: &str = "parent-1";
+pub const PARENT_CONTRACT_VERSION: &str = "parent-2";
 pub const LOW_WEIGHT: f64 = 0.25;
 const INPUT_LIMIT: usize = 48_000;
 const LINKS_SHOWN: usize = 24;
@@ -238,6 +238,35 @@ fn basis_of(composition: &Composition, project: &str, flows: usize) -> String {
     }
 }
 
+fn faces_of(flows: &[Flow], project: &str) -> String {
+    let mut counted: BTreeMap<&str, usize> = BTreeMap::new();
+    for flow in flows.iter().filter(|flow| flow.project.as_deref() == Some(project) && flow.unshipped.is_none()) {
+        *counted.entry(flow.kind).or_default() += 1;
+    }
+    match counted.is_empty() {
+        true => "it has no entry point anyone reaches".to_string(),
+        false => format!(
+            "it is entered through {}",
+            counted.into_iter().map(|(kind, count)| format!("{kind} {count}")).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+fn consumers_of(composition: &Composition, project: &str) -> String {
+    let mut users: Vec<&str> = composition
+        .dependencies
+        .iter()
+        .filter(|held| held.to == project && held.from != project)
+        .map(|held| bare(&held.from))
+        .collect();
+    users.sort_unstable();
+    users.dedup();
+    match users.is_empty() {
+        true => "no other part uses it".to_string(),
+        false => format!("used by the parts {}", users.join(", ")),
+    }
+}
+
 pub fn packed(sizes: &[usize], limit: usize) -> Vec<std::ops::Range<usize>> {
     let mut ranges = Vec::new();
     let mut from = 0;
@@ -269,6 +298,14 @@ then set \"stated\" to true. Its capabilities stay visible under that part.\n\
 - When several parts deliver one purpose, write it once and cite them all.\n\
 - A purpose that exists only because parts work together, such as one calling or consuming another, may be written only when a connection \
 listed below shows it: put that connection's id in \"link\" and cite the capabilities of the parts it joins. Otherwise leave \"link\" empty.\n\
+- A part people do not come to is substrate: one that other parts use and that no person enters, or one that only keeps the product \
+running, ships it or measures it. Its capabilities are folded into the purposes of the parts that use it (cite them as \
+\"absorbed\") or listed in \"left\"; they are never a purpose of the product on their own. Remembering a visitor's consent, installing \
+or updating the software, checking that the system is up, running maintenance or diagnostic commands, storing the system's own records \
+and reporting its own usage are things the product does to keep itself going, not what anyone comes to it for.\n\
+- One capability is one purpose that a single sentence of what someone gets can name. Never join different purposes into one broad \
+capability because they share a topic or a part: when the capabilities you would cite give people different things, write one \
+capability for each. How many capabilities the product has is whatever the parts show, never a number to reach.\n\
 - Capabilities of a part that serve no purpose of the product stay with their part: do not cite them, and list them in \"left\" with a \
 short reason.";
 
@@ -295,7 +332,13 @@ pub fn prompts_of(
         .iter()
         .map(|project| {
             let held = flows.iter().filter(|flow| flow.project.as_deref() == Some(*project)).count();
-            format!("- {}: {}", bare(project), basis_of(composition, project, held))
+            format!(
+                "- {}: {}; {}; {}",
+                bare(project),
+                basis_of(composition, project, held),
+                faces_of(flows, project),
+                consumers_of(composition, project)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");

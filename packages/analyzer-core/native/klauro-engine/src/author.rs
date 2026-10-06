@@ -620,7 +620,11 @@ pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> V
          it are one. Keep two apart when the product's description would list them as separate purposes, even when \
          they act on the same thing or are used by the same person. A group whose name would need a list of \
          unrelated things to cover its members is not one purpose. A capability that covers a whole area and one \
-         that is only a part of it are one purpose: the part goes into the area.\n\n\
+         that is only a part of it are one purpose: the part goes into the area. Two that are reached through \
+         the same entry points or change the same records, and differ only in the words used, are one purpose. \
+         A capability whose result is trivial to the person, a small step they take while doing something larger \
+         (seeing a version, replacing a word, opening a panel), is not a purpose of its own: it goes into the \
+         capability it serves.\n\n\
          List only groups of two or more ids, and leave every other id out. For each group give the name that \
          says the shared purpose best, keeping one of the names given when one says it, one sentence saying \
          what someone gets, and the audience it is for.\n\

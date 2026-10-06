@@ -223,11 +223,41 @@ pub(crate) fn is_caller_initiated(flow: &Flow) -> bool {
     crate::entry_exit::USER_FACING.contains(&flow.kind)
 }
 
+fn outcomes_reached(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> BTreeSet<Family> {
+    let primary = outcome_of(flow, bookkeeping);
+    if flow.kind == "export" || asked_for_by_name(flow).is_some() {
+        return BTreeSet::from([primary]);
+    }
+    let changed: BTreeSet<Family> = flow
+        .writes
+        .iter()
+        .filter(|record| !bookkeeping.contains(record.as_str()))
+        .map(|record| Family { key: format!("changes:{record}"), basis: "the record it changes" })
+        .collect();
+    let handed: BTreeSet<Family> = flow
+        .steps
+        .iter()
+        .filter(|step| matches!(step.kind, "raise" | "hand_off"))
+        .filter_map(|step| step.object.as_deref())
+        .map(|object| Family { key: format!("hands on:{object}"), basis: "what it hands on to another part" })
+        .collect();
+    if changed.len() + handed.len() < 2 {
+        return BTreeSet::from([primary]);
+    }
+    let mut reached: BTreeSet<Family> = changed.into_iter().chain(handed).collect();
+    if !primary.key.starts_with("records:") && !primary.key.starts_with("changes:") {
+        reached.insert(primary);
+    }
+    reached
+}
+
 pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows {
-        grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
+        for family in outcomes_reached(flow, &bookkeeping) {
+            grouped.entry(family).or_default().push(flow);
+        }
     }
     if grouped.keys().any(|family| !is_only_a_trigger(family)) {
         grouped.retain(|family, _| !is_only_a_trigger(family));
@@ -427,7 +457,7 @@ fn consolidate_purposes(said: &str, held: Vec<Held>) -> Vec<Held> {
         return held;
     }
     let listed: Vec<(String, String)> =
-        held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
+        held.iter().map(|other| (other.name.clone(), in_a_line(&other.description))).collect();
     let groups = the_same_among(&listed, |offered| crate::author::same_capability(said, offered));
     if groups.is_empty() {
         return held;
@@ -650,7 +680,7 @@ impl OfAPart {
     }
 }
 
-pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> OfAPart {
+fn candidate_flows<'a>(flows: &[&'a Flow]) -> Vec<&'a Flow> {
     let proposable = |flow: &&Flow| is_proposable(flow);
     let tiers: [Vec<&Flow>; 4] = [
         flows.iter().copied().filter(|flow| is_caller_initiated(flow)).filter(proposable).collect(),
@@ -658,7 +688,19 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         flows.iter().copied().filter(proposable).collect(),
         flows.to_vec(),
     ];
-    let candidates = tiers.into_iter().find(|tier| !outcomes_of(tier).is_empty()).unwrap_or_default();
+    let reaches_an_outcome = |tier: &Vec<&Flow>| {
+        outcomes_of(tier).iter().any(|(family, lane)| terminality_of(family, lane) == "terminal")
+    };
+    tiers
+        .iter()
+        .find(|tier| reaches_an_outcome(tier))
+        .or_else(|| tiers.iter().find(|tier| !outcomes_of(tier).is_empty()))
+        .cloned()
+        .unwrap_or_default()
+}
+
+pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> OfAPart {
+    let candidates = candidate_flows(flows);
     if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
         for family in outcomes_of(&candidates).keys() {
             eprintln!("family[{remembered_as}]: {}", family.key);
@@ -1495,7 +1537,7 @@ pub(crate) fn the_same_among(
             .map(|chunk| crate::author::weighing(weight, || {
                 let offered: BTreeMap<String, String> = chunk
                     .iter()
-                    .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
+                    .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), listed[*at].1)))
                     .collect();
                 let said = ask(&offered);
                 (chunk, said)
@@ -1546,6 +1588,25 @@ pub(crate) fn the_same_among(
             }
         })
         .collect()
+}
+
+const SURFACES_COMPARED: usize = 4;
+const RECORDS_COMPARED: usize = 3;
+
+fn reached_by(capability: &Capability) -> String {
+    let surfaces: Vec<&str> = capability.surfaces.iter().take(SURFACES_COMPARED).map(String::as_str).collect();
+    let records: Vec<&str> = capability.records.iter().take(RECORDS_COMPARED).map(String::as_str).collect();
+    let mut told = Vec::new();
+    if !surfaces.is_empty() {
+        told.push(format!("reached through {}", surfaces.join(", ")));
+    }
+    if !records.is_empty() {
+        told.push(format!("changes {}", records.join(", ")));
+    }
+    match told.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", told.join("; ")),
+    }
 }
 
 const NEAR_FLOW_SHARE: f64 = 0.5;
@@ -1631,7 +1692,14 @@ fn groups_of_the_same(
     let listed: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
-            (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
+            (
+                capability.name.clone().unwrap_or_default(),
+                format!(
+                    "{}{}",
+                    in_a_line(capability.description.as_deref().unwrap_or_default()),
+                    reached_by(capability)
+                ),
+            )
         })
         .collect();
     let near = near_duplicates(capabilities);
@@ -1786,6 +1854,34 @@ mod command_family_tests {
     fn starting_in(mut flow: Flow, unit: &str) -> Flow {
         flow.path = vec![crate::comprehend::Step { unit: unit.to_string(), depth: 0, leaves: Vec::new() }];
         flow
+    }
+
+    #[test]
+    fn a_flow_that_changes_several_records_reaches_each_as_its_own_outcome() {
+        let start = flow("flow:1", "lifecycle", None, "main", &["orders", "invoices"], &[]);
+        let flows = vec![&start];
+        let grouped = outcomes_of(&flows);
+        let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert!(keys.contains("changes:orders") && keys.contains("changes:invoices"), "{keys:?}");
+    }
+
+    #[test]
+    fn a_surface_that_ends_in_no_outcome_does_not_hide_a_program_that_does() {
+        let relay = flow("flow:1", "http", Some("GET"), "/", &[], &[]);
+        let mut program = flow("flow:2", "lifecycle", None, "main", &["projects"], &[]);
+        program.steps.push(logical_step("change", Some("projects")));
+        let flows = vec![&relay, &program];
+        let candidates = candidate_flows(&flows);
+        assert!(candidates.iter().any(|candidate| candidate.id == "flow:2"));
+    }
+
+    #[test]
+    fn a_surface_that_reaches_an_outcome_keeps_the_candidates_to_the_surface() {
+        let order = flow("flow:1", "http", Some("POST"), "/orders", &["orders"], &[]);
+        let program = flow("flow:2", "lifecycle", None, "main", &["projects"], &[]);
+        let flows = vec![&order, &program];
+        let candidates = candidate_flows(&flows);
+        assert_eq!(candidates.len(), 1);
     }
 
     #[test]

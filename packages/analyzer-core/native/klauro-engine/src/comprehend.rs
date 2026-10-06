@@ -385,6 +385,36 @@ fn spoken_within(spoken: &str, part: Option<&str>) -> String {
 
 const SAID_OF_ITSELF: usize = 8000;
 
+const MANIFESTS: &[&str] = &["package.json", "composer.json", "pyproject.toml", "Cargo.toml", "pubspec.yaml"];
+
+fn own_words_of_parts(nodes: &[IndexNode], files: &[String]) -> std::collections::BTreeMap<String, String> {
+    nodes
+        .iter()
+        .filter(|node| node.name == "description" && node.kind == NodeKind::Property)
+        .filter_map(|node| {
+            let path = files.get(node.file as usize)?;
+            let said = node.type_annotation.as_deref()?.trim_matches('"').trim();
+            let (folder, manifest) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
+            (MANIFESTS.contains(&manifest) && !said.is_empty()).then(|| (folder.to_string(), said.to_string()))
+        })
+        .collect()
+}
+
+fn spoken_of_part(
+    spoken: &str,
+    part: Option<&str>,
+    own_words: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let within = spoken_within(spoken, part);
+    let own = part
+        .and_then(|part| part.strip_prefix("subproject:"))
+        .and_then(|folder| own_words.get(folder));
+    match own {
+        Some(said) => format!("{within}\nThat part describes itself as: {said}"),
+        None => within,
+    }
+}
+
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
     let mut said = Vec::new();
     for (at, path) in files.iter().enumerate() {
@@ -1381,6 +1411,7 @@ pub fn author(
         held.entities.retain(|entity| chosen(&entity.project));
     }
     let spoken = spoken_for(root, nodes, files);
+    let own_words = own_words_of_parts(nodes, files);
     let root_path = root;
     let node_at: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
@@ -1614,7 +1645,7 @@ pub fn author(
                         .filter(|flow| &flow.project == part)
                         .collect();
                     crate::author::weighing(flows.len() as u32, || {
-                    let said = spoken_within(&spoken, part.as_deref());
+                    let said = spoken_of_part(&spoken, part.as_deref(), &own_words);
                     let remembered_as =
                         format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let label = part.as_deref().unwrap_or("root").to_string();
