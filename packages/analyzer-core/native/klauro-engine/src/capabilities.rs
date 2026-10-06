@@ -26,7 +26,7 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
     let readings: Vec<Proposal> = crate::author::asking(|| {
         orders
             .par_iter()
-            .map(|ordered| crate::author::weighing(weight, || crate::author::propose_capabilities(said, ordered)))
+            .map(|ordered| crate::author::weighing(weight, || crate::author::propose_capabilities(said, ordered, false)))
             .collect()
     });
     let settled = |reading: &Proposal| {
@@ -227,10 +227,10 @@ pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Fl
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows {
-        let family = outcome_of(flow, &bookkeeping);
-        if !is_only_a_trigger(&family) {
-            grouped.entry(family).or_default().push(flow);
-        }
+        grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
+    }
+    if grouped.keys().any(|family| !is_only_a_trigger(family)) {
+        grouped.retain(|family, _| !is_only_a_trigger(family));
     }
     for lane in grouped.values_mut() {
         lane.sort_by(|left, right| left.id.cmp(&right.id));
@@ -651,13 +651,14 @@ impl OfAPart {
 }
 
 pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> OfAPart {
-    let served = flows.iter().any(|flow| is_caller_initiated(flow));
-    let candidates: Vec<&Flow> = flows
-        .iter()
-        .copied()
-        .filter(|flow| is_caller_initiated(flow) || (!served && flow.kind == "export"))
-        .filter(|flow| is_proposable(flow))
-        .collect();
+    let proposable = |flow: &&Flow| is_proposable(flow);
+    let tiers: [Vec<&Flow>; 4] = [
+        flows.iter().copied().filter(|flow| is_caller_initiated(flow)).filter(proposable).collect(),
+        flows.iter().copied().filter(|flow| flow.kind == "export").filter(proposable).collect(),
+        flows.iter().copied().filter(proposable).collect(),
+        flows.to_vec(),
+    ];
+    let candidates = tiers.into_iter().find(|tier| !outcomes_of(tier).is_empty()).unwrap_or_default();
     if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
         for family in outcomes_of(&candidates).keys() {
             eprintln!("family[{remembered_as}]: {}", family.key);
@@ -665,7 +666,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     }
     let families = outcomes_of(&candidates);
     if families.is_empty() {
-        return OfAPart::without(ABSENT, "no flow a caller starts in this part ends in an outcome");
+        return OfAPart::without(ABSENT, "the part holds no flow");
     }
     if !crate::author::asked() {
         return OfAPart::without(PENDING, "the AI was not asked");
@@ -762,6 +763,18 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         }
     };
     held.retain(|other| !other.families.is_empty());
+    if held.is_empty() {
+        let listed: Vec<(String, String)> = told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
+        unassigned.clear();
+        let proposals: Vec<Proposal> = crate::author::asking(|| {
+            let weight = crate::author::weight();
+            listed
+                .par_chunks(FAMILIES_PER_PROPOSAL)
+                .map(|chunk| crate::author::weighing(weight, || crate::author::propose_capabilities(said, chunk, true)))
+                .collect()
+        });
+        gather(proposals, &mut held, &mut unassigned, &known);
+    }
     merge_same_named(&mut held);
     let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
     held = split_the_broad(said, &told, &lane_flows, held, &mut unassigned);
@@ -815,9 +828,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .collect();
     let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
-    let state = match unanswered.is_empty() {
-        true => PartState { capabilities: SETTLED, reason: None },
-        false => PartState {
+    let state = match (unanswered.is_empty(), formed.is_empty()) {
+        (true, false) => PartState { capabilities: SETTLED, reason: None },
+        (true, true) => PartState {
+            capabilities: ABSENT,
+            reason: Some("the AI found no purpose the product states among its outcomes".to_string()),
+        },
+        (false, _) => PartState {
             capabilities: PENDING,
             reason: Some(format!("the AI left {} of {} outcomes unanswered", unanswered.len(), known.len())),
         },
@@ -1772,11 +1789,13 @@ mod command_family_tests {
     }
 
     #[test]
-    fn flows_that_only_trigger_yield_no_candidate_by_section_0_7_1() {
+    fn flows_that_only_trigger_are_read_by_what_triggers_them_only_when_nothing_else_is_the_surface() {
         let accept = starting_in(flow("flow:6", "event", None, "click", &[], &[]), "site/consent.js:callback:accept");
         let reject = starting_in(flow("flow:7", "event", None, "click", &[], &[]), "site/consent.js:callback:reject");
         let flows = vec![&accept, &reject];
-        assert!(outcomes_of(&flows).is_empty());
+        let grouped = outcomes_of(&flows);
+        let keys: Vec<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert_eq!(keys, vec!["trigger:event"]);
     }
 
     #[test]

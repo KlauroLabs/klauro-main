@@ -75,7 +75,7 @@ fn a_flow_keeps_the_tag_of_its_entry() {
 }
 
 #[test]
-fn no_product_family_is_proposed_for_a_tagged_flow() {
+fn a_tagged_flow_is_proposed_only_when_its_part_holds_no_product_flow() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unshipped_island");
     let output = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_klauro-engine")))
         .arg(&root)
@@ -89,7 +89,7 @@ fn no_product_family_is_proposed_for_a_tagged_flow() {
         .collect();
     assert!(families.iter().any(|line| line.contains("surface:real")), "the real route is a family: {families:#?}");
     assert!(
-        families.iter().all(|line| !line.contains("demo")),
-        "the example route is a flow, never a product family: {families:#?}"
+        families.iter().filter(|line| line.contains("subproject:server")).all(|line| !line.contains("demo")),
+        "the example route is never a family beside a product route: {families:#?}"
     );
 }

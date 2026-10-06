@@ -709,7 +709,7 @@ pub fn proposal_of(held: &serde_json::Value, offered: usize) -> Proposal {
     Proposal { capabilities, unassigned }
 }
 
-pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> Proposal {
+pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)], required: bool) -> Proposal {
     if !asked() || families.is_empty() {
         return Proposal::default();
     }
@@ -722,7 +722,11 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          serves a purpose, not a purpose by itself. Outcomes that change something are terminal; outcomes that only \
          show something are one step short of terminal and are just as real: seeing your orders is something you \
          come for.\n\n{PURPOSE}\n\n\
+         The outcomes are what this part offers at its own level: for an application, what people do with it; for a \
+         library or SDK, what the code that uses it gets; for an engine or service other programs call, what \
+         those programs get. Name each purpose as the result its users get at that level.\n\n\
          Read the outcomes as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
+         {requirement}\n\n\
          Take what the product's description would list for a system like this: those are the capabilities, \
          and the outcomes below are the behaviors that serve them. Group many outcomes under one purpose when \
          they are different behaviors of it: the ways in, the stages, the views of it and the actions on it. \
@@ -755,7 +759,11 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          The outcomes:\n{}",
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
         users_words = IN_THE_USERS_WORDS,
-        outcome_names = OUTCOME_NAMES
+        outcome_names = OUTCOME_NAMES,
+        requirement = match required {
+            true => "This part is real code that serves its users, so it delivers at least one purpose: name the purposes its outcomes deliver, as few and distinct as are real, and never invent one to reach a count.",
+            false => "",
+        }
     );
     let Some(held) =
         answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0, PROPOSING)
