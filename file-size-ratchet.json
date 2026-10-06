@@ -23,7 +23,7 @@
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",
-      "ceiling": 2316
+      "ceiling": 1684
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
