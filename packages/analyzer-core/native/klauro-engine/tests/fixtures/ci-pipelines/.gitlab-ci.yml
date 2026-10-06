@@ -1,0 +1,16 @@
+stages: [build, deploy]
+variables:
+  A: 1
+build:
+  stage: build
+  script:
+    - docker build -t img .
+    - docker push img
+deploy_prod:
+  stage: deploy
+  environment: production
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  script:
+    - helm upgrade app ./c --namespace prod
+    - echo $DEPLOY_TOKEN

@@ -1,0 +1,7 @@
+stage	\bstage\s*\(\s*['"]([^'"]+)['"]\s*\)
+command	\b(?:sh|bat|powershell|pwsh)\s*\(?\s*(?:script\s*:\s*)?(?:'''|""")
+command_line	\b(?:sh|bat|powershell|pwsh)\s*\(?\s*(?:script\s*:\s*)?['"](.+?)['"]
+step_call	\b(kubernetesDeploy|helmDeploy|deployToK8s|dockerBuild|dockerPush|publishHTML|junit|archiveArtifacts)\s*[\(\s]
+environment	\benvironment\s*:?\s*['"]([^'"]+)['"]
+trigger_cron	\bcron\s*\(\s*['"]([^'"]+)['"]
+trigger_event	\b(pollSCM|githubPush|upstream)\s*\(

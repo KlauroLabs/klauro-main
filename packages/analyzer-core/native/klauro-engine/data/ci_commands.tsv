@@ -1,0 +1,22 @@
+deploy	^\s*kubectl\s+(?:apply|rollout|set\s+image|create|replace|patch|scale)\b	(?:-n|--namespace)[ =]([\w.-]+)	(?:-f|-k|--filename|--kustomize)[ =]+([^\s]+)
+deploy	^\s*helm\s+(?:upgrade|install)\b	(?:-n|--namespace)[ =]([\w.-]+)	
+deploy	^\s*(?:terraform|tofu|terragrunt)\s+(?:apply|deploy)\b		-chdir=([^\s]+)
+deploy	^\s*(?:pulumi\s+up|cdk\s+deploy|sam\s+deploy|serverless\s+deploy|sls\s+deploy|ansible-playbook|cap\s+\S+\s+deploy|kustomize\s+build)\b		
+deploy	^\s*aws\s+(?:ecs\s+update-service|lambda\s+update-function|s3\s+(?:sync|cp)|cloudformation\s+deploy|elasticbeanstalk|eks\s+update|deploy\s+create-deployment)\b		
+deploy	^\s*gcloud\s+(?:run\s+deploy|app\s+deploy|functions\s+deploy|container\s+clusters|compute\s+instances)\b		
+deploy	^\s*az\s+(?:webapp|containerapp|functionapp|aks|group\s+deployment|deployment)\b		
+deploy	^\s*(?:flyctl|fly)\s+deploy\b	(?:-a|--app)[ =]([\w.-]+)	
+deploy	^\s*(?:vercel|netlify|firebase|heroku|wrangler|railway|render)\b.*\b(?:deploy|publish|up|--prod|release)\b		
+deploy	^\s*(?:docker\s+compose|docker-compose)\s+(?:.*\s)?up\b		-f[ =]+([^\s]+)
+deploy	^\s*docker\s+stack\s+deploy\b		
+deploy	^\s*(?:rsync|scp)\s+.*@		
+deploy	^\s*ssh\s+.*@		
+publish	^\s*docker\s+push\b		
+publish	^\s*(?:npm|yarn|pnpm)\s+publish\b		
+publish	^\s*(?:cargo\s+publish|twine\s+upload|gem\s+push|goreleaser|poetry\s+publish|mvn\s+deploy|dotnet\s+nuget\s+push)\b		
+test	^\s*(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:test|e2e|jest|vitest)\b		
+test	^\s*(?:pytest|py\.test|jest|vitest|rspec|phpunit|tox|nox|go\s+test|cargo\s+(?:test|nextest)|mvn\s+(?:verify|test)|gradle?w?\s+(?:test|check)|\./gradlew\s+(?:test|check)|dotnet\s+test|mix\s+test|bundle\s+exec\s+rspec|rake\s+test|make\s+test|ctest|python\d?\s+-m\s+(?:pytest|unittest))\b		
+test	^\s*(?:eslint|ruff|flake8|golangci-lint|rubocop|cargo\s+clippy|npm\s+run\s+lint|yarn\s+lint)\b		
+build	^\s*docker\s+(?:buildx\s+)?build\b		(\S+)\s*$
+build	^\s*(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?build\b		
+build	^\s*(?:make|cmake|cargo\s+build|go\s+build|mvn\s+(?:package|compile|install)|gradle?w?\s+(?:build|assemble)|\./gradlew\s+(?:build|assemble)|dotnet\s+(?:build|publish)|tsc|webpack|vite\s+build|msbuild|xcodebuild|python\d?\s+setup\.py|pip\s+install|npm\s+(?:ci|install)|yarn\s+install|bundle\s+install)\b		

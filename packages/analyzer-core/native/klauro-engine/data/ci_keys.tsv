@@ -1,0 +1,12 @@
+name	name,displayName,label,key
+identity	job,deployment,stage,step
+command	run,script,command,bash,sh,pwsh,powershell,cmd,commands
+action	uses,task,orb,provider,plugin
+steps	steps,before_install,install,before_script,script,after_script,after_success,after_failure,before_deploy,deploy,commands
+needs	needs,dependsOn,depends_on,dependencies
+stage	stage
+environment	environment
+rules	if,rules,only,except,condition,filters,branches,when
+reserved	stages,variables,default,include,workflow,image,services,cache,before_script,after_script,pool,name,env,defaults,permissions,concurrency,resources,parameters,trigger,on,pr,schedules,pipelines,version,orbs,workflows,language,os,dist,node_js,python,jdk,kind,type,clone,matrix,notifications,branches,cron,lifecycle,extends,anchors,aliases,macros,commands,executors,setup
+deploy_section	deploy,before_deploy
+requires	requires

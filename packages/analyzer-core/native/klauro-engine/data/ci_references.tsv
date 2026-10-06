@@ -1,0 +1,7 @@
+secret	secrets\.([A-Za-z0-9_]+)
+secret	secrets\[['"]([A-Za-z0-9_]+)['"]\]
+secret	\$\{?([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|KEY|CREDENTIALS?))\}?
+secret	credentials\(['"]([^'"]+)['"]\)
+env	\benv\.([A-Za-z0-9_]+)
+env	\bvars\.([A-Za-z0-9_]+)
+env	\$\{?([A-Z][A-Z0-9_]*)\}?

@@ -1,0 +1,18 @@
+github-actions	events	on	
+azure-pipelines	event	trigger	push
+azure-pipelines	event	pr	pull_request
+azure-pipelines	schedule	schedules	
+bitbucket-pipelines	section	default	push
+bitbucket-pipelines	section	branches	push
+bitbucket-pipelines	section	tags	tag
+bitbucket-pipelines	section	pull-requests	pull_request
+bitbucket-pipelines	section	custom	manual
+gitlab-ci	rule_pattern	\$CI_PIPELINE_SOURCE\s*==\s*["']?(\w+)	
+gitlab-ci	default		push
+circleci	default		push
+travis	default		push
+drone	default		push
+buildkite	default		push
+jenkins	default		push
+*	ref_keys	tags,branches,types,paths	
+*	schedule_keys	cron,schedule	
