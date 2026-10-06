@@ -1239,6 +1239,7 @@ export interface CASParadigmConformance {
     comparable_count: number;
     adoption_rate: number;
     evidence_files: string[];
+    following_examples?: string[];
   };
   deviations: CASParadigmDeviation[];
 }

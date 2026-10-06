@@ -12,6 +12,8 @@ pub struct Convention {
     pub population: u32,
     pub following: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub following_at: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub departing: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -33,6 +35,7 @@ pub struct Conformance {
 }
 
 const DEPARTURES_SHOWN: usize = 20;
+const FOLLOWERS_SHOWN: usize = 8;
 const POPULATION_FLOOR: u32 = 8;
 const FOLLOWING_FLOOR: f64 = 0.6;
 
@@ -74,11 +77,15 @@ fn convention(
         .collect();
     departing.sort();
     departing.truncate(DEPARTURES_SHOWN);
+    let mut following_at: Vec<String> = counted.get(shape).cloned().unwrap_or_default();
+    following_at.sort();
+    following_at.truncate(FOLLOWERS_SHOWN);
     Some(Convention {
         convention: named,
         shape: shape.to_string(),
         population,
         following,
+        following_at,
         departing,
         project,
     })
@@ -222,4 +229,22 @@ pub fn derive(
         .map(|found| found.population - found.following)
         .sum();
     Conformance { conventions, departures, sprawl: sprawling(dependencies) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_convention_keeps_a_bounded_sample_of_the_sites_that_follow_it() {
+        let mut counted: HashMap<&str, Vec<String>> = HashMap::default();
+        counted.insert("plain", (0..12).map(|at| format!("src/file{at:02}.ts")).collect());
+        counted.insert("dashed", vec!["src/some-file.ts".to_string()]);
+        let found = convention("file-naming", counted, None).expect("a convention");
+        assert_eq!(found.shape, "plain");
+        assert_eq!((found.population, found.following), (13, 12));
+        assert_eq!(found.following_at.len(), FOLLOWERS_SHOWN);
+        assert!(found.following_at.iter().all(|site| site.starts_with("src/file")));
+        assert_eq!(found.departing, vec!["src/some-file.ts".to_string()]);
+    }
 }

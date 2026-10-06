@@ -8,12 +8,14 @@ import type {
   CASEntryPoint,
   CASExitPoint,
   CASIdiomCategory,
+  CASIdiomExample,
   CASIdiomSummary,
   CASIdiomViolation,
   CASNode,
   CASOutput,
   CASParadigmConformance,
 } from '../../types/cas.types';
+import { fileOf } from './tier-stack-structure';
 
 const PRODUCER = 'tier-stack';
 const FOUND_BY_ENGINE = 0.85;
@@ -101,6 +103,13 @@ function idiomOf(held: CASParadigmConformance): { idiom: CASCodebaseIdiom; viola
     description: deviation.detail,
     recommendation: `Follow ${held.paradigm}: ${held.description}`,
   }));
+  const positive_examples: CASIdiomExample[] = (held.adoption.following_examples ?? []).map((example, at) => ({
+    id: `${id}:example:${at}`,
+    idiom_id: id,
+    file: fileOf(example),
+    ...(example === fileOf(example) ? {} : { node_id: example }),
+    explanation: `Follows ${held.paradigm}: ${held.description}`,
+  }));
   const idiom: CASCodebaseIdiom = {
     id,
     category,
@@ -114,7 +123,7 @@ function idiomOf(held: CASParadigmConformance): { idiom: CASCodebaseIdiom; viola
       claim: `${following} of ${population} comparable sites follow ${held.paradigm}`,
       confidence: rate,
     }],
-    positive_examples: [],
+    positive_examples,
     affected_scopes: { files },
     agent_guidance: {
       do: [`Follow ${held.paradigm}: ${held.description}`],

@@ -32,7 +32,7 @@ const WELL_EVIDENCED = 3;
 
 const DEPARTURES_SHOWN = 12;
 
-function fileOf(id: string): string {
+export function fileOf(id: string): string {
   const at = id.search(/:(function|type|callback|field|method|class):/);
   return at > 0 ? id.slice(0, at) : id.split(':')[0];
 }
@@ -85,25 +85,26 @@ export function conformanceOf(index: TierStackIndex, project?: string): CASParad
       detail,
       severity: 'info' as const,
     }));
-  const adoption = (following: number, population: number, departing?: string[]) => ({
+  const adoption = (following: number, population: number, departing?: string[], followers?: string[]) => ({
     following_count: following,
     comparable_count: population,
     adoption_rate: population === 0 ? 0 : Math.round((following / population) * 100) / 100,
     evidence_files: [...new Set((departing ?? []).map(fileOf))].slice(0, DEPARTURES_SHOWN),
+    ...(followers === undefined || followers.length === 0 ? {} : { following_examples: followers }),
   });
   const paradigms = (index.patterns?.conformance ?? [])
     .filter(held => project === undefined || held.project === project)
     .map(held => ({
       paradigm: held.paradigm,
       description: `${held.following} of ${held.population} follow it`,
-      adoption: adoption(held.following, held.population, held.departing),
+      adoption: adoption(held.following, held.population, held.departing, held.following_at),
       deviations: departed(held.departing, `departs from: ${held.paradigm}`),
     }));
   if (project !== undefined) return paradigms;
   const conventions = (index.conformance?.conventions ?? []).map(held => ({
     paradigm: held.convention,
     description: held.shape,
-    adoption: adoption(held.following, held.population, held.departing),
+    adoption: adoption(held.following, held.population, held.departing, held.following_at),
     deviations: departed(held.departing, `departs from the ${held.convention} convention (${held.shape})`),
   }));
   const principles = (index.principles?.solid ?? [])
