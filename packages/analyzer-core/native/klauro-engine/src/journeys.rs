@@ -11,11 +11,14 @@ use crate::paths::is_scaffolding;
 use crate::unshipped;
 
 mod carry;
+mod system;
+mod title;
 
 use carry::{Carrier, Imports};
 
 const BETWEEN_REACH: usize = 6;
 const EFFECT_REACH: usize = 6;
+const EXIT_REACH: usize = 3;
 const MOST_CROSSINGS: usize = 6;
 const MOST_BRANCHES: usize = 3;
 const MOST_JOURNEYS: usize = 400;
@@ -46,6 +49,8 @@ pub struct Journey {
     pub rank: u32,
     pub representative: bool,
     pub steps: Vec<Step>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub system: bool,
     #[serde(skip)]
     pub entered: bool,
 }
@@ -177,6 +182,18 @@ impl<'a> Graph<'a> {
         path
     }
 
+    fn evidence_of(&self, steps: &[Step], crossings: usize, reads_only: bool) -> bool {
+        let mut exits: Vec<&ExitPoint> = steps.iter().flat_map(|step| self.exits.get(step.unit.as_str()).into_iter().flatten().copied()).collect();
+        if let Some(last) = steps.last()
+            && let Some(start) = self.nodes.get(last.unit.as_str())
+        {
+            for unit in self.within(start.id.as_str(), EXIT_REACH).keys() {
+                exits.extend(self.exits.get(unit).into_iter().flatten().copied());
+            }
+        }
+        system::is_system(&exits, steps.len(), crossings, reads_only)
+    }
+
     fn step(&self, unit: &str, does: String, via: Option<&'static str>) -> Option<Step> {
         let node = self.named_unit(unit)?;
         Some(Step { unit: node.id.clone(), file: self.files.get(node.file as usize)?.clone(), symbol: node.name.clone(), does, via, effect: None })
@@ -232,11 +249,11 @@ struct Entered<'a> {
 }
 
 fn entry_title(graph: &Graph, entry: &EntryPoint) -> String {
-    match (entry.kind, entry.method.as_deref(), entry.path.as_deref()) {
-        ("http", Some(method), Some(path)) => format!("{} {}", method.to_ascii_uppercase(), path),
-        ("ui", ..) => graph.named_unit(&entry.handler).map(|node| humanized(&node.name)).unwrap_or_else(|| entry.name.clone()),
-        _ => entry.name.clone(),
-    }
+    title::action_of(entry, graph.named_unit(&entry.handler).map(|node| node.name.as_str()))
+}
+
+fn reads_only(entry: &EntryPoint) -> bool {
+    entry.method.as_deref().is_some_and(|method| matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")) || entry.name.starts_with('-')
 }
 
 fn served_entries(entry_points: &[EntryPoint]) -> Vec<&EntryPoint> {
@@ -367,9 +384,11 @@ impl<'a> Walk<'a> {
         let last = steps.last_mut()?;
         last.does = format!("{}: {}", humanized(&last.symbol), effect_phrase(&effect));
         last.effect = Some(effect.clone());
-        let label = entry_title(self.graph, entry);
-        let does = format!("{label} from {} to {}, ending in {effect}", steps.first()?.file, steps.last()?.file);
-        Some(Journey { id: format!("journey:{}:entry", entry.id), label, does, rank: 0, representative: false, steps, entered: true })
+        let action = entry_title(self.graph, entry);
+        let label = title::titled(&action, Some(&effect));
+        let does = format!("{action} from {} to {}, ending in {effect}", steps.first()?.file, steps.last()?.file);
+        let system = self.graph.evidence_of(&steps, 0, reads_only(entry));
+        Some(Journey { id: format!("journey:{}:entry", entry.id), label, does, rank: 0, representative: false, steps, system, entered: true })
     }
 
     fn extend(&self, root: &'a Crossing, branch: usize) -> Option<Journey> {
@@ -441,19 +460,22 @@ impl<'a> Walk<'a> {
         let first = steps.first()?;
         let last = steps.last()?;
         let id = format!("journey:{}:{}:{}", root.from, root.channel, branch);
-        let label = match (entered, is_component(&first.symbol) || first.symbol == first.file) {
+        let action = match (entered, is_component(&first.symbol) || first.symbol == first.file) {
             (Some(entered), _) => entered.title.clone(),
             (None, true) => humanized(&root.channel),
             (None, false) => humanized(&first.symbol),
         };
+        let label = title::titled(&action, last.effect.as_deref());
         let does = format!(
-            "{label} from {} through {} to {}{}",
+            "{action} from {} through {} to {}{}",
             first.file,
             told.iter().map(|held| format!("{} {}", held.kind, held.channel)).collect::<Vec<_>>().join(", "),
             last.file,
             last.effect.as_deref().map(|effect| format!(", ending in {effect}")).unwrap_or_default()
         );
-        Some(Journey { id, label, does, rank: 0, representative: false, steps, entered: entered.is_some() })
+        let entered = entered.is_some();
+        let system = self.graph.evidence_of(&steps, used.len(), false);
+        Some(Journey { id, label, does, rank: 0, representative: false, steps, system, entered })
     }
 }
 
@@ -512,6 +534,7 @@ pub fn derive(
         .filter(|position| {
             let journey = &journeys[*position];
             journey.entered
+                && !journey.system
                 && journey.steps.len() >= LEAST_REPRESENTATIVE_STEPS
                 && journey.steps.last().is_some_and(|step| step.effect.is_some())
                 && !noisy_steps(&graph, set_aside, &journey.steps)
@@ -597,8 +620,9 @@ pub fn phrase(journeys: &mut [Journey], flows: &[Flow]) {
         }
     }
     for journey in journeys {
-        if let Some(name) = journey.steps.iter().find_map(|step| named.get(step.unit.as_str())) {
-            journey.label = (*name).to_string();
+        if let Some(name) = journey.steps.first().and_then(|step| named.get(step.unit.as_str())) {
+            let effect = journey.steps.last().and_then(|step| step.effect.as_deref());
+            journey.label = title::titled(name, effect);
         }
         for step in journey.steps.iter_mut().filter(|step| step.via.is_none() && step.effect.is_none()) {
             if let Some(label) = labelled.get(step.unit.as_str()) {
