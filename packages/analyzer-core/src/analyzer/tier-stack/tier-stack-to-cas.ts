@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { databaseSchemaOf } from './tier-stack-schema';
+import { ciEdgesOf, ciEntryPointsOf, ciNodesOf } from './tier-stack-ci';
 import { factsWithin, injectionEdgesOf, securityFactNodesOf } from './tier-stack-facts';
 import { conformanceOf, namedPatternsOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
@@ -201,7 +202,7 @@ function nodesOf(index: TierStackIndex): CASNode[] {
       ...(dead.has(node.id) ? { attributes: { dead_code: dead.get(node.id) } } : {}),
     },
   }));
-  return [...declared, ...importNodesOf(index, depth), ...securityFactNodesOf(index)];
+  return [...declared, ...importNodesOf(index, depth), ...securityFactNodesOf(index), ...ciNodesOf(index)];
 }
 
 function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNullable<CASNode['signature']> {
@@ -240,7 +241,8 @@ function edgesOf(index: TierStackIndex): CASEdge[] {
       ...(metadata === undefined ? {} : { metadata }),
     };
   });
-  return [...structural, ...injectionEdgesOf(index, structural.length)];
+  const injected = [...structural, ...injectionEdgesOf(index, structural.length)];
+  return [...injected, ...ciEdgesOf(index, injected.length)];
 }
 
 function enforcingGuards(entry: TierStackEntryPoint) {
@@ -249,7 +251,7 @@ function enforcingGuards(entry: TierStackEntryPoint) {
 
 function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
   const named = new Map(index.nodes.map(node => [node.id, node.name]));
-  return (index.entry_points ?? []).map(entry => ({
+  const declared = (index.entry_points ?? []).map(entry => ({
     id: entry.id,
     source_node: entry.handler,
     source_analyzer: TIER_STACK_ANALYZER,
@@ -280,6 +282,7 @@ function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
       ...carriedBeyond(entry, ENTRY_ENVELOPE),
     },
   })) as CASEntryPoint[];
+  return [...declared, ...ciEntryPointsOf(index)];
 }
 
 const HTTP_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options']);
