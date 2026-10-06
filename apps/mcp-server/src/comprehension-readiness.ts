@@ -55,10 +55,6 @@ function comprehensionIntegrityFailures(cas: CASOutput): string[] {
     if (!capabilityIds.has(undocumented.capability_id)) failures.push(`undocumented capability reference does not resolve: ${undocumented.capability_id}`);
   }
   const flowIds = new Set((cas.flows || []).map(flow => flow.flow_id));
-  const flowRelationshipTargetIds = new Set([
-    ...capabilityIds,
-    ...(cas.behavior_surfaces || []).map(surface => surface.id),
-  ]);
   for (const capability of cas.capabilities || []) {
     for (const relationship of capability.related_flows || []) {
       if (!flowIds.has(relationship.flow_id)) failures.push(`capability flow reference does not resolve: ${capability.id} -> ${relationship.flow_id}`);
@@ -68,11 +64,11 @@ function comprehensionIntegrityFailures(cas: CASOutput): string[] {
     }
   }
   for (const flow of cas.flows || []) {
-    if (flow.capability_id && !flowRelationshipTargetIds.has(flow.capability_id)) {
+    if (flow.capability_id && !capabilityIds.has(flow.capability_id)) {
       failures.push(`flow capability reference does not resolve: ${flow.flow_id} -> ${flow.capability_id}`);
     }
     for (const relationship of flow.capability_relationships || []) {
-      if (!flowRelationshipTargetIds.has(relationship.capability_id)) {
+      if (!capabilityIds.has(relationship.capability_id)) {
         failures.push(`flow capability relationship does not resolve: ${flow.flow_id} -> ${relationship.capability_id}`);
       }
       if (!validFlowRoles.has(relationship.role)) {

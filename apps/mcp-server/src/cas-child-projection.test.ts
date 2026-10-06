@@ -39,7 +39,6 @@ function projectedValues(): CASChildProjectedValues {
     flows: [],
     steps: [],
     terminality: undefined,
-    behavior_surfaces: [],
     entry_point_flows: [],
     data_lineage: [],
     flow_graph: undefined,

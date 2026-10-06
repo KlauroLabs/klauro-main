@@ -44,7 +44,7 @@ inferred from a shared name, and it is what the engine itself uses to decide whi
 `entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
 
 **What it accomplishes**
-`capabilities`, `flows`, `steps`, `behavior_surfaces`, `entry_point_flows`, `intents`, `flow_summary`, `flow_coverage`, `behaviors`, `product_map`
+`capabilities`, `flows`, `steps`, `entry_point_flows`, `intents`, `flow_summary`, `flow_coverage`, `behaviors`, `product_map`
 
 `flows[].effects` is new. A flow used to be one path from an entry point to one exit point, so a
 command became as many flows as it had reachable effects: one voice-call command appeared five

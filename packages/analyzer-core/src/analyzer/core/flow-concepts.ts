@@ -1184,10 +1184,9 @@ function deriveCapabilityRelationships(args: {
   pathNodeIds?: Set<string>;
   entryHandlerNodeIdByEpId?: Map<string, string>;
   cronSchedule?: string;
-  entryType?: string;
   apiRouteCalls?: Array<{ method: string; path: string }>;
 }): CapabilityFlowRelationship[] {
-  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, entryType, apiRouteCalls } = args;
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, apiRouteCalls } = args;
   const out: CapabilityFlowRelationship[] = [];
   const entityKeySet = new Set(entities.map(normalizeEntityKey));
 
@@ -1277,23 +1276,6 @@ function deriveCapabilityRelationships(args: {
         rationale: `flow touches entities in this capability's related_entities (${sharedList}) but its entry point is not among the capability's operations`,
         evidence: 'entity-overlap',
       });
-    }
-  }
-
-  if (out.length === 0 && entryType) {
-    for (const cap of capabilities) {
-      if ((cap as { evidence_kind?: string }).evidence_kind !== 'behavior-surface') continue;
-      const opTypes = new Set((cap.operations || []).map(op => op.entry_point_type));
-      if (opTypes.size !== 1 || !opTypes.has(entryType)) continue;
-      out.push({
-        capability_id: cap.id,
-        role: cronSchedule ? 'operational' : 'supporting',
-        rationale: cronSchedule
-          ? `registered on the "${cap.name}" behavior surface (entry type ${entryType}); scheduled by a CronJob (${cronSchedule}) — operational surface work`
-          : `registered on the "${cap.name}" behavior surface (entry type ${entryType}) — no core capability references this flow`,
-        evidence: 'surface-membership',
-      });
-      break;
     }
   }
 
@@ -1743,7 +1725,7 @@ function buildTerminalFlows(
   if (chains.length === 0) return [];
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
+  const capabilities = cas.capabilities || [];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
@@ -1972,7 +1954,6 @@ function buildTerminalFlows(
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(rootEp, cronScheduleIndex),
-      entryType: rootEp?.type,
       apiRouteCalls: apiRouteCallsForNodes(allNodeIds, exitPointsByNode),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
@@ -2265,7 +2246,7 @@ function computeEntryPointFlows(
   unionOpts: { excludeEntryKeys?: Set<string>; significantOnly?: boolean; onlyEntryKeys?: Set<string> } = {}
 ): FlowConcept[] {
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
+  const capabilities = cas.capabilities || [];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
@@ -2452,7 +2433,6 @@ function computeEntryPointFlows(
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(ep, cronScheduleIndex),
-      entryType: ep.type,
       apiRouteCalls: apiRouteCallsForNodes(allNodeIds, exitPointsByNode),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;

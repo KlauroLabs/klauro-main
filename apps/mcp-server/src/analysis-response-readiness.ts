@@ -219,15 +219,11 @@ function pageItems<T>(items: T[], page: ConceptualCatalogPage) {
   };
 }
 
-export function paginateConceptualCatalog<TCapability, TSurface>(
+export function paginateConceptualCatalog<TCapability>(
   capabilities: TCapability[],
-  behaviorSurfaces: TSurface[],
   page: ConceptualCatalogPage,
 ) {
-  return {
-    capabilities: pageItems(capabilities, page),
-    behavior_surfaces: pageItems(behaviorSurfaces, page),
-  };
+  return { capabilities: pageItems(capabilities, page) };
 }
 
 export function paginateCapabilityReconciliation(

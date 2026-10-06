@@ -36,10 +36,7 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
   try {
     await seedSymfonyFleetFixture(root);
     const cas = await analyzeForBench(root);
-    const inferredCapabilities = cas.capabilities?.length
-      ? cas.capabilities
-      : cas.behavior_surfaces || [];
-    const capabilities = inferredCapabilities.map(capability => ({
+    const capabilities = (cas.capabilities || []).map(capability => ({
       name: capability.name,
       domains: capability.related_domains || [],
       description: capability.description || '',

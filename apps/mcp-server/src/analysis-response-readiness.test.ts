@@ -193,15 +193,11 @@ test('conceptual catalog pages are bounded and disclose exact continuation offse
   assert.deepEqual(requested, { limit: 100, offset: 100 });
   const catalog = paginateConceptualCatalog(
     Array.from({ length: 205 }, (_, index) => `cap-${index}`),
-    Array.from({ length: 101 }, (_, index) => `surface-${index}`),
     requested,
   );
   assert.equal(catalog.capabilities.values.length, 100);
   assert.deepEqual(catalog.capabilities.page, {
     total: 205, offset: 100, limit: 100, returned: 100, has_more: true, next_offset: 200,
-  });
-  assert.deepEqual(catalog.behavior_surfaces.page, {
-    total: 101, offset: 100, limit: 100, returned: 1, has_more: false, next_offset: null,
   });
 });
 

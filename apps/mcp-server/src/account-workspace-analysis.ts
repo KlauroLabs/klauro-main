@@ -61,7 +61,7 @@ export async function loadWorkspaceMemberProjection(memberWorkspace: string, pro
 }
 
 export const WORKSPACE_MEMBER_OMITTED_FIELDS = [
-  'analysis_facts', 'intents', 'steps', 'behavior_surfaces', 'system_purpose', 'flow_summary',
+  'analysis_facts', 'intents', 'steps', 'system_purpose', 'flow_summary',
   'product_map', 'terminality', 'runtime', 'consistency_model', 'architecture_summary', 'patterns', 'change_risk_summary',
   'behavioral_invariants', 'behavioral_invariant_summary', 'security_boundaries', 'security_summary', 'stability_summary',
   'principle_violations', 'module_health', 'implementation_health', 'system_health', 'security_contexts', 'codebase_idioms',

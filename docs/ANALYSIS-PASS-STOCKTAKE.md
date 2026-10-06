@@ -32,7 +32,7 @@ Ordered by measured cost.
 |---|---|---|
 | `pp_flowCoverage` | 2,890 | Test suites, flow coverage, test gaps |
 | `pp_traceability` | 2,478 | Analysis facts, the cross-layer trace between findings |
-| `pp_capabilities` | 1,932 | System capabilities, behavior surfaces, system purpose |
+| `pp_capabilities` | 1,932 | System capabilities, system purpose |
 | `pp_linkRouteHandlers` | 1,822 | Resolves in-repo calls, links routes to handlers, dedupes entry points |
 | `pp_enhancedPurpose` | 1,494 | Behaviors from journeys, entry-point summary, display name |
 | `pp_nodeRoles` | 1,262 | Assigns a role to every node |
@@ -444,10 +444,9 @@ record rather than a full syntax tree.
 ## Reproducibility defect
 
 Two analyses of the same commit, on the same code, with AI off, do not produce the same output.
-Four fields differ every time:
+Three fields differ every time:
 
 - `analyzer_contributions`
-- `behavior_surfaces`
 - `enhanced_system_purpose`
 - `structural_capability_candidates`
 

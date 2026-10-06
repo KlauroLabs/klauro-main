@@ -1329,11 +1329,6 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
       includedEntryPointIds,
       containedFlowIds,
     ),
-    behavior_surfaces: scopeCapabilitiesToSlice(
-      filterCapabilities(cas.behavior_surfaces, includedEntryPointIds),
-      includedEntryPointIds,
-      containedFlowIds,
-    ),
     flows: ownFlows.length > 0 ? ownFlows : undefined,
     steps: ownFlows.length > 0 ? ownFlows.flatMap(flow => flow.steps) : undefined,
     flow_graph: scopedFlowGraph.graph,
@@ -1796,7 +1791,7 @@ export function resolveSubCasNodeScope(cas: CASOutput, subCasNodeId: string): Su
 
 function subCasCacheKey(cas: CASOutput): string {
   const layerGeneration = cas.layers_ready?.generated_at || '';
-  const capabilityCount = (cas.capabilities || []).length + (cas.behavior_surfaces || []).length;
+  const capabilityCount = (cas.capabilities || []).length;
   const flowCount = cas.flows?.length || 0;
   return [
     cas.id || '',

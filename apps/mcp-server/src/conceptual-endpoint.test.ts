@@ -10,6 +10,7 @@ import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { getAnalysis } from './analyzer';
 import { computeFlowConcepts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { saveAnalysis } from './storage';
+import type { SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 function git(repo: string, args: string[]): void {
@@ -37,8 +38,8 @@ function request(port: number, method: string, route: string, body?: unknown, to
   });
 }
 
-test('conceptual endpoint exposes behavior_surfaces so flow capability_relationships resolve', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-surfaces-conceptual-'));
+test('conceptual endpoint pages reconciliation and flow capability_relationships resolve against capabilities', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-conceptual-endpoint-'));
   const repo = path.join(root, 'repo');
   const remoteData = path.join(root, 'remote-data');
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
@@ -139,11 +140,11 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     const toolEntryPoints = (cas.entry_points || []).filter(entryPoint => entryPoint.type === 'tool');
     const toolEntryPoint = toolEntryPoints.find(entryPoint => entryPoint.name === 'get_summary');
     assert.ok(toolEntryPoint);
-    acceptedCas.behavior_surfaces = [{
-      id: 'surface:mcp-tool',
-      name: 'MCP tool registrations',
-      description: 'Tools the server registers for MCP clients to call',
-      category: 'internal',
+    const toolCapability: SystemCapability = {
+      id: 'capability:mcp-tools',
+      name: 'Call codebase tools from an MCP client',
+      description: 'MCP clients call the tools the server registers',
+      category: 'core',
       operations: toolEntryPoints.map(entryPoint => ({
         entry_point_id: entryPoint.id,
         entry_point_type: entryPoint.type,
@@ -152,17 +153,11 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
       related_entities: [],
       related_domains: [],
       criticality: 'medium',
-      criticality_factors: ['registration surface'],
-      evidence_kind: 'behavior-surface',
-    }];
+      criticality_factors: ['tool entry points'],
+    };
+    acceptedCas.capabilities = [...(acceptedCas.capabilities || []), toolCapability];
     acceptedCas.flows = computeFlowConcepts({ ...acceptedCas, flows: undefined });
     await saveAnalysis(workspace, acceptedCas);
-    const storedSurface = acceptedCas.behavior_surfaces.find(surface =>
-      surface.operations.some(operation => operation.entry_point_id === toolEntryPoint.id)
-    );
-    assert.ok(storedSurface);
-
-    // max_flows high enough to include the flow the fabricated surface anchors on.
     const res = await request(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=50`, undefined, token);
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
@@ -182,29 +177,23 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
       acceptedCas.enhanced_system_purpose!.capability_reconciliation!.unverified_declarations);
     assert.equal(nextPage.page.has_more, false);
 
-    assert.ok(Array.isArray(body.behavior_surfaces));
-    const mcpSurface = body.behavior_surfaces.find((surface: any) => surface.id === storedSurface.id);
-    assert.ok(mcpSurface);
-    assert.equal(mcpSurface.evidence_kind, 'behavior-surface');
-    const knownIds = new Set<string>([
-      ...body.capabilities.map((c: any) => c.id),
-      ...body.behavior_surfaces.map((s: any) => s.id),
-    ]);
+    const publishedTool = body.capabilities.find((c: any) => c.id === toolCapability.id);
+    assert.ok(publishedTool);
+    const knownIds = new Set<string>(body.capabilities.map((c: any) => c.id));
     const flows = body.flows?.flows || [];
     assert.ok(flows.length > 0, 'expected at least one derived flow');
-    let sawSurfaceRef = false;
+    let sawToolRef = false;
     for (const flow of flows) {
       for (const rel of flow.capability_relationships || []) {
         assert.ok(
           knownIds.has(rel.capability_id),
-          `flow ${flow.flow_id} references capability_id ${rel.capability_id}, which resolves against neither capabilities nor behavior_surfaces`
+          `flow ${flow.flow_id} references capability_id ${rel.capability_id}, which does not resolve against capabilities`
         );
-        if (rel.capability_id === mcpSurface.id) sawSurfaceRef = true;
+        if (rel.capability_id === toolCapability.id) sawToolRef = true;
       }
     }
-    assert.ok(sawSurfaceRef, 'expected at least one flow to relate to the mcp-tool surface directly');
-
-    assert.ok(mcpSurface.related_flows.length > 0, 'surface must carry the flows that reference it');
+    assert.ok(sawToolRef, 'expected at least one flow to relate to the tool capability directly');
+    assert.ok(publishedTool.related_flows.length > 0, 'capability must carry the flows that reference it');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

@@ -79,7 +79,6 @@ export const CAS_CHILD_FIELD_POLICY = {
   flows: { mode: 'scope' },
   steps: { mode: 'scope' },
   terminality: { mode: 'recompute' },
-  behavior_surfaces: { mode: 'scope' },
   system_purpose: { mode: 'inherit' },
   data_lineage: { mode: 'scope' },
   entry_point_flows: { mode: 'scope' },

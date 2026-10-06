@@ -127,7 +127,6 @@ export function buildOrientCapsule(cas: CASOutput) {
 
 
 
-      behavior_surfaces: dimension((cas.behavior_surfaces?.length || 0) > 0, cas.behavior_surfaces?.length || 0, 'get_system_overview'),
       tests: dimension((cas.test_suites?.length || 0) > 0, cas.test_suites?.length || 0, 'get_test_summary'),
     },
     hint: 'Availability + counts only — call the named tool to pull each dimension. Heavy content is intentionally omitted from this capsule.',
@@ -320,12 +319,6 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
 
 
 
-    ...(cas.behavior_surfaces?.length ? {
-      behavior_surfaces: cas.behavior_surfaces.map(surface => ({
-        name: surface.structural_label || surface.name,
-        entry_points: surface.operations?.length || 0,
-      })),
-    } : {}),
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: diagnostics.errors.length,
     warnings: diagnostics.warnings.length,
@@ -461,16 +454,6 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
 
 
 
-    behavior_surfaces_count: cas.behavior_surfaces?.length || 0,
-    behavior_surfaces: cas.behavior_surfaces?.slice(0, 25).map(surface => ({
-      id: surface.id,
-      name: surface.name,
-      structural_label: surface.structural_label,
-      description: surface.description,
-      operation_count: surface.operations?.length || 0,
-      related_entities: surface.related_entities,
-      related_domains: surface.related_domains,
-    })) || [],
     repository_links: cas.repository_links || cas.cross_repository_links || [],
     disclosure: cas.disclosure || null,
     configuration: cas.configuration || null,

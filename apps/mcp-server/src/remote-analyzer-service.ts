@@ -3188,25 +3188,13 @@ async function handleAccountApi(
         related_flow_total: capability.related_flows?.length || flowTotalsOfCapability.get(capability.id) || flowEdgesOfCapability.get(capability.id)?.length || 0,
         related_flows: flowEdgesOfCapability.get(capability.id) || [],
       }));
-      const allBehaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
-        id: surface.id,
-        name: surface.structural_label || surface.name,
-        ...conceptualDescriptionFields(surface),
-        category: surface.category,
-        evidence_kind: surface.evidence_kind,
-        entry_points: surface.operations?.length || 0,
-        related_flow_total: surface.related_flows?.length || flowTotalsOfCapability.get(surface.id) || flowEdgesOfCapability.get(surface.id)?.length || 0,
-        related_flows: flowEdgesOfCapability.get(surface.id) || [],
-      }));
-      const catalog = paginateConceptualCatalog(allCapabilities, allBehaviorSurfaces, catalogPage);
+      const catalog = paginateConceptualCatalog(allCapabilities, catalogPage);
       const capabilityReconciliation = paginateCapabilityReconciliation(cas.enhanced_system_purpose?.capability_reconciliation, catalogPage);
       const body = {
         status: 'ready',
         project_id: project.id,
         analysis_id: project.analysis_id,
         capabilities: catalog.capabilities.values, capability_page: catalog.capabilities.page,
-        behavior_surface_page: catalog.behavior_surfaces.page,
-        ...(catalog.behavior_surfaces.values.length ? { behavior_surfaces: catalog.behavior_surfaces.values } : {}),
         ...(capabilityReconciliation ? { capability_reconciliation: capabilityReconciliation } : {}),
         flows: flowConcepts,
         structural: { architectural, paradigms, perspectives },

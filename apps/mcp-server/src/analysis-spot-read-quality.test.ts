@@ -63,28 +63,6 @@ function baseCas(overrides: any = {}): any {
   };
 }
 
-test('spot-read quality fails published API group names despite authored descriptions and anchors', () => {
-  const groups = ['Courier Application API', 'Courier Request API'].map((name, index) => ({
-    id: `group-${index}`, name, structural_label: `${name} Management`,
-    description: 'Application developers can inspect request information and choose response formats.',
-    operations: [{ entry_point_id: `api-${index}`, entry_point_type: 'api', action: 'read' }],
-  }));
-  const cas = baseCas({
-    behavior_surfaces: groups,
-    capabilities: groups.map(group => ({ ...group, name_source: 'ai', description_source: 'ai' })),
-  });
-  const result = evaluateSpotReadCas(cas, '/tmp/api-groups.json');
-  const gate = result.gates.find(gate => gate.id === 'capability-quality');
-  assert.equal(gate?.status, 'fail');
-  assert.match(gate?.detail || '', /structural API group/);
-  const translated = evaluateSpotReadCas({
-    ...cas,
-    capabilities: [{ ...cas.capabilities[0], name: 'Negotiate response formats through an API' }],
-  }, '/tmp/api-outcomes.json');
-  assert.equal(translated.gates.find(gate => gate.id === 'capability-quality')?.status, 'pass');
-  assert.deepEqual(cas.behavior_surfaces, groups);
-});
-
 for (const status of ['partial', 'rejected', 'unavailable'] as const) {
   test('spot-read quality cannot pass an explicitly ' + status + ' catalog with attractive capability names', () => {
     const cas = baseCas();

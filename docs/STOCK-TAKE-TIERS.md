@@ -175,7 +175,7 @@ because tier 1's own data is missing or wrong.
   unverified end-to-end**, confirmed by direct read: `buildIntegrationCapabilities`
   (`orchestrator.ts:23881`, called at `orchestrator.ts:21976`) consumes
   `productExitPoints` and merges into existing capabilities OR lands in
-  `behaviorSurfaces` (browsable, but explicitly **not** promoted into the
+  a side list that was later retired (not promoted into the
   ranked `capabilities` list unless it overlaps an entity-anchored capability
   — see `orchestrator.ts:21942-21959`). The only test reference found is
   `packages/analyzer-core/src/__tests__/ai/orchestrator-internals.test.ts`; no

@@ -98,7 +98,6 @@ export interface CASOutput extends CASSourceInputCatalog {
   terminality?: CASTerminality;
 
 
-  behavior_surfaces?: SystemCapability[];
   system_purpose?: SystemPurpose;
 
   entry_point_flows?: CASEntryPointFlow[];
@@ -3665,7 +3664,7 @@ export interface SystemCapability {
 
 
 
-  evidence_kind?: 'behavior-surface' | 'infrastructure';
+  evidence_kind?: 'infrastructure';
   evidence_role?: 'product-outcome' | 'supporting-mechanism' | 'verification-harness' | 'unresolved';
   evidence_role_reasons?: string[];
 
@@ -4395,7 +4394,7 @@ export interface CapabilityFlowRelationship {
   capability_id: string;
   role: CapabilityFlowRole;
   rationale: string;
-  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'entity-lineage' | 'surface-membership';
+  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'entity-lineage';
 }
 
 export type FlowEdgeKind = 'sequence' | 'branch' | 'error' | 'compensation';

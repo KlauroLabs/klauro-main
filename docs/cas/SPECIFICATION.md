@@ -499,7 +499,6 @@ interface CASOutput {
 
   // v1.7.0+ System capabilities and domain model (see §4.15)
   system_capabilities?: SystemCapability[];
-  behavior_surfaces?: SystemCapability[];         // Registration/engine surfaces with no product-entity anchor; never ranked as capabilities
   system_purpose?: SystemPurpose;
   enhanced_system_purpose?: EnhancedSystemPurpose;
   domain_concepts?: CASDomainConcept[];           // Distinctiveness-gated domain vocabulary (see §5.28)
@@ -2530,27 +2529,15 @@ interface SystemCapability {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   criticality_factors: string[];
   // Provenance of the evidence that produced this capability:
-  // 'behavior-surface' = derived from a named registration surface (an MCP
-  // tool server, a socket-event namespace) with no persisted-entity anchor —
-  // the AI catalog pass systematically misses these, so they are re-injected
-  // if dropped (the flagship-capability guarantee). 'infrastructure' = the
-  // capability's only anchors are runtime/lifecycle-shaped entities with no
-  // product evidence; it fails the purpose test and is excluded from the
-  // shipped catalog.
-  evidence_kind?: 'behavior-surface' | 'infrastructure';
+  // 'infrastructure' = the capability's only anchors are runtime/lifecycle-shaped
+  // entities with no product evidence; it fails the purpose test and is excluded
+  // from the shipped catalog.
+  evidence_kind?: 'infrastructure';
   // Inverted M:N capability<->flow edges, {flow_id, role, rationale} per tie.
   // Computed once, un-capped, persisted; omitted (never []) when uncomputed.
   related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
 }
 ```
-
-`behavior_surfaces` carries the SAME `SystemCapability` shape for navigation-tier
-registration surfaces (mcp_tool / rpc / command / event / message-handler
-engines with no product-entity anchor). A behavior surface is structurally
-EXCLUDED from `system_capabilities`/ranking, is always `category: 'internal'`,
-and its `criticality` is capped at `'medium'` so it can never outrank a domain
-capability's urgency, while remaining fully navigable with its own
-operations/entry-point evidence.
 
 #### CASDomainConcept
 Distinctiveness-gated domain vocabulary. See §5.30 for the evidence gate every entry MUST satisfy.
@@ -3034,7 +3021,6 @@ Capability descriptions MUST be AI-generated or AI-reviewed in the default summa
 
 - Every `SystemCapability` in `system_capabilities` MUST be structurally anchored: it MUST NOT ship purely from a name/keyword classification with no supporting graph evidence. Anchoring evidence includes (in order of strength): a terminal `api-response` entity the capability's operations produce; a `persisted-entity` the capability's implementing cluster operates on (with a minimum implementing-node-count floor); an unclassified (not proven-plumbing) entity with lifecycle breadth; or a substantial business-implementation cluster (service/usecase/workflow/entity/model-shaped nodes above a minimum count).
 - A capability whose only anchors are runtime/lifecycle-shaped entities with no product (persisted/api-response) evidence MUST carry `evidence_kind: 'infrastructure'` and MUST be excluded from the shipped catalog — it fails the purpose test (see docs/SEMANTIC-MODEL.md).
-- A capability derived from a named registration surface with no persisted-entity anchor (an MCP tool server, a socket-event namespace) MUST carry `evidence_kind: 'behavior-surface'` and is re-injected if a post-hoc catalog pass dropped it (the flagship-capability guarantee) — this is the one case where a capability may ship without a data-entity anchor, because the registration surface itself is the anchor.
 
 ### 5.32 Edge Referential Integrity (v1.11.0)
 
@@ -3638,10 +3624,11 @@ All versions maintain backward compatibility:
 
 ### Appendix A: Version History
 
+- **Retired `behavior_surfaces`**: the v1.11.0 side list for registration surfaces the old capability generator could not anchor, and `evidence_kind: 'behavior-surface'`, are removed; entry points list every surface, flows trace them, capabilities are audience-relative, and plumbing attaches to capabilities with a supporting role, so the tier was redundant and nothing produced it
 - **v1.11.0**: Structural Intelligence, Dependency Facts, and Invariant Hardening
   - Evidence-gated `persisted-entity` classification (`kind_evidence`), replacing the uncited persistence fallback
   - Distinctiveness-gated domain concepts (`distinctiveness_evidence`), replacing raw-frequency ranking
-  - Structural anchoring required for every shipped `system_capabilities` entry; `behavior_surfaces` navigation tier for unanchored registration surfaces
+  - Structural anchoring required for every shipped `system_capabilities` entry
   - `ENTRY_POINT_TYPES` / `EXIT_POINT_TYPES` promoted to single-source-of-truth closed sets; `graphql` added as a first-class entry-point kind
   - Full declared-dependency manifest (`dependency_manifest`)
   - Self-discovered coverage gaps (`coverage_gaps`)

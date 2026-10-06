@@ -3,25 +3,22 @@ import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 
 export function acceptedComprehensionFixture(cas: CASOutput): CASOutput {
   const existingCapabilities = cas.capabilities || [];
-  const analyzerCandidates = cas.behavior_surfaces || [];
   const entryPoint = cas.entry_points?.[0];
   const canonicalCapabilities = existingCapabilities.length > 0
     ? existingCapabilities
-    : analyzerCandidates.length > 0
-      ? analyzerCandidates
-      : entryPoint
-        ? [{
-            id: `fixture-capability-${entryPoint.id}`,
-            name: entryPoint.name,
-            description: `${entryPoint.type} behavior exposed by ${entryPoint.name}`,
-            category: 'core' as const,
-            operations: [{ entry_point_id: entryPoint.id, entry_point_type: entryPoint.type, action: entryPoint.name }],
-            related_entities: [],
-            related_domains: [],
-            criticality: 'medium' as const,
-            criticality_factors: ['analyzer-derived entry point'],
-          }]
-        : [];
+    : entryPoint
+      ? [{
+          id: `fixture-capability-${entryPoint.id}`,
+          name: entryPoint.name,
+          description: `${entryPoint.type} behavior exposed by ${entryPoint.name}`,
+          category: 'core' as const,
+          operations: [{ entry_point_id: entryPoint.id, entry_point_type: entryPoint.type, action: entryPoint.name }],
+          related_entities: [],
+          related_domains: [],
+          criticality: 'medium' as const,
+          criticality_factors: ['analyzer-derived entry point'],
+        }]
+      : [];
   if (canonicalCapabilities.length === 0) throw new Error('Accepted comprehension fixture requires analyzer-derived capability evidence');
   const enhanced = cas.enhanced_system_purpose || {
     primary_type: cas.system.type,
