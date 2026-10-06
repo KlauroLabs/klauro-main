@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import { createRemoteAnalyzerHttpServer, getCasReadResponseCacheStats } from './remote-analyzer-service';
 import { saveAnalysis } from './storage';
+import { compactSubCasNodes } from './hosted-summary-compaction';
 import { buildLayersReady } from './layered-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -250,7 +251,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
       analysisBody.summary.sub_cas_nodes.units.map((u: any) => u.name).sort(),
       ['api', 'tool1', 'tool2', 'worker'],
     );
-    assert.deepEqual(analysisBody.summary.sub_cas_nodes, dasBody.sub_cas_nodes, 'the fast hosted path and the dedicated /das route must report the identical index');
+    assert.deepEqual(analysisBody.summary.sub_cas_nodes, compactSubCasNodes(dasBody.sub_cas_nodes), 'the fast hosted path must report the dedicated /das index in its compact form');
 
     // --- scoped slice: strictly smaller than the full CAS (api's closure is
     // A1, A2, S1 = 3 of the 6 fixture nodes, same as sub-cas-node-scope.test.ts's

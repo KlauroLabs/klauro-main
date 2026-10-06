@@ -108,7 +108,7 @@ test('capability-linked flow with a persisted terminus is core, and capability_i
   assert.ok(orderFlow, 'order flow missing');
   assert.equal(orderFlow.capability_id, 'cap_orders');
   assert.equal(orderFlow.role, 'core');
-  assert.ok(orderFlow.role_evidence.some((e: string) => /capability operation/i.test(e)));
+  assert.ok(orderFlow.role_evidence.some((e: string) => /^delivers cap_orders$/.test(e)));
   // Serialization holds on the structural projection too (default path).
   assert.ok('capability_id' in orderFlow);
 });

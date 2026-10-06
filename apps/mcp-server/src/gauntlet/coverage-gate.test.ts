@@ -85,7 +85,7 @@ test('REAL: coverage gate reports missing capability comprehension without deter
   assert.deepEqual(v.violation?.failing_metrics, ['flows_to_capabilities']);
   assert.equal(cov.flows_to_capabilities.total, 2);
   assert.equal(cov.flows_to_capabilities.mapped, 0);
-  assert.equal(cas.capabilities, undefined);
+  assert.deepEqual(cas.capabilities ?? [], []);
   assert.ok(cov.reachable_code_to_steps.total > 0);
   assert.ok(cov.reachable_code_to_steps.ratio >= SEMANTIC_COVERAGE_FLOORS.reachable_code_to_steps);
 });
