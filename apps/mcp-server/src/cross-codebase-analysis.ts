@@ -78,6 +78,7 @@ export interface DeployableEvidence {
   ships_paths?: string[];
   ports?: number[];
   entrypoint_member?: string;
+  bundled_into?: string;
 }
 export type WorkspaceAnalysisInput = CrossCodebaseInput;
 export interface CrossCodebaseRef {
