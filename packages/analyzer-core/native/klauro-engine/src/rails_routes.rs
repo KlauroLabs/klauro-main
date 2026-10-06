@@ -21,6 +21,7 @@ struct Within {
     controller: Option<String>,
     resource: Option<Resource>,
     placing: Option<&'static str>,
+    served_by: Option<String>,
 }
 
 #[derive(Clone)]
@@ -127,6 +128,20 @@ fn entered(within: &Within, call: &CallFact) -> Within {
                 inner.placing = None;
             }
         }
+        "with_options" => {
+            if let Some(target) = option(call, "to") {
+                inner.served_by = Some(target.to_string());
+            }
+            if let Some(controller) = option(call, "controller") {
+                inner.controller = Some(controller.to_string());
+            }
+            if let Some(segment) = option(call, "path") {
+                inner.path = joined(&inner.path, segment);
+            }
+            if let Some(module) = option(call, "module") {
+                inner.module = format!("{}{}/", inner.module, module);
+            }
+        }
         "member" => inner.placing = Some("member"),
         "collection" => inner.placing = Some("collection"),
         _ => {}
@@ -152,7 +167,13 @@ static RESTFUL: &[(&str, &str, &str, bool)] = &[
     ("destroy", "DELETE", ":id", false),
 ];
 
-fn routed(within: &Within, call: &CallFact) -> Vec<(String, String, String, String)> {
+struct Routed {
+    method: String,
+    path: String,
+    target: Option<(String, String)>,
+}
+
+fn routed(within: &Within, call: &CallFact) -> Vec<Routed> {
     let verb = crate::names::leaf(&call.callee);
     let args = named_args(call);
     let mut found = Vec::new();
@@ -183,15 +204,22 @@ fn routed(within: &Within, call: &CallFact) -> Vec<(String, String, String, Stri
                         true => suffix.replace(":id/", "").replace(":id", ""),
                         false => suffix.replace(":id", &format!(":{param}")),
                     };
-                    found.push((method.to_string(), joined(&at, &suffix), format!("{}{controller}", within.module), action.to_string()));
+                    found.push(Routed {
+                        method: method.to_string(),
+                        path: joined(&at, &suffix),
+                        target: Some((format!("{}{controller}", within.module), action.to_string())),
+                    });
                 }
             }
         }
         "get" | "post" | "put" | "patch" | "delete" | "match" | "root" => {
             let spoken = args.first().cloned().unwrap_or_default();
-            let target = option(call, "to").map(str::to_string).or_else(|| (verb == "root" && spoken.contains('#')).then(|| spoken.clone()));
-            let (controller, action) = match target.as_deref().and_then(|to| to.split_once('#')) {
-                Some((controller, action)) => (Some(controller.to_string()), action.to_string()),
+            let target = option(call, "to")
+                .map(str::to_string)
+                .or_else(|| (verb == "root" && spoken.contains('#')).then(|| spoken.clone()))
+                .or_else(|| within.served_by.clone());
+            let controller_action = match target.as_deref() {
+                Some(to) => to.split_once('#').map(|(controller, action)| (Some(controller.to_string()), action.to_string())),
                 None => {
                     let action = option(call, "action").map(str::to_string).unwrap_or_else(|| spoken.rsplit('/').next().unwrap_or(&spoken).to_string());
                     let controller = option(call, "controller")
@@ -199,13 +227,15 @@ fn routed(within: &Within, call: &CallFact) -> Vec<(String, String, String, Stri
                         .or_else(|| within.resource.as_ref().map(|resource| resource.controller.clone()))
                         .or_else(|| within.controller.clone())
                         .or_else(|| spoken.rsplit_once('/').map(|(controller, _)| controller.trim_matches('/').to_string()));
-                    (controller, action)
+                    Some((controller, action))
                 }
             };
-            let Some(controller) = controller else { return found };
-            if action.is_empty() || !action.chars().all(|letter| letter.is_alphanumeric() || letter == '_') {
-                return found;
-            }
+            let endpoint = match controller_action {
+                Some((Some(controller), action)) if !action.is_empty() && action.chars().all(|letter| letter.is_alphanumeric() || letter == '_') => {
+                    Some((controller, action))
+                }
+                _ => None,
+            };
             let base = match (&within.resource, within.placing) {
                 (Some(resource), Some("member")) if !resource.singular => {
                     joined(&joined(&within.path, &resource.segment), &format!(":{}", resource.param))
@@ -224,12 +254,15 @@ fn routed(within: &Within, call: &CallFact) -> Vec<(String, String, String, Stri
                 "root" => vec!["get".to_string()],
                 other => vec![other.to_string()],
             };
-            let module = match controller.contains('/') {
-                true => String::new(),
-                false => within.module.clone(),
-            };
             for method in methods {
-                found.push((method.to_ascii_uppercase(), path.clone(), format!("{module}{controller}"), action.clone()));
+                let target = endpoint.as_ref().map(|(controller, action)| {
+                    let module = match controller.contains('/') {
+                        true => String::new(),
+                        false => within.module.clone(),
+                    };
+                    (format!("{module}{controller}"), action.clone())
+                });
+                found.push(Routed { method: method.to_ascii_uppercase(), path: path.clone(), target });
             }
         }
         _ => {}
@@ -299,17 +332,24 @@ pub fn derive(nodes: &[IndexNode], calls: &[CallFact], files: &[String]) -> Vec<
         let Some(caller) = call.caller.as_deref() else { continue };
         let within = scope_of(caller);
         let root = app_root(&files[call.file as usize]);
-        for (method, path, controller, action) in routed(&within, call) {
-            let file = format!("{root}app/controllers/{controller}_controller.rb");
-            let Some(class) = classes.get(&file) else { continue };
-            let Some(handler) = actions.get(&(class.id.as_str(), action.as_str())) else { continue };
+        for Routed { method, path, target } in routed(&within, call) {
+            let resolved = target.as_ref().and_then(|(controller, action)| {
+                let file = format!("{root}app/controllers/{controller}_controller.rb");
+                let class = classes.get(&file)?;
+                actions.get(&(class.id.as_str(), action.as_str())).map(|handler| handler.id.clone())
+            });
+            let handler = match resolved {
+                Some(handler) => handler,
+                None if !matches!(verb, "resources" | "resource") => files[call.file as usize].clone(),
+                None => continue,
+            };
             found.push(EntryPoint {
-                id: format!("entry:{}:{method}:{path}", handler.id),
+                id: format!("entry:{handler}:{method}:{path}"),
                 kind: "http",
                 name: path.clone(),
                 method: Some(method),
                 path: Some(path),
-                handler: handler.id.clone(),
+                handler,
                 file: call.file,
                 line: call.line,
                 guards: Vec::new(),

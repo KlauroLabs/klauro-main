@@ -568,6 +568,10 @@ impl<'a> Bindings<'a> {
     }
 }
 
+thread_local! {
+    static BEING_TRACED: std::cell::RefCell<Vec<(u32, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 struct Resolver<'a> {
     symbols: Symbols<'a>,
     bindings: Bindings<'a>,
@@ -800,7 +804,13 @@ impl<'a> Resolver<'a> {
             };
         }
         if let Some(expression) = self.stood_for(unit, name) {
+            let asked = (unit, name.to_string());
+            if BEING_TRACED.with(|tracing| tracing.borrow().contains(&asked)) {
+                return Origin::Unknown;
+            }
+            BEING_TRACED.with(|tracing| tracing.borrow_mut().push(asked));
             let found = self.origin(unit, file, expression);
+            BEING_TRACED.with(|tracing| tracing.borrow_mut().pop());
             return match found {
                 Origin::Declared(called)
                     if self.languages.get(file as usize) == Some(&"ruby") && self.symbols.nodes[called as usize].kind.is_unit() =>

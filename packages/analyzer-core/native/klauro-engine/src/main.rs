@@ -3,6 +3,7 @@ mod addresses;
 mod architecture;
 mod arms;
 mod builtins;
+mod callbacks;
 mod capabilities;
 mod audit;
 mod author;

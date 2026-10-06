@@ -1871,7 +1871,7 @@ type Used<'a> = HashMap<(u32, &'a str, &'a str), Vec<(u32, &'a str)>>;
 fn used_guards<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Used<'a> {
     let mut used: Used = HashMap::default();
     let guard_like = |literal: &&String| {
-        !literal.starts_with('/') && !literal.contains(|letter: char| letter.is_whitespace() || matches!(letter, '=' | '(' | '{')) && guarding(literal).is_some()
+        !literal.starts_with('/') && !literal.contains(|letter: char| letter.is_whitespace() || matches!(letter, '=' | '{')) && guarding(literal).is_some()
     };
     let defined: HashMap<(u32, u32), Vec<&crate::model::LocalBinding>> =
         locals.iter().filter(|held| held.from_call.is_some()).fold(HashMap::default(), |mut held, local| {

@@ -145,9 +145,16 @@ static CHAINS_A_ROUTER: &[&str] = &[
     "route", "router", "routes", "scope", "server", "use", "where",
 ];
 
+static ATTACHES_A_HANDLER: &[&str] = &["handler", "handlerfunc"];
+
+pub(crate) fn attaches_a_handler(verb: &str) -> bool {
+    ATTACHES_A_HANDLER.contains(&verb.to_ascii_lowercase().as_str())
+}
+
 fn serves_through_its_receiver(registrar: &str) -> bool {
     let receiver = registrar.rfind('.').map_or("", |at| &registrar[..at]);
-    !receiver.contains('(')
+    attaches_a_handler(names::leaf(registrar))
+        || !receiver.contains('(')
         || receiver
             .split(|letter: char| !letter.is_alphanumeric() && letter != '_')
             .any(|word| CHAINS_A_ROUTER.binary_search(&word.to_ascii_lowercase().as_str()).is_ok())
@@ -264,6 +271,11 @@ mod tests {
     fn the_result_of_a_client_factory_is_no_router() {
         assert!(!serves_through_its_receiver("api().post"));
         assert!(!serves_through_its_receiver("Request.new(provider).post"));
+    }
+
+    #[test]
+    fn a_chain_ending_in_a_handler_serves_whatever_its_root_is_called() {
+        assert!(serves_through_its_receiver("apiRouter.Methods(http.MethodGet).Path(\"/x\").HandlerFunc"));
     }
 
     #[test]
