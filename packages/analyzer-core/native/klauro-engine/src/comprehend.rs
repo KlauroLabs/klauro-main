@@ -404,15 +404,28 @@ fn spoken_of_part(
     spoken: &str,
     part: Option<&str>,
     own_words: &std::collections::BTreeMap<String, String>,
+    composition: Option<&crate::composition::Composition>,
 ) -> String {
-    let within = spoken_within(spoken, part);
+    let mut said = spoken_within(spoken, part);
     let own = part
         .and_then(|part| part.strip_prefix("subproject:"))
         .and_then(|folder| own_words.get(folder));
-    match own {
-        Some(said) => format!("{within}\nThat part describes itself as: {said}"),
-        None => within,
+    if let Some(own) = own {
+        said.push_str(&format!("\nThat part describes itself as: {own}"));
     }
+    let used: std::collections::BTreeSet<&str> = composition
+        .into_iter()
+        .flat_map(|composition| composition.dependencies.iter())
+        .filter(|held| Some(held.from.as_str()) == part && held.from != held.to)
+        .map(|held| held.to.strip_prefix("subproject:").unwrap_or(&held.to))
+        .collect();
+    if !used.is_empty() {
+        said.push_str(&format!(
+            "\nThat part imports from these other parts of the repository, so what they serve can be reached through it: {}",
+            used.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    said
 }
 
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
@@ -1645,7 +1658,7 @@ pub fn author(
                         .filter(|flow| &flow.project == part)
                         .collect();
                     crate::author::weighing(flows.len() as u32, || {
-                    let said = spoken_of_part(&spoken, part.as_deref(), &own_words);
+                    let said = spoken_of_part(&spoken, part.as_deref(), &own_words, told.composition);
                     let remembered_as =
                         format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let label = part.as_deref().unwrap_or("root").to_string();

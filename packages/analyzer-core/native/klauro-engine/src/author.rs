@@ -765,7 +765,7 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)], req
         users_words = IN_THE_USERS_WORDS,
         outcome_names = OUTCOME_NAMES,
         requirement = match required {
-            true => "This part is real code that serves its users, so it delivers at least one purpose: name the purposes its outcomes deliver, as few and distinct as are real, and never invent one to reach a count.",
+            true => "This part is real code that serves its users, so it delivers at least one purpose: name the purposes its outcomes deliver, as few and distinct as are real, and never invent one to reach a count. When the part describes itself, the purpose it states is what it is for, even where the outcomes shown are only some of the ways it delivers it.",
             false => "",
         }
     );
@@ -1180,7 +1180,9 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                      that claim, and keep every claim they do deliver;\n\
                      - when the code and the part's setup show it can never be reached — no client, provider or \
                      route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
-                     once an outside service or key is configured is real: keep it and say what it needs;\n\
+                     once an outside service or key is configured is real: keep it and say what it needs. A part \
+                     that imports another part of the repository and starts it serves what that part serves, so \
+                     routes held by the imported part do not make this one unreachable;\n\
                      - {users_words}\n\
                      - {outcome_names}\n\
                      - when it is named for such an operation and the outcomes show no result someone ends up with, set drop \
