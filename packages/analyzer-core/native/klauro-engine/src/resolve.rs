@@ -97,6 +97,7 @@ struct Symbols<'a> {
     extension: HashMap<(&'a str, &'a str), u32>,
     declaring: HashMap<&'a str, Vec<u32>>,
     owner: Vec<Option<u32>>,
+    twin: HashMap<u32, u32>,
     package_of: Vec<u32>,
     package_scope: HashMap<(u32, &'a str), u32>,
 }
@@ -141,11 +142,26 @@ impl<'a> Symbols<'a> {
             extension: HashMap::default(),
             declaring: HashMap::default(),
             owner: vec![None; nodes.len()],
+            twin: HashMap::default(),
             package_of: Vec::new(),
             package_scope: HashMap::default(),
         };
         for (at, node) in nodes.iter().enumerate() {
             symbols.position.insert(node.id.as_str(), at as u32);
+        }
+        let mut first_declaration: HashMap<(u32, &str, Option<&str>), u32> = HashMap::default();
+        for (at, node) in nodes.iter().enumerate() {
+            if !node.kind.is_type() {
+                continue;
+            }
+            match first_declaration.entry((node.file, node.name.as_str(), node.parent.as_deref())) {
+                std::collections::hash_map::Entry::Occupied(first) => {
+                    symbols.twin.insert(at as u32, *first.get());
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(at as u32);
+                }
+            }
         }
 
         let mut types: HashMap<&str, (u32, u32)> = HashMap::default();
@@ -162,6 +178,7 @@ impl<'a> Symbols<'a> {
                 && let Some(owner) = symbols.position.get(parent).copied()
                 && holds_members(&nodes[owner as usize], node)
             {
+                let owner = symbols.twin.get(&owner).copied().unwrap_or(owner);
                 symbols.members.entry((owner, node.name.as_str())).or_insert(at);
                 if node.kind.is_unit() {
                     symbols.callables.entry((owner, node.name.as_str())).or_insert(at);
@@ -179,7 +196,7 @@ impl<'a> Symbols<'a> {
             if node.modifiers.exported {
                 symbols.exported.entry((node.file, node.name.as_str())).or_insert(at);
             }
-            if node.kind.is_type() {
+            if node.kind.is_type() && !symbols.twin.contains_key(&at) {
                 let entry = types.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
             }
@@ -268,10 +285,12 @@ impl<'a> Symbols<'a> {
     }
 
     fn member(&self, owner: u32, name: &str) -> Option<u32> {
+        let owner = self.twin.get(&owner).copied().unwrap_or(owner);
         self.members.get(&(owner, name)).copied()
     }
 
     fn callable(&self, owner: u32, name: &str) -> Option<u32> {
+        let owner = self.twin.get(&owner).copied().unwrap_or(owner);
         self.callables.get(&(owner, name)).copied().or_else(|| self.member(owner, name))
     }
 
