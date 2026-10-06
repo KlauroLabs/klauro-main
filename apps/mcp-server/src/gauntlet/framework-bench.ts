@@ -21,6 +21,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { analyzeForBench } from './product-analysis';
+import { routeIdentities } from './route-identity';
 import { getRouteTable } from '../query';
 import { validateWin } from './win-validator';
 import type { ArmResult, WinVerdict } from './report-schema';
@@ -39,10 +40,11 @@ export interface FrameworkBenchResult {
 }
 
 function f1(produced: string[], truth: string[]): number {
-  const prod = [...new Set(produced)];
-  const tp = prod.filter(r => truth.includes(r)).length;
-  const precision = prod.length ? tp / prod.length : truth.length ? 0 : 1;
-  const recall = truth.length ? tp / truth.length : 1;
+  const prod = [...new Set(routeIdentities(produced))];
+  const expected = routeIdentities(truth);
+  const tp = prod.filter(r => expected.includes(r)).length;
+  const precision = prod.length ? tp / prod.length : expected.length ? 0 : 1;
+  const recall = expected.length ? tp / expected.length : 1;
   return precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
 }
 
