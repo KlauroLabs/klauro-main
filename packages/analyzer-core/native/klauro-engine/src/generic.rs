@@ -33,6 +33,7 @@ static REQUEST_METHODS: &[&str] =
 static ATTACHES_A_HANDLER: &[&str] = &["handler", "handlerfunc"];
 static NAMES_A_PATH: &[&str] = &["path", "pathprefix"];
 static NAMES_A_METHOD: &[&str] = &["method", "methods"];
+static WRAPS_A_ROUTE: &[&str] = &["layer", "middleware", "route_layer", "wrap"];
 
 const REFERENCE_DEPTH: u8 = 3;
 const REFERENCE_WIDTH: usize = 4;
@@ -345,25 +346,57 @@ impl<'a> Extractor<'a> {
         })
     }
 
-    fn method_chained_after(&self, node: Node) -> Option<String> {
+    fn chained_after<'t>(&self, node: Node<'t>) -> Vec<(String, Node<'t>)> {
+        let mut found = Vec::new();
         let mut held = node;
-        while let Some(function) = held.parent() {
-            let call = function
-                .parent()
-                .filter(|call| self.spec.calls.kinds.contains(&call.kind()))
-                .filter(|call| call.child_by_field_name("function").is_some_and(|found| found.id() == function.id()))?;
-            let named = crate::names::leaf(self.text(function)).to_ascii_lowercase();
-            if NAMES_A_METHOD.contains(&named.as_str()) {
-                let mut cursor = call.walk();
-                let arguments: Vec<Node> = call
-                    .child_by_field_name("arguments")
-                    .map(|arguments| arguments.named_children(&mut cursor).collect())
-                    .unwrap_or_default();
-                return self.request_method_of(&arguments);
-            }
+        while let Some(parent) = held.parent() {
+            let receiving = self.spec.calls.kinds.contains(&parent.kind())
+                && self
+                    .spec
+                    .calls
+                    .receiver_fields
+                    .iter()
+                    .any(|field| parent.child_by_field_name(field).is_some_and(|object| object.id() == held.id()));
+            let (call, named) = if receiving {
+                let Some(named) = parent.child_by_field_name("name") else { break };
+                (parent, self.text(named))
+            } else {
+                let Some(call) = parent
+                    .parent()
+                    .filter(|call| self.spec.calls.kinds.contains(&call.kind()))
+                    .filter(|call| call.child_by_field_name("function").is_some_and(|function| function.id() == parent.id()))
+                else {
+                    break;
+                };
+                (call, crate::names::leaf(self.text(parent)))
+            };
+            found.push((named.to_ascii_lowercase(), call));
             held = call;
         }
-        None
+        found
+    }
+
+    fn method_chained_after(&self, node: Node) -> Option<String> {
+        self.chained_after(node)
+            .into_iter()
+            .filter(|(named, _)| NAMES_A_METHOD.contains(&named.as_str()))
+            .find_map(|(_, call)| self.request_method_of(&self.arguments_written(call)))
+    }
+
+    fn wrapped_by(&self, node: Node) -> Vec<String> {
+        self.chained_after(node)
+            .into_iter()
+            .filter(|(named, _)| WRAPS_A_ROUTE.contains(&named.as_str()))
+            .flat_map(|(_, call)| self.arguments_written(call))
+            .map(|argument| trim_quotes(self.text(argument)).to_string())
+            .filter(|written| crate::entry_exit::guarding(written).is_some())
+            .collect()
+    }
+
+    fn arguments_written<'t>(&self, call: Node<'t>) -> Vec<Node<'t>> {
+        let Some(arguments) = self.arguments_of(call) else { return Vec::new() };
+        let mut cursor = arguments.walk();
+        arguments.named_children(&mut cursor).collect()
     }
 
     fn mounted_route(&self, node: Node) -> Option<String> {
@@ -3014,9 +3047,17 @@ impl<'a> Extractor<'a> {
                 }
                 let mut handlers: Vec<(String, Node)> = Vec::new();
                 let mut chained_handlers: Vec<(String, Node, String)> = Vec::new();
-                let through = self.middleware_through(&children);
+                let mut through = self.middleware_through(&children);
+                through.extend(self.wrapped_by(node).into_iter().map(|written| (0, written)));
+                let label_argument = children.iter().find(|argument| argument.kind().contains("string")).map(|argument| argument.id());
                 for argument in children.iter() {
                     if argument.kind().contains("string") || configures_the_call(argument.kind()) {
+                        if Some(argument.id()) != label_argument
+                            && let Some((owner, action)) = action_in(trim_quotes(self.text(*argument)))
+                        {
+                            handlers.push((owner.to_string(), *argument));
+                            handlers.push((format!(":{action}"), *argument));
+                        }
                         continue;
                     }
                     if let Some(handler) = self.handled_inline(*argument) {
@@ -3279,6 +3320,13 @@ fn written_arguments(text: &str) -> Vec<DecoratorArgument> {
     }
     found.truncate(ARGUMENTS_AT_MOST);
     found
+}
+
+fn action_in(written: &str) -> Option<(&str, &str)> {
+    let (owner, action) = written.split_once("::").or_else(|| written.split_once('@'))?;
+    let names_a_type = owner.starts_with(char::is_uppercase) || owner.contains('\\');
+    let names_an_action = !action.is_empty() && action.chars().all(|letter| letter.is_alphanumeric() || letter == '_');
+    (names_a_type && names_an_action && !owner.contains(['/', ' '])).then_some((owner, action))
 }
 
 fn without_its_value<'t>(held: Node<'t>, value_field: &str) -> Option<Node<'t>> {

@@ -66,7 +66,7 @@ static HTTP_METHODS: &[&str] = &[
 
 static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
 
-static ROUTERS: &[&str] = &["Route", "Router", "blueprint", "bp", "mux", "route", "router"];
+static ROUTERS: &[&str] = &["$app", "$group", "$router", "$routes", "Route", "Router", "blueprint", "bp", "mux", "route", "router"];
 
 pub(crate) fn registered_on_a_router(registrar: &str) -> bool {
     match registrar.rfind('.') {
@@ -1695,7 +1695,7 @@ fn opened_groups<'a>(nodes: &'a [IndexNode], calls: &'a [CallFact]) -> HashMap<&
         }
     }
     let mut prefixes: HashMap<(u32, &str, u32, u32), String> = HashMap::default();
-    for call in calls.iter().filter(|call| call.callee == "prefix" && call.receiver.is_some()) {
+    for call in calls.iter().filter(|call| matches!(call.callee.as_str(), "group" | "prefix") && call.receiver.is_some()) {
         let (Some(caller), Some(prefix)) =
             (call.caller.as_deref(), call.literals.iter().find_map(|literal| a_route_prefix(literal)))
         else {
@@ -1793,14 +1793,64 @@ fn restricted_to(calls: &[CallFact], file: u32, line: u32) -> Option<(bool, Vec<
     })
 }
 
+type Used<'a> = HashMap<(u32, &'a str, &'a str), Vec<(u32, &'a str)>>;
+
+fn used_guards<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Used<'a> {
+    let mut used: Used = HashMap::default();
+    let guard_like = |literal: &&String| !literal.starts_with('/') && guarding(literal).is_some();
+    let defined: HashMap<(u32, u32), Vec<&crate::model::LocalBinding>> =
+        locals.iter().filter(|held| held.from_call.is_some()).fold(HashMap::default(), |mut held, local| {
+            held.entry((local.file, local.line)).or_default().push(local);
+            held
+        });
+    for call in calls {
+        let leaf = names::leaf(&call.callee);
+        if leaf.eq_ignore_ascii_case("use")
+            && let (Some(receiver), Some(caller)) = (call.receiver.as_deref(), call.caller.as_deref())
+        {
+            used.entry((call.file, caller, names::root(receiver)))
+                .or_default()
+                .extend(call.literals.iter().filter(guard_like).map(|literal| (call.line, literal.as_str())));
+        }
+        if GATHERS_ROUTES.iter().any(|gathers| leaf.eq_ignore_ascii_case(gathers)) {
+            for local in defined.get(&(call.file, call.line)).into_iter().flatten() {
+                used.entry((local.file, local.unit.as_str(), local.name.as_str()))
+                    .or_default()
+                    .extend(call.literals.iter().filter(guard_like).map(|literal| (call.line, literal.as_str())));
+            }
+        }
+    }
+    used.retain(|_, held| !held.is_empty());
+    used
+}
+
 struct Gathering<'a> {
     by_line: CallsByLine<'a>,
     groups: Groups<'a>,
+    used: Used<'a>,
     opened: HashMap<&'a str, String>,
     parents: HashMap<&'a str, Option<&'a str>>,
 }
 
 impl Gathering<'_> {
+    fn guards_at(&self, file: u32, line: u32, registrar: &str) -> Vec<Guard> {
+        let verb = names::leaf(registrar).to_ascii_lowercase();
+        let Some(call) = self.by_line.get(&(file, line, verb)) else { return Vec::new() };
+        let (Some(caller), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref()) else { return Vec::new() };
+        let mut found = Vec::new();
+        let mut variable = Some(names::root(receiver));
+        for _ in 0..8 {
+            let Some(name) = variable else { break };
+            for (written_at, written) in self.used.get(&(file, caller, name)).into_iter().flatten() {
+                if let Some(kind) = guarding(written).filter(|_| *written_at <= line) {
+                    found.push(Guard { name: written.to_string(), kind, via: "route" });
+                }
+            }
+            variable = self.groups.get(&(file, caller, name)).and_then(|(_, within)| *within);
+        }
+        found
+    }
+
     fn prefix_at(&self, file: u32, line: u32, registrar: &str) -> Option<String> {
         let verb = names::leaf(registrar).to_ascii_lowercase();
         let call = self.by_line.get(&(file, line, verb))?;
@@ -2139,12 +2189,71 @@ pub fn follow_their_program(entry_points: &mut [EntryPoint], edges: &[IndexEdge]
     }
 }
 
+fn guards_of_enclosing_scopes(handler: &IndexNode, by_id: &HashMap<&str, &IndexNode>, found: &mut Vec<Guard>) {
+    let mut held = handler.parent.as_deref().and_then(|parent| by_id.get(parent));
+    for _ in 0..16 {
+        let Some(scope) = held else { break };
+        if let Some(registrar) = scope.callback_of.as_deref()
+            && let Some(kind) = guarding(names::leaf(registrar))
+        {
+            found.push(Guard { name: names::leaf(registrar).to_string(), kind, via: "scope" });
+        }
+        held = scope.parent.as_deref().and_then(|parent| by_id.get(parent));
+    }
+}
+
+static RUNS_BEFORE_AN_ACTION: &[&str] = &["append_before_action", "before_action", "before_filter", "prepend_before_action"];
+
+fn listed_in<'a>(call: &'a CallFact, key: &str) -> Option<Vec<&'a str>> {
+    call.literals.iter().find_map(|literal| {
+        let (named, listed) = literal.split_once('=')?;
+        (named.trim() == key).then(|| listed.split(',').map(|word| word.trim().trim_start_matches(':')).collect())
+    })
+}
+
+fn guard_by_filters(entry_points: &mut [EntryPoint], nodes: &[IndexNode], calls: &[CallFact]) {
+    let mut filters: HashMap<&str, Vec<&CallFact>> = HashMap::default();
+    for call in calls.iter().filter(|call| RUNS_BEFORE_AN_ACTION.contains(&call.callee.as_str())) {
+        if let Some(owner) = call.caller.as_deref() {
+            filters.entry(owner).or_default().push(call);
+        }
+    }
+    if filters.is_empty() {
+        return;
+    }
+    let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    for entry in entry_points.iter_mut().filter(|entry| entry.kind == "http") {
+        let Some(handler) = by_id.get(entry.handler.as_str()) else { continue };
+        let Some(before) = handler.parent.as_deref().and_then(|owner| filters.get(owner)) else { continue };
+        for held in guards_run_before(before, &handler.name) {
+            if !entry.guards.contains(&held) {
+                entry.guards.push(held);
+            }
+        }
+    }
+}
+
+fn guards_run_before(filters: &[&CallFact], action: &str) -> Vec<Guard> {
+    filters
+        .iter()
+        .filter(|call| listed_in(call, "only").is_none_or(|only| only.contains(&action)))
+        .filter(|call| listed_in(call, "except").is_none_or(|except| !except.contains(&action)))
+        .filter_map(|call| {
+            let written = call.literals.first()?.trim_start_matches(':');
+            Some(Guard { name: written.to_string(), kind: guarding(written)?, via: "filter" })
+        })
+        .collect()
+}
+
 pub fn guard(entry_points: &mut [EntryPoint], nodes: &[IndexNode]) {
     let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     for entry in entry_points.iter_mut() {
         let Some(handler) = by_id.get(entry.handler.as_str()) else { continue };
         let mut found = Vec::new();
         guards_written_on(handler, "decorator", &mut found);
+        if entry.kind == "http" {
+            guards_of_enclosing_scopes(handler, &by_id, &mut found);
+        }
         if let Some(owner) = handler.parent.as_deref().and_then(|parent| by_id.get(parent))
             && owner.kind.is_type()
         {
@@ -2250,7 +2359,8 @@ pub fn derive(
         .chain(nodes.iter().filter(|node| node.callback_of.is_some()).map(|node| (node.file, node.span.line)))
         .collect();
     let opened = opened_groups(nodes, calls);
-    let by_line = if groups.is_empty() && opened.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
+    let used = used_guards(calls, locals);
+    let by_line = if groups.is_empty() && opened.is_empty() && used.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
     if !groups.is_empty() {
         handed_to_functions(&mut groups, calls, nodes);
     }
@@ -2258,7 +2368,7 @@ pub fn derive(
         true => HashMap::default(),
         false => nodes.iter().map(|node| (node.id.as_str(), node.parent.as_deref())).collect(),
     };
-    let gathering = Gathering { by_line, groups, opened, parents };
+    let gathering = Gathering { by_line, groups, used, opened, parents };
     lap("route groups");
     let prefix_for = |registrar: &str, file: u32, unit: Option<&str>| -> Option<String> {
         let of_the_file = (registered_on_a_router_like(registrar) || mounts.children.contains(&file))
@@ -2386,7 +2496,10 @@ pub fn derive(
                     handler: node.id.clone(),
                     file: node.file,
                     line: node.span.line,
-                    guards: Vec::new(),
+                    guards: match kind {
+                        "http" => gathering.guards_at(node.file, node.span.line, registrar),
+                        _ => Vec::new(),
+                    },
                     registrar: registrar.clone(),
                     unshipped: None,
                 });
@@ -2717,6 +2830,10 @@ pub fn derive(
             .or_else(|| {
                 declared.contains(leaf).then(|| files[registration.file as usize].clone())
             }))
+            .or_else(|| {
+                (kind == "http" && registered_on_a_router(&registration.registrar))
+                    .then(|| files[registration.file as usize].clone())
+            })
         else {
             continue;
         };
@@ -2765,11 +2882,23 @@ pub fn derive(
             }
             continue;
         }
+        let method = match kind == "http" {
+            true => label_method
+                .or_else(|| mapped_method(verb))
+                .or_else(|| {
+                    HTTP_METHODS
+                        .binary_search(&verb.to_ascii_lowercase().as_str())
+                        .is_ok()
+                        .then(|| verb.to_ascii_uppercase())
+                }),
+            false => None,
+        };
         if kind == "http" && handler == files[registration.file as usize] {
             let stands_for_itself = entry_points.iter().any(|entry| {
                 entry.kind == "http"
                     && entry.file == registration.file
                     && entry.path.as_deref() == Some(path.as_str())
+                    && (method.is_none() || entry.method == method)
             });
             if stands_for_itself {
                 continue;
@@ -2783,17 +2912,6 @@ pub fn derive(
                 .to_string(),
             false => label.to_string(),
         };
-        let method = match kind == "http" {
-            true => label_method
-                .or_else(|| mapped_method(verb))
-                .or_else(|| {
-                    HTTP_METHODS
-                        .binary_search(&verb.to_ascii_lowercase().as_str())
-                        .is_ok()
-                        .then(|| verb.to_ascii_uppercase())
-                }),
-            false => None,
-        };
         let served = match (&method, named_of.get(handler.as_str())) {
             (None, Some(view)) if kind == "http" => methods_the_view_serves(view, &members),
             _ => Vec::new(),
@@ -2806,8 +2924,9 @@ pub fn derive(
         let several = methods.len() > 1;
         for method in methods {
             entry_points.push(EntryPoint {
-                id: match (&method, several) {
-                    (Some(method), true) => format!("entry:{handler}:{label}:{method}"),
+                id: match (&method, several, handler == files[registration.file as usize]) {
+                    (Some(method), _, true) => format!("entry:{handler}:{method}:{}", path.as_deref().unwrap_or_default()),
+                    (Some(method), true, false) => format!("entry:{handler}:{label}:{method}"),
                     _ => format!("entry:{handler}:{label}"),
                 },
                 kind,
@@ -2817,7 +2936,10 @@ pub fn derive(
                 handler: handler.clone(),
                 file: registration.file,
                 line: registration.line,
-                guards: guards_through(&registration.through),
+                guards: guards_through(&registration.through)
+                    .into_iter()
+                    .chain(gathering.guards_at(registration.file, registration.line, &registration.registrar))
+                    .collect(),
                 registrar: registration.registrar.clone(),
                 unshipped: None,
             });
@@ -2906,6 +3028,7 @@ pub fn derive(
         });
     }
 
+    guard_by_filters(&mut entry_points, nodes, calls);
     lap("conventional entries");
     let channels = crate::constants::Constants::new(locals);
     let exits_of = |(position, call): (usize, &CallFact)| -> (Vec<ExitPoint>, Vec<String>) {
