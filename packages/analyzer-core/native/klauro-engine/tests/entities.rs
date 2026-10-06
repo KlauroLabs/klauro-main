@@ -177,3 +177,10 @@ fn a_model_is_the_definition_that_reaches_the_orm_base_and_a_namesake_elsewhere_
         vec!["entity:scheduling/models.py:type:CustomSchedule", "entity:shop/models.py:type:Product", "entity:shop/models.py:type:ProductTranslation"]
     );
 }
+
+#[test]
+fn a_view_with_more_fields_than_the_model_it_shares_a_name_with_never_replaces_the_model() {
+    let held = entities("entities/views");
+    let places: Vec<&str> = held.iter().filter_map(|entity| entity["id"].as_str()).collect();
+    assert_eq!(places, vec!["entity:shop/models.py:type:Order"]);
+}

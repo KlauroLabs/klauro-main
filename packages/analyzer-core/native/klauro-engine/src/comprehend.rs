@@ -4679,10 +4679,13 @@ fn entities(
                             .is_some_and(|path| path.to_ascii_lowercase().ends_with(".sql"))
                     })
                 };
+                let stored = |entity: &Entity| entity.persisted_by.is_some();
                 let plainer = in_sql(held.get()) && !in_sql(&entity);
                 let fuller =
                     in_sql(held.get()) == in_sql(&entity) && entity.fields > held.get().fields;
-                if plainer || fuller {
+                let a_view_of_it = stored(held.get()) && !stored(&entity);
+                let the_record = stored(&entity) && !stored(held.get());
+                if !a_view_of_it && (the_record || plainer || fuller) {
                     let named_as = held.get().declared_as.clone();
                     let mut entity = entity;
                     if tabled_name(&entity.declared_as) && !tabled_name(&named_as) {
