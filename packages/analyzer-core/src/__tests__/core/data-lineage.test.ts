@@ -197,7 +197,7 @@ describe('buildDataLineage', () => {
   });
 
   it('links carrying journeys and scores exposure from unguarded paths and external transfer', () => {
-    expect(payment.journeys_carrying).toEqual([
+    expect(payment.entry_point_flows_carrying).toEqual([
       'journey_entry_create_payment',
       'journey_entry_list_reports',
     ]);
@@ -215,7 +215,7 @@ describe('buildDataLineage', () => {
     expect(auditLog.readers[0].via).toBe('lifecycle:read');
     expect(auditLog.external_recipients).toHaveLength(0);
     expect(auditLog.boundaries_crossed).toHaveLength(0);
-    expect(auditLog.journeys_carrying).toHaveLength(0);
+    expect(auditLog.entry_point_flows_carrying).toHaveLength(0);
     expect(auditLog.exposure).toEqual({
       unguarded_paths: 0,
       non_auth_guarded_paths: 0,
@@ -237,7 +237,7 @@ describe('buildDataLineage', () => {
 });
 
 describe('buildDataLineage auth-aware exposure', () => {
-  function journeyWithBoundaries(
+  function entryPointFlowWithBoundaries(
     id: string,
     boundaries: Array<{ name: string; mechanism: string; kind?: 'authentication' | 'authorization' | 'rate-limiting' | 'validation' | 'unknown' }>,
     path: string,
@@ -261,21 +261,21 @@ describe('buildDataLineage auth-aware exposure', () => {
     };
   }
 
-  function lineageFor(testJourneys: CASEntryPointFlow[]) {
+  function lineageFor(testEntryPointFlows: CASEntryPointFlow[]) {
     const lineage = buildDataLineage({
       nodes,
       edges,
       dataEntities: [paymentEntity],
       exitPoints: [],
       entryPoints,
-      entryPointFlows: testJourneys,
+      entryPointFlows: testEntryPointFlows,
     });
     return lineage.find(item => item.entity_id === 'entity_payment')!;
   }
 
   it('treats a throttle-only path as exposed, counted as non-auth guarded', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_throttled', [{ name: 'ThrottlerGuard', mechanism: 'entry-guard', kind: 'rate-limiting' }], '/throttled'),
+      entryPointFlowWithBoundaries('journey_throttled', [{ name: 'ThrottlerGuard', mechanism: 'entry-guard', kind: 'rate-limiting' }], '/throttled'),
     ]);
     expect(result.exposure.unguarded_paths).toBe(1);
     expect(result.exposure.non_auth_guarded_paths).toBe(1);
@@ -286,7 +286,7 @@ describe('buildDataLineage auth-aware exposure', () => {
 
   it('treats an authentication-guarded path as protected', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_auth', [{ name: 'GlobalAuthGuard', mechanism: 'entry-guard', kind: 'authentication' }], '/auth'),
+      entryPointFlowWithBoundaries('journey_auth', [{ name: 'GlobalAuthGuard', mechanism: 'entry-guard', kind: 'authentication' }], '/auth'),
     ]);
     expect(result.exposure.unguarded_paths).toBe(0);
     expect(result.exposure.non_auth_guarded_paths).toBe(0);
@@ -297,7 +297,7 @@ describe('buildDataLineage auth-aware exposure', () => {
 
   it('treats an authorization-guarded path as protected', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_authz', [{ name: 'OrganizationGuard', mechanism: 'entry-guard', kind: 'authorization' }], '/authz'),
+      entryPointFlowWithBoundaries('journey_authz', [{ name: 'OrganizationGuard', mechanism: 'entry-guard', kind: 'authorization' }], '/authz'),
     ]);
     expect(result.exposure.unguarded_paths).toBe(0);
     expect(result.exposure.non_auth_guarded_paths).toBe(0);
@@ -305,7 +305,7 @@ describe('buildDataLineage auth-aware exposure', () => {
 
   it('treats a mixed throttle plus auth path as protected', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_mixed', [
+      entryPointFlowWithBoundaries('journey_mixed', [
         { name: 'ThrottlerGuard', mechanism: 'entry-guard', kind: 'rate-limiting' },
         { name: 'ApiKeyGuard', mechanism: 'entry-guard', kind: 'authentication' },
       ], '/mixed'),
@@ -319,8 +319,8 @@ describe('buildDataLineage auth-aware exposure', () => {
 
   it('falls back to name-based classification when a stored boundary has no kind', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_legacy_throttle', [{ name: 'ThrottlerGuard', mechanism: 'entry-guard' }], '/legacy-throttle'),
-      journeyWithBoundaries('journey_legacy_auth', [{ name: 'JwtAuthGuard', mechanism: 'entry-guard' }], '/legacy-auth'),
+      entryPointFlowWithBoundaries('journey_legacy_throttle', [{ name: 'ThrottlerGuard', mechanism: 'entry-guard' }], '/legacy-throttle'),
+      entryPointFlowWithBoundaries('journey_legacy_auth', [{ name: 'JwtAuthGuard', mechanism: 'entry-guard' }], '/legacy-auth'),
     ]);
     expect(result.exposure.unguarded_paths).toBe(1);
     expect(result.exposure.non_auth_guarded_paths).toBe(1);
@@ -332,7 +332,7 @@ describe('buildDataLineage auth-aware exposure', () => {
 
   it('prefers a stored kind over the boundary name', () => {
     const result = lineageFor([
-      journeyWithBoundaries('journey_stored_kind', [{ name: 'AuthGuard', mechanism: 'entry-guard', kind: 'rate-limiting' }], '/stored-kind'),
+      entryPointFlowWithBoundaries('journey_stored_kind', [{ name: 'AuthGuard', mechanism: 'entry-guard', kind: 'rate-limiting' }], '/stored-kind'),
     ]);
     expect(result.exposure.unguarded_paths).toBe(1);
     expect(result.exposure.non_auth_guarded_paths).toBe(1);

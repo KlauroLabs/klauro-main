@@ -65,7 +65,7 @@ function transferFixture(): CASOutput {
     writers: [{ node_id: 'persist', via: 'source' }],
     readers: [{ node_id: 'handler', via: 'source' }],
     external_recipients: [{ exit_point_id: 'exit-transfer', service: 'delivery-service', via_node: 'observe' }],
-    boundaries_crossed: [], journeys_carrying: [],
+    boundaries_crossed: [], entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, external_transfer: true, sensitive: false },
   }];
   return cas;
@@ -238,7 +238,7 @@ describe('canonical code-unit ICELOT contracts', () => {
     cas.data_lineage = [{
       entity_id: 'entity-order', entity_name: 'Order', sensitive_fields: [],
       writers: [{ node_id: 'persist' } as any], readers: [{ node_id: 'persist' } as any],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     }];
     materializeNodeUnderstandingContracts(cas);
@@ -420,7 +420,7 @@ describe('canonical code-unit ICELOT contracts', () => {
       cas.data_lineage = [{
         entity_id: 'entity-order', entity_name: 'Order', sensitive_fields: [],
         writers: [{ node_id: 'handler' } as any, { node_id: 'persist' } as any],
-        readers: [], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+        readers: [], external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       }];
       cas.flows = [{

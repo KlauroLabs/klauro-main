@@ -67,7 +67,7 @@ describe('canonical comprehension graph', () => {
     expect(result.flows).toHaveLength(1);
     expect(result.flows[0].contract.side_effects.state_changes).toContain('Job created');
     expect(result.flows[0].steps.some(step => /create job/i.test(`${step.name} ${step.description}`))).toBe(true);
-    expect(result.journeyResult.entryPointFlows[0].derived_from_flow_id).toBe(result.flows[0].flow_id);
-    expect(result.dataLineage[0].journeys_carrying).toContain(result.journeyResult.entryPointFlows[0].id);
+    expect(result.entryPointFlowResult.entryPointFlows[0].derived_from_flow_id).toBe(result.flows[0].flow_id);
+    expect(result.dataLineage[0].entry_point_flows_carrying).toContain(result.entryPointFlowResult.entryPointFlows[0].id);
   });
 });

@@ -28,7 +28,7 @@ describe('buildTerminalSignal', () => {
     ];
     const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
     expect(signal.ranked_entities[0].name).toBe('Invoice');
-    expect(signal.ranked_entities[0].write_journeys).toBe(1);
+    expect(signal.ranked_entities[0].write_entry_point_flows).toBe(1);
     expect(signal.ranked_entities[1].name).toBe('User');
   });
 
@@ -39,7 +39,7 @@ describe('buildTerminalSignal', () => {
     ];
     const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
     expect(signal.ranked_entities[0].name).toBe('Order');
-    expect(signal.ranked_entities[0].user_facing_journeys).toBe(1);
+    expect(signal.ranked_entities[0].user_facing_entry_point_flows).toBe(1);
   });
 
   test('node-kind terminals are demoted against entity-kind terminals', () => {
@@ -186,8 +186,8 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
   function orchestratorWithTerminal(entities: string[], stages: string[] = []) {
     const orch = new AnalyzerOrchestrator() as any;
     orch.activeTerminalSignal = {
-      ranked_entities: entities.map(name => ({ name, score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 })),
-      ranked_stages: stages.map(name => ({ name, score: 2, journey_count: 1, min_distance_from_terminal: 1 })),
+      ranked_entities: entities.map(name => ({ name, score: 5, entry_point_flow_count: 2, write_entry_point_flows: 2, read_entry_point_flows: 0, user_facing_entry_point_flows: 1 })),
+      ranked_stages: stages.map(name => ({ name, score: 2, entry_point_flow_count: 1, min_distance_from_terminal: 1 })),
       ranked_capabilities: [],
       domain_seed_text: entities.join(' ').toLowerCase(),
     };
@@ -294,7 +294,7 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
         [],
         '',
         {
-        ranked_entities: [{ name: 'Message', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 }],
+        ranked_entities: [{ name: 'Message', score: 5, entry_point_flow_count: 2, write_entry_point_flows: 2, read_entry_point_flows: 0, user_facing_entry_point_flows: 1 }],
         ranked_stages: [],
         ranked_capabilities: [],
         domain_seed_text: 'message message message message message',

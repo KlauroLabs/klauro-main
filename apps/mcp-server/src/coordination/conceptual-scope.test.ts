@@ -128,7 +128,7 @@ function buildTwoFlowCas(): CASOutput {
       readers: [{ node_id: 'n_validateCart' } as any, { node_id: 'n_validateRefund' } as any],
       external_recipients: [],
       boundaries_crossed: [],
-      journeys_carrying: [],
+      entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];

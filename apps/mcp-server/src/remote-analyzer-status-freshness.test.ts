@@ -21,6 +21,7 @@
  * 'populating', never the previous run's 'ready'/fresh summary.
  */
 
+import { compactSubCasNodes } from './hosted-summary-compaction';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -116,7 +117,7 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     assert.equal(degradedAnalysis.summary.edges, degradedStatus.summary.edge_count);
     const manifest = await loadAnalysisSectionManifest(workspace);
     if (manifest?.tree_projection?.format === 'recursive-cas-section-references') {
-      assert.deepEqual(degradedAnalysis.summary.sub_cas_nodes, manifest.tree_projection.sub_cas_nodes);
+      assert.deepEqual(degradedAnalysis.summary.sub_cas_nodes, compactSubCasNodes(manifest.tree_projection.sub_cas_nodes!));
     }
 
     const queryStarted = path.join(root, 'query-started');

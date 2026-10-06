@@ -577,7 +577,7 @@ function capabilityHasPotentialUserSurface(capability: SystemCapability, entryPo
   );
 }
 
-function capabilityHasUserOutcomeJourney(
+function capabilityHasUserOutcomeEntryPointFlow(
   capability: SystemCapability,
   journeys: CASEntryPointFlow[],
 ): boolean {
@@ -659,7 +659,7 @@ export function classifyCapabilityEvidence(
     } else if (candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core' &&
         capabilityHasExternalReach(candidate, entryPointById) &&
         (candidateHasProductEntity(candidate, entityById, projectTextSignal) ||
-          capabilityHasUserOutcomeJourney(candidate, context.entryPointFlows || []))) {
+          capabilityHasUserOutcomeEntryPointFlow(candidate, context.entryPointFlows || []))) {
       evidenceRole = 'unresolved';
       reasons.push('potential-user-outcome-requires-catalog-resolution');
     } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
@@ -671,7 +671,7 @@ export function classifyCapabilityEvidence(
     } else {
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
-      const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.entryPointFlows || []);
+      const userOutcomeEntryPointFlow = capabilityHasUserOutcomeEntryPointFlow(candidate, context.entryPointFlows || []);
       const deliverySurfaceShapedCandidate =
         /^(?:get|post|put|patch|delete)\s+\//i.test(candidate.name) ||
         /\b(?:click|change|close|submit|mouse\s*leave)\s*$/i.test(candidate.name) ||
@@ -702,7 +702,7 @@ export function classifyCapabilityEvidence(
       const reversibleUserActionLifecycle = capabilityHasReversibleUserActionLifecycle(candidate, entryPointById);
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstPartyCoreOutcome;
-      const terminalOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userOutcomeJourney &&
+      const terminalOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userOutcomeEntryPointFlow &&
         (candidate.evidence_kind !== 'behavior-surface' || operations.length > 1 || firstParty);
       const externallyReachableOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
       const lifecycleOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userFacingLifecycle;

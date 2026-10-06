@@ -17,16 +17,16 @@ import type { CASEntryPointFlow, SystemCapability } from '../../types/cas.types'
 export interface RankedTerminalEntity {
   name: string;
   score: number;
-  journey_count: number;
-  write_journeys: number;
-  read_journeys: number;
-  user_facing_journeys: number;
+  entry_point_flow_count: number;
+  write_entry_point_flows: number;
+  read_entry_point_flows: number;
+  user_facing_entry_point_flows: number;
 }
 
 export interface RankedTerminalStage {
   name: string;
   score: number;
-  journey_count: number;
+  entry_point_flow_count: number;
 
   min_distance_from_terminal: number;
 }
@@ -140,18 +140,18 @@ export function buildTerminalSignal(input: {
       const entry = byEntity.get(name) || {
         name,
         score: 0,
-        journey_count: 0,
-        write_journeys: 0,
-        read_journeys: 0,
-        user_facing_journeys: 0,
+        entry_point_flow_count: 0,
+        write_entry_point_flows: 0,
+        read_entry_point_flows: 0,
+        user_facing_entry_point_flows: 0,
       };
       entry.score += accessWeight * kindMultiplier * kindWeight;
       if (!seenEntities.has(name)) {
         seenEntities.add(name);
-        entry.journey_count += 1;
-        if (isWrite) entry.write_journeys += 1;
-        else entry.read_journeys += 1;
-        if (journey.flow_kind === 'user-facing') entry.user_facing_journeys += 1;
+        entry.entry_point_flow_count += 1;
+        if (isWrite) entry.write_entry_point_flows += 1;
+        else entry.read_entry_point_flows += 1;
+        if (journey.flow_kind === 'user-facing') entry.user_facing_entry_point_flows += 1;
       }
       byEntity.set(name, entry);
     }
@@ -171,14 +171,14 @@ export function buildTerminalSignal(input: {
       const entry = byStage.get(name) || {
         name,
         score: 0,
-        journey_count: 0,
+        entry_point_flow_count: 0,
         min_distance_from_terminal: distance,
       };
       entry.score += weight;
       entry.min_distance_from_terminal = Math.min(entry.min_distance_from_terminal, distance);
       if (!seenStages.has(name)) {
         seenStages.add(name);
-        entry.journey_count += 1;
+        entry.entry_point_flow_count += 1;
       }
       byStage.set(name, entry);
     }
@@ -187,8 +187,8 @@ export function buildTerminalSignal(input: {
   const rankedEntities = Array.from(byEntity.values())
     .sort((a, b) =>
       b.score - a.score ||
-      b.write_journeys - a.write_journeys ||
-      b.journey_count - a.journey_count ||
+      b.write_entry_point_flows - a.write_entry_point_flows ||
+      b.entry_point_flow_count - a.entry_point_flow_count ||
       a.name.localeCompare(b.name)
     )
     .slice(0, TOP_ENTITY_LIMIT);

@@ -70,13 +70,13 @@ test('Depth-behavioral-diff vs codebase-memory: Klauro produces a behavioral del
   assert.ok(authRemoved!.klauroF1 >= 0.99, `auth-removed: Klauro F1 ${authRemoved!.klauroF1.toFixed(3)} < 0.99`);
 
   // journey-broken: Klauro detects the broken (removed) source->sink journey.
-  const journeyBroken = report.results.find(r => r.fixture === 'journey-broken');
-  assert.ok(journeyBroken, 'journey-broken fixture missing');
+  const entryPointFlowBroken = report.results.find(r => r.fixture === 'journey-broken');
+  assert.ok(entryPointFlowBroken, 'journey-broken fixture missing');
   assert.ok(
-    journeyBroken!.klauroKinds.includes('journey-broken'),
-    `journey-broken: Klauro did not flag journey-broken (kinds: ${journeyBroken!.klauroKinds.join(', ') || 'none'})`,
+    entryPointFlowBroken!.klauroKinds.includes('journey-broken'),
+    `journey-broken: Klauro did not flag journey-broken (kinds: ${entryPointFlowBroken!.klauroKinds.join(', ') || 'none'})`,
   );
-  assert.ok(journeyBroken!.klauroF1 >= 0.99, `journey-broken: Klauro F1 ${journeyBroken!.klauroF1.toFixed(3)} < 0.99`);
+  assert.ok(entryPointFlowBroken!.klauroF1 >= 0.99, `journey-broken: Klauro F1 ${entryPointFlowBroken!.klauroF1.toFixed(3)} < 0.99`);
 
   // capability-added: Klauro detects the new capability/journey.
   const capAdded = report.results.find(r => r.fixture === 'capability-added');

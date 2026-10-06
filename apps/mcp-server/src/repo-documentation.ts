@@ -189,7 +189,7 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
     .filter(journey => journey.flow_kind === 'user-facing')
     .slice(0, 8);
   if (journeys.length > 0) {
-    lines.push('Top journeys:');
+    lines.push('Top entry-point flows:');
     lines.push('');
     for (const journey of journeys) {
       const trigger = journey.entry.method && journey.entry.path_or_trigger

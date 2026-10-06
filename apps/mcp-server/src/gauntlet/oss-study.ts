@@ -51,8 +51,10 @@ import * as path from 'path';
 import { analyzeForBench } from './product-analysis';
 import { devDataRoot } from './dev-data';
 import {
+  codebaseMemoryCli,
   codebaseMemoryPath,
   ctagsAvailable,
+  indexCodebaseMemory,
   scipCliPath,
   scipTypescriptAvailable,
   scipSymbolNames,
@@ -162,73 +164,21 @@ async function cloneRepo(url: string, dir: string): Promise<boolean> {
 
 
 
-function cbmProjectId(dir: string): string {
-  return dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
-}
-
-
-
-
 function codebaseMemoryNames(dir: string): string[] | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
-  const project = cbmProjectId(dir);
-  try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-      stdio: 'ignore',
-      timeout: 180_000,
-    });
-  } catch {
-    return null;
-  }
-  let out = '';
-  try {
-    out = execFileSync(
-      bin,
-      ['cli', 'search_graph', '--project', project, '--format', 'json', '--limit', '100000'],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
-    );
-  } catch {
-    return null;
-  }
-  const line = out.split('\n').find(l => l.trim().startsWith('{')) || '';
-  if (!line) return null;
-  let parsed: any;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  const project = indexCodebaseMemory(bin, dir, 180_000);
+  if (!project) return null;
+  const found = codebaseMemoryCli(bin, 'search_graph', { project, limit: 100000 }, 60_000);
+  if (!found || !Array.isArray(found.results)) return null;
   const names = new Set<string>();
-  for (const group of parsed.groups || []) {
-    const filePath = String(group.file || '');
-    if (!isRepositorySourceFile(dir, filePath)) continue;
-    for (const row of group.rows || []) {
-      const name = String(row[0] || '');
-      const label = String(row[1] || '');
-      if (name && (label === 'Function' || label === 'Method')) names.add(name);
-    }
+  for (const item of found.results) {
+    if (!isRepositorySourceFile(dir, String(item.file_path || ''))) continue;
+    const label = String(item.label || '');
+    if (item.name && (label === 'Function' || label === 'Method')) names.add(String(item.name));
   }
   return [...names];
 }
-
-
-
-
 
 function isNonSourceFile(filePath: string): boolean {
   if (!filePath) return false;

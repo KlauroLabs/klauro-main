@@ -39,7 +39,7 @@ function buildLineageCas(): CASOutput {
         readers: [],
         external_recipients: [],
         boundaries_crossed: [],
-        journeys_carrying: [],
+        entry_point_flows_carrying: [],
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       },
       {
@@ -50,7 +50,7 @@ function buildLineageCas(): CASOutput {
         readers: [],
         external_recipients: [],
         boundaries_crossed: [],
-        journeys_carrying: [],
+        entry_point_flows_carrying: [],
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       },
     ],

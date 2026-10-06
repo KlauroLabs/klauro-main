@@ -352,11 +352,11 @@ const EMISSION_SPECS: EmissionSpec[] = [
     fields: ['capabilities', 'product_map', 'system_purpose', 'enhanced_system_purpose', 'domain_concepts'],
   },
   {
-    key: 'journeys',
+    key: 'entry_point_flows',
     label: 'Entry-point flows (C2)',
-    description: 'get_user_journeys projects the canonical flows into a user-facing end-to-end view at read time.',
+    description: 'get_entry_point_flows projects the canonical flows into a user-facing entry-to-effects view at read time.',
     campABCannot:
-      'a entry-point flow is an end-to-end flow across layers; symbol graphs see local calls and embeddings retrieve snippets — neither composes an entry→…→terminal-entity journey.',
+      'an entry-point flow follows one entry across layers to its effects; symbol graphs see local calls and embeddings retrieve snippets — neither composes an entry→…→terminal-entity flow.',
     fields: ['flows', 'steps', 'flow_graph', 'flow_summary'],
   },
   {

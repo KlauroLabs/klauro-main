@@ -116,7 +116,7 @@ function sharedEntity(): CASEntityLineage {
     readers: [{ node_id: 'r1', file: 'apps/reporting/report.service.ts', via: 'lifecycle:read' }],
     external_recipients: [],
     boundaries_crossed: [],
-    journeys_carrying: [],
+    entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
   } as CASEntityLineage;
 }
@@ -131,7 +131,7 @@ function selfOwnedEntity(): CASEntityLineage {
     readers: [{ node_id: 'r2', file: 'apps/checkout/cart.controller.ts', via: 'lifecycle:read' }],
     external_recipients: [],
     boundaries_crossed: [],
-    journeys_carrying: [],
+    entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
   } as CASEntityLineage;
 }

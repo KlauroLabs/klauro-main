@@ -12,7 +12,7 @@ test('lineage summaries expose unresolved transfer counts and exit references', 
   cas.data_lineage = [{
     entity_id: 'entity', entity_name: 'Article', sensitive_fields: [], writers: [], readers: [],
     external_recipients: [], unresolved_exit_point_ids: ['dependency'],
-    boundaries_crossed: [], journeys_carrying: [],
+    boundaries_crossed: [], entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, sensitive: false, external_transfer: false, external_transfer_unresolved: true },
   }];
   const result = getDataLineage(cas, {}) as any;
@@ -33,7 +33,7 @@ test('interface effects use the canonical node contract, not every transfer and 
   cas.data_lineage = [{
     entity_id: 'article', entity_name: 'Article', sensitive_fields: [], writers: [{ node_id: node.id, via: 'update' }], readers: [],
     external_recipients: [{ exit_point_id: 'other-exit', service: 'other-service', via_node: cas.nodes[1].id }],
-    boundaries_crossed: [{ boundary: 'other-boundary', guarded: false }], journeys_carrying: [],
+    boundaries_crossed: [{ boundary: 'other-boundary', guarded: false }], entry_point_flows_carrying: [],
     exposure: { external_transfer: true, sensitive: false, unguarded_paths: 1 },
   }];
   const before = JSON.stringify(cas);
@@ -54,7 +54,7 @@ test('an absent node contract is a visible gap, not permission to infer effects 
   cas.data_lineage = [{
     entity_id: 'article', entity_name: 'Article', sensitive_fields: [], writers: [], readers: [{ node_id: node.id, via: 'lookup' }],
     external_recipients: [{ exit_point_id: 'someone-else', service: 'unrelated-vendor' }],
-    boundaries_crossed: [{ boundary: 'somewhere-else', guarded: true }], journeys_carrying: [],
+    boundaries_crossed: [{ boundary: 'somewhere-else', guarded: true }], entry_point_flows_carrying: [],
     exposure: { external_transfer: true, sensitive: false, unguarded_paths: 0 },
   }];
   const result = getInterfaceSignature(cas, node.id) as any;
@@ -480,7 +480,7 @@ test('getFlowConcepts serializes primary links and requires directed lineage for
       {
         entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
         writers: [{ node_id: 'n_create' }, { node_id: 'n_deploy' }],
-        readers: [], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+        readers: [], external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
         exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
       },
     ],

@@ -81,7 +81,7 @@ AI is flavoring on top of real structure, never the categorizer.
 - **Categories / tags** — `categories`, `tags`.
 
 ### C2 — User journeys & workflows ("how it flows")
-- **User journeys** — `user_journeys` (+ `user_journey_summary`): end-to-end journeys with
+- **User journeys** — `entry_point_flows` (+ `entry_point_flow_summary`): end-to-end journeys with
   the terminal-entity "why".
 - **Workflows** — `workflows` + `workflow_graph`.
 - **Flow** — `flow_summary` + `flow_graph` + `flow_coverage` + `perspectives`.

@@ -1659,7 +1659,7 @@ export function summarizeIncrementalAnalysis(projectPath: string, result: Increm
 
 
 export interface LayeredJobPhaseEvent {
-  phase: 'l0' | 'rest' | 'enrichment';
+  phase: 'l0' | 'rest';
   status: 'succeeded' | 'failed';
   error?: string;
 }

@@ -1793,19 +1793,35 @@ Architectural self-regulation / cohesion check: is what you're about to build (o
 
 ### `get_user_journeys`
 
-Deterministic end-to-end user journeys composed from entry points, call chains, and terminal effects. Each journey shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created").
+Cross-boundary journeys: end-to-end user actions that chain flows across program boundaries, each with ordered steps and the boundary crossings (`ipc`, `event`, `network`, `process`, `queue`) between them. A journey is not a flow; one program's entry point followed to its effects is an entry-point flow (see `get_entry_point_flows`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Project path |
-| `journey_id` | string | no | Specific journey ID for full detail (steps, security boundaries, covering tests) |
-| `kind` | string | no | Filter by journey kind: `user-facing`, `system`, or `scheduled` |
+| `journey_id` | string | no | Specific journey ID for full detail |
+| `kind` | string | no | `representative` lists only representative journeys |
 | `limit` | number | no | Max results when listing (default 25) |
 | `offset` | number | no | Skip first N results (default 0) |
-| `format` | string | no | `json` (default) or `markdown` for a human-readable journey brief |
-| `include_steps` | boolean | no | Include the compact step chain (`node_id`, `name`, `layer`, `depth`) per journey in the list form (default true) |
+| `format` | string | no | `json` (default) or `markdown` |
+| `include_steps` | boolean | no | Include the ordered steps per journey in the list form (default true) |
 
-**Returns:** With `journey_id`: full journey detail with steps, security boundaries, and covering tests. Without: paginated journey summaries with a human-readable title/headline and the compact step chain per journey.
+**Returns:** With `journey_id`: the journey with its steps. Without: paginated journeys ordered by rank. When the analysis has no journeys the list is empty (`total: 0`, `journeys: []`) and `journeys_notice` points to `get_entry_point_flows`; flows are never presented as journeys.
+
+### `get_entry_point_flows`
+
+Deterministic entry-point flows: one program's entry point followed through its steps to its effects, composed from entry points, call chains, and terminal effects. Each flow shows why a path exists via its terminal entities (e.g. "Create work order -> WorkOrder created").
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `flow_id` | string | no | Specific flow ID for full detail (steps, security boundaries, covering tests) |
+| `kind` | string | no | Filter by flow kind: `user-facing`, `system`, or `scheduled` |
+| `limit` | number | no | Max results when listing (default 25) |
+| `offset` | number | no | Skip first N results (default 0) |
+| `format` | string | no | `json` (default) or `markdown` for a human-readable brief |
+| `include_steps` | boolean | no | Include the compact step chain (`node_id`, `name`, `layer`, `depth`) per flow in the list form (default true) |
+
+**Returns:** With `flow_id`: `entry_point_flow` with steps, security boundaries, and covering tests. Without: paginated `entry_point_flows` with a human-readable title/headline and the compact step chain per flow.
 
 ### `get_paradigm_conformance`
 
@@ -1820,7 +1836,7 @@ Statistically detected codebase paradigms (service-mediated data access, entry-s
 
 ### `get_data_lineage`
 
-Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first).
+Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which entry-point flows carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

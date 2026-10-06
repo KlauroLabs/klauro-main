@@ -158,7 +158,7 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
 
 
   const lostGuard = diff.security.newly_unguarded_entries.some(e => e.reason === 'lost-guard');
-  const changedLostAuth = diff.journeys.changed.some(c =>
+  const changedLostAuth = diff.entry_point_flows.changed.some(c =>
     c.what.some(w => /lost auth boundary|removed security boundary/i.test(w)),
   );
   if (lostGuard || changedLostAuth || diff.security.boundaries_removed.length > 0) {
@@ -166,7 +166,7 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
   }
 
 
-  if (diff.journeys.removed.length > 0 || diff.journeys.changed.some(change =>
+  if (diff.entry_point_flows.removed.length > 0 || diff.entry_point_flows.changed.some(change =>
     change.what.some(item => item.startsWith("removed terminal entity"))
   )) kinds.add("journey-broken");
 
@@ -174,7 +174,7 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
 
 
 
-  if (diff.journeys.added.length > 0) {
+  if (diff.entry_point_flows.added.length > 0) {
     kinds.add('capability-added');
   }
 
@@ -200,10 +200,10 @@ async function klauroBehavioralDiff(
   const payload = {
     behavioral_change_kinds: kinds,
     risk_flags: diff.summary.risk_flags,
-    journeys: {
-      added: diff.journeys.added.map(j => j.entry),
-      removed: diff.journeys.removed.map(j => j.entry),
-      changed: diff.journeys.changed,
+    entry_point_flows: {
+      added: diff.entry_point_flows.added.map(j => j.entry),
+      removed: diff.entry_point_flows.removed.map(j => j.entry),
+      changed: diff.entry_point_flows.changed,
     },
     security: {
       boundaries_removed: diff.security.boundaries_removed,
@@ -379,7 +379,7 @@ export async function buildDepthBehavioralDiffReport(): Promise<DepthBehavioralD
     klauroQueryPath:
       'orchestrateAnalysis(before) + orchestrateAnalysis(after) -> diffBehavior(before, after) ' +
       '(diffBehaviorAgainstSnapshot MCP tool): a STRUCTURED behavioral delta over the CAS behavior ' +
-      'pillars — flow-derived journeys (added/removed/changed), security boundaries (newly unguarded / lost guard), ' +
+      'pillars — entry-point flows (added/removed/changed), security boundaries (newly unguarded / lost guard), ' +
       'capabilities (added/removed), data_lineage, paradigm_conformance — with human risk_flags.',
     cbmQueryPath:
       'index_repository(after) -> detect_changes + index_status: detect_changes returns a git changed-FILE ' +

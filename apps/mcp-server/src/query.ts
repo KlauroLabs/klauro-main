@@ -1723,7 +1723,7 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
 
 
 
-function journeyToWorkflowSummary(journey: CASEntryPointFlow) {
+function entryPointFlowToWorkflowSummary(journey: CASEntryPointFlow) {
   return {
     id: journey.id,
     name: journey.name,
@@ -1741,11 +1741,11 @@ export function getWorkflows(cas: CASOutput, workflowId?: string) {
   const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   if (workflowId) {
     const journey = journeys.find(j => j.id === workflowId);
-    return { workflow: journey ? journeyToWorkflowSummary(journey) : null };
+    return { workflow: journey ? entryPointFlowToWorkflowSummary(journey) : null };
   }
   return {
     total: journeys.length,
-    workflows: journeys.map(journeyToWorkflowSummary),
+    workflows: journeys.map(entryPointFlowToWorkflowSummary),
 
 
 
@@ -2133,7 +2133,7 @@ export function getDataLineage(
       external_recipients: item.external_recipients.map(recipient => recipient.service),
       ...(item.unresolved_exit_point_ids?.length ? { unresolved_exit_point_ids: item.unresolved_exit_point_ids } : {}),
       boundaries_crossed: item.boundaries_crossed,
-      journey_count: item.journeys_carrying.length,
+      entry_point_flow_count: item.entry_point_flows_carrying.length,
       exposure: item.exposure,
     })),
   };
@@ -2184,10 +2184,13 @@ export async function diffBehaviorAgainstSnapshot(
     applicable: true,
     compared_to_snapshot: resolvedId,
     analysis_version_notice: baselinePredatesPillars
-      ? `Baseline snapshot '${resolvedId}' was produced by cas_version ${before.cas_version || 'unknown'}, which predates behavior pillars (journeys, lineage, conformance). Added/removed counts may reflect the analyzer upgrade rather than code changes. Re-run analyze_codebase after changes to build current baselines.`
+      ? `Baseline snapshot '${resolvedId}' was produced by cas_version ${before.cas_version || 'unknown'}, which predates behavior pillars (entry-point flows, lineage, conformance). Added/removed counts may reflect the analyzer upgrade rather than code changes. Re-run analyze_codebase after changes to build current baselines.`
       : undefined,
     risk_flags: diff.summary.risk_flags,
     counts: {
+      entry_point_flows_added: diff.entry_point_flows.added.length,
+      entry_point_flows_removed: diff.entry_point_flows.removed.length,
+      entry_point_flows_changed: diff.entry_point_flows.changed.length,
       journeys_added: diff.journeys.added.length,
       journeys_removed: diff.journeys.removed.length,
       journeys_changed: diff.journeys.changed.length,
@@ -3970,14 +3973,14 @@ export function getInterfaceSignature(
 
 
   let purpose: string | undefined;
-  const projectedJourneys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
-  if (projectedJourneys.length > 0) {
-    const signal = buildTerminalSignal({ journeys: projectedJourneys, systemCapabilities: cas.capabilities || [] });
+  const projectedEntryPointFlows = projectEntryPointFlowsFromCas(cas).entryPointFlows;
+  if (projectedEntryPointFlows.length > 0) {
+    const signal = buildTerminalSignal({ journeys: projectedEntryPointFlows, systemCapabilities: cas.capabilities || [] });
     const nameLower = targetNode.name.toLowerCase();
     const matchedEntity = signal.ranked_entities.find(e => e.name.toLowerCase() === nameLower || nameLower.includes(e.name.toLowerCase()));
     const matchedStage = signal.ranked_stages.find(s => s.name.toLowerCase() === nameLower || nameLower.includes(s.name.toLowerCase()));
     if (matchedEntity) {
-      purpose = `Near/at a terminal entity: "${matchedEntity.name}" (score ${matchedEntity.score.toFixed(1)}, ${matchedEntity.write_journeys} write / ${matchedEntity.read_journeys} read journeys) — this is evidence of why the entity exists, not an inferred label.`;
+      purpose = `Near/at a terminal entity: "${matchedEntity.name}" (score ${matchedEntity.score.toFixed(1)}, ${matchedEntity.write_entry_point_flows} write / ${matchedEntity.read_entry_point_flows} read journeys) — this is evidence of why the entity exists, not an inferred label.`;
     } else if (matchedStage) {
       purpose = `Near-terminal stage: "${matchedStage.name}" (${matchedStage.min_distance_from_terminal} step(s) from a terminal, score ${matchedStage.score.toFixed(1)}).`;
     }

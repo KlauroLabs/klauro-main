@@ -5,9 +5,6 @@ describe('no-provider comprehension metadata', () => {
     const orchestrator = new AnalyzerOrchestrator() as any;
     jest.spyOn(orchestrator, 'hasAIInterpretationProviderConfigured').mockReturnValue(false);
 
-    expect(orchestrator.analysisAiEnrichmentStatus(false)).toBe('disabled');
-    expect(orchestrator.analysisAiEnrichmentStatus(true)).toBe('disabled');
-
     const phases = orchestrator.buildAnalysisPhases({
       hasAIProvider: false,
       capabilityDescriptionSource: 'skipped',

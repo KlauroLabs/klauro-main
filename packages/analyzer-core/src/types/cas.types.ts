@@ -1510,9 +1510,9 @@ export interface CASAnalysisFact {
 
 
 
-  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'journey' | 'capability' | 'runtime_link' | 'repository_link';
+  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'entry_point_flow' | 'journey' | 'capability' | 'runtime_link' | 'repository_link';
   subject_id: string;
-  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'journey' | 'capability' | 'runtime-correlation' | 'cross-repository';
+  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'entry_point_flow' | 'journey' | 'capability' | 'runtime-correlation' | 'cross-repository';
   claim: string;
   confidence: number;
   produced_by: string;
@@ -3827,7 +3827,7 @@ export interface CASEntityLineage {
   external_recipients: CASEntityLineageExternalRecipient[];
   unresolved_exit_point_ids?: string[];
   boundaries_crossed: CASEntityLineageBoundary[];
-  journeys_carrying: string[];
+  entry_point_flows_carrying: string[];
   exposure: {
     unguarded_paths: number;
     non_auth_guarded_paths?: number;
@@ -3837,7 +3837,7 @@ export interface CASEntityLineage {
   };
 }
 
-export interface CASBehaviorDiffJourney {
+export interface CASBehaviorDiffEntryPointFlow {
   id: string;
   name: string;
   entry: string;
@@ -3845,14 +3845,27 @@ export interface CASBehaviorDiffJourney {
   guarded: boolean;
 }
 
-export interface CASBehaviorDiffJourneyChange {
+export interface CASBehaviorDiffEntryPointFlowChange {
   id: string;
   name: string;
   what: string[];
 }
 
+export interface CASBehaviorDiffJourney {
+  id: string;
+  label: string;
+  does: string;
+  steps: number;
+}
+
+export interface CASBehaviorDiffJourneyChange {
+  id: string;
+  label: string;
+  what: string[];
+}
+
 export interface CASBehaviorDiffUnguardedEntry {
-  journey_id: string;
+  entry_point_flow_id: string;
   name: string;
   entry: string;
   entities_written: string[];
@@ -3875,6 +3888,11 @@ export interface CASBehaviorDiffParadigmDeviation {
 }
 
 export interface CASBehaviorDiff {
+  entry_point_flows: {
+    added: CASBehaviorDiffEntryPointFlow[];
+    removed: CASBehaviorDiffEntryPointFlow[];
+    changed: CASBehaviorDiffEntryPointFlowChange[];
+  };
   journeys: {
     added: CASBehaviorDiffJourney[];
     removed: CASBehaviorDiffJourney[];
@@ -4740,7 +4758,7 @@ export interface ChangeExecutionLocality {
 }
 
 export interface ChangeSemanticImpact {
-  affected_journeys: Array<{ id: string; name: string; reason: string }>;
+  affected_entry_point_flows: Array<{ id: string; name: string; reason: string }>;
   affected_capabilities: Array<{ id: string; name: string; reason: string }>;
   affected_data_entities: Array<{ id: string; name: string; reason: string }>;
   affected_runtime_links: Array<{ id: string; runtime_signal: string; reason: string }>;

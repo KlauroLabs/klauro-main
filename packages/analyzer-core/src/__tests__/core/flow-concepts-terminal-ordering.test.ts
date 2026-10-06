@@ -73,7 +73,7 @@ function buildFloodedTerminalCas(): CASOutput {
     {
       entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
       writers: [{ node_id: 'n_httpSave' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];

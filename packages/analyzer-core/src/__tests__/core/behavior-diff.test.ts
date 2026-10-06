@@ -6,7 +6,7 @@ import {
   SystemCapability,
 } from '../../types/cas.types';
 
-function journey(overrides: {
+function entryPointFlow(overrides: {
   id: string;
   name: string;
   method: string;
@@ -90,7 +90,7 @@ function lineage(overrides: {
     readers: [],
     external_recipients: overrides.recipients || [],
     boundaries_crossed: [],
-    journeys_carrying: [],
+    entry_point_flows_carrying: [],
     exposure: {
       unguarded_paths: overrides.unguardedPaths || 0,
       external_transfer: overrides.externalTransfer || false,
@@ -106,8 +106,8 @@ function cas(partial: Partial<CASOutput>): CASOutput {
 const authBoundary = { name: 'require_auth', mechanism: 'before_action' };
 
 const guardedBase = [
-  journey({
-    id: 'journey_list',
+  entryPointFlow({
+    id: 'entryPointFlow_list',
     name: 'List invoices',
     method: 'GET',
     path: '/invoices',
@@ -115,8 +115,8 @@ const guardedBase = [
     boundaries: [authBoundary],
     tests: ['spec/invoices_spec.rb'],
   }),
-  journey({
-    id: 'journey_create',
+  entryPointFlow({
+    id: 'entryPointFlow_create',
     name: 'Create invoice',
     method: 'POST',
     path: '/invoices',
@@ -127,13 +127,13 @@ const guardedBase = [
 ];
 
 describe('diffBehavior', () => {
-  it('flags an added journey writing an entity without any security boundary when guarding is the norm', () => {
+  it('flags an added entryPointFlow writing an entity without any security boundary when guarding is the norm', () => {
     const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
       entry_point_flows: [
         ...guardedBase,
-        journey({
-          id: 'journey_bulk',
+        entryPointFlow({
+          id: 'entryPointFlow_bulk',
           name: 'Bulk import invoices',
           method: 'POST',
           path: '/invoices/bulk_import',
@@ -144,12 +144,12 @@ describe('diffBehavior', () => {
 
     const diff = diffBehavior(before, after);
 
-    expect(diff.journeys.added).toHaveLength(1);
-    expect(diff.journeys.added[0].name).toBe('Bulk import invoices');
-    expect(diff.journeys.added[0].guarded).toBe(false);
+    expect(diff.entry_point_flows.added).toHaveLength(1);
+    expect(diff.entry_point_flows.added[0].name).toBe('Bulk import invoices');
+    expect(diff.entry_point_flows.added[0].guarded).toBe(false);
     expect(diff.security.newly_unguarded_entries).toEqual([
       {
-        journey_id: 'journey_bulk',
+        entry_point_flow_id: 'entryPointFlow_bulk',
         name: 'Bulk import invoices',
         entry: 'http:POST /invoices/bulk_import',
         entities_written: ['Invoice'],
@@ -157,17 +157,17 @@ describe('diffBehavior', () => {
       },
     ]);
     expect(diff.summary.risk_flags[0]).toBe(
-      "This change added a journey 'Bulk import invoices' that writes Invoice without crossing the auth boundary."
+      "This change added a entryPointFlow 'Bulk import invoices' that writes Invoice without crossing the auth boundary."
     );
   });
 
-  it('detects a journey losing its auth boundary between analyses', () => {
+  it('detects a entryPointFlow losing its auth boundary between analyses', () => {
     const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
       entry_point_flows: [
         guardedBase[0],
-        journey({
-          id: 'journey_create_v2',
+        entryPointFlow({
+          id: 'entryPointFlow_create_v2',
           name: 'Create invoice',
           method: 'POST',
           path: '/invoices',
@@ -179,14 +179,14 @@ describe('diffBehavior', () => {
 
     const diff = diffBehavior(before, after);
 
-    expect(diff.journeys.added).toHaveLength(0);
-    expect(diff.journeys.removed).toHaveLength(0);
-    expect(diff.journeys.changed).toEqual([
-      { id: 'journey_create_v2', name: 'Create invoice', what: ['lost auth boundary'] },
+    expect(diff.entry_point_flows.added).toHaveLength(0);
+    expect(diff.entry_point_flows.removed).toHaveLength(0);
+    expect(diff.entry_point_flows.changed).toEqual([
+      { id: 'entryPointFlow_create_v2', name: 'Create invoice', what: ['lost auth boundary'] },
     ]);
     expect(diff.security.newly_unguarded_entries).toEqual([
       {
-        journey_id: 'journey_create_v2',
+        entry_point_flow_id: 'entryPointFlow_create_v2',
         name: 'Create invoice',
         entry: 'http:POST /invoices',
         entities_written: ['Invoice'],
@@ -194,7 +194,7 @@ describe('diffBehavior', () => {
       },
     ]);
     expect(diff.summary.risk_flags).toContain(
-      "Journey 'Create invoice' lost its auth boundary while still writing Invoice."
+      "Entry-point flow 'Create invoice' lost its auth boundary while still writing Invoice."
     );
   });
 
@@ -288,9 +288,9 @@ describe('diffBehavior', () => {
 
     const diff = diffBehavior(build(), build());
 
-    expect(diff.journeys.added).toHaveLength(0);
-    expect(diff.journeys.removed).toHaveLength(0);
-    expect(diff.journeys.changed).toHaveLength(0);
+    expect(diff.entry_point_flows.added).toHaveLength(0);
+    expect(diff.entry_point_flows.removed).toHaveLength(0);
+    expect(diff.entry_point_flows.changed).toHaveLength(0);
     expect(diff.security.boundaries_added).toHaveLength(0);
     expect(diff.security.boundaries_removed).toHaveLength(0);
     expect(diff.security.newly_unguarded_entries).toHaveLength(0);
@@ -304,11 +304,11 @@ describe('diffBehavior', () => {
     expect(diff.summary.risk_flags).toHaveLength(0);
   });
 
-  it('reports dropped tests and matches journeys despite changed ids', () => {
+  it('reports dropped tests and matches entryPointFlows despite changed ids', () => {
     const before = cas({ entry_point_flows: guardedBase });
     const after = cas({
       entry_point_flows: [
-        journey({
+        entryPointFlow({
           id: 'regenerated_id_1',
           name: 'List invoices',
           method: 'GET',
@@ -322,11 +322,11 @@ describe('diffBehavior', () => {
 
     const diff = diffBehavior(before, after);
 
-    expect(diff.journeys.added).toHaveLength(0);
-    expect(diff.journeys.removed).toHaveLength(0);
-    expect(diff.journeys.changed).toEqual([
+    expect(diff.entry_point_flows.added).toHaveLength(0);
+    expect(diff.entry_point_flows.removed).toHaveLength(0);
+    expect(diff.entry_point_flows.changed).toEqual([
       { id: 'regenerated_id_1', name: 'List invoices', what: ['tests dropped'] },
     ]);
-    expect(diff.summary.risk_flags).toContain("Journey 'List invoices' lost test coverage.");
+    expect(diff.summary.risk_flags).toContain("Entry-point flow 'List invoices' lost test coverage.");
   });
 });

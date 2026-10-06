@@ -52,7 +52,7 @@ function pillarCas(): any {
           { boundary: 'require_user', guarded: true },
           { boundary: 'public export endpoint', guarded: false },
         ],
-        journeys_carrying: ['journey_create_order'],
+        entry_point_flows_carrying: ['journey_create_order'],
         exposure: { unguarded_paths: 1, external_transfer: true, sensitive: true },
       },
     ],
@@ -211,7 +211,7 @@ test('compareCasVersions orders versions and tolerates unparseable input', () =>
 test('renderHtml embeds pillar sections and payload for a pillar-rich analysis', () => {
   const entry = inspector.buildAnalysisEntry(pillarCas(), indexEntry, '/repo/orders-app');
   const html = inspector.renderHtml({ generated_at: new Date().toISOString(), analysis_count: 1, analyses: [entry] });
-  for (const marker of ['journeysView', 'lineageView', 'conformanceView', 'productView', 'Behavior Pillars', 'Paradigm Conformance', 'Product Map', 'Data Lineage', 'User Journeys']) {
+  for (const marker of ['entryPointFlowsView', 'lineageView', 'conformanceView', 'productView', 'Behavior Pillars', 'Paradigm Conformance', 'Product Map', 'Data Lineage', 'User Journeys']) {
     assert.ok(html.includes(marker), marker);
   }
   assert.ok(html.includes('Create order -> Order created'));

@@ -62,7 +62,7 @@ test('capability tests_present is true when its own entry point backs a tested j
 });
 
 test('capability tests_present is true from a READ-only journey that touches one of its entities (widened entity-touch evidence)', () => {
-  // This is the false-negative this fix closes: journeyPrimaryEntityNames only
+  // This is the false-negative this fix closes: entryPointFlowPrimaryEntityNames only
   // returns an entity a journey WRITES, falling back to reads only when the
   // journey has zero writes anywhere. A capability's own operations may not
   // literally be the entry point a read-only test exercises (e.g. an
@@ -222,12 +222,12 @@ test('INVARIANT: tests_present never contradicts journeys.tests or health.tests 
   const map = buildProductMap(cas);
 
   const capByName = new Map(map.capabilities.map(c => [c.name, c]));
-  const journeyByName = new Map(map.entry_point_flows.top.map(j => [j.name, j]));
+  const entryPointFlowByName = new Map(map.entry_point_flows.top.map(j => [j.name, j]));
 
   // A capability structurally anchored on a real-tests journey must agree
   // with that journey's own reported test count.
   assert.equal(capByName.get('Feed Ingestion')!.tests_present, true);
-  assert.ok((journeyByName.get('Fetch Feed')?.tests ?? 0) > 0);
+  assert.ok((entryPointFlowByName.get('Fetch Feed')?.tests ?? 0) > 0);
 
   // health.tests must reflect test_summary regardless of journey/capability
   // linkage — this is the field the customer report showed as 1151 passing
@@ -491,15 +491,15 @@ test('product map reuses a supplied canonical entry-point flow projection', () =
 
 test('product map keeps entry-point flows and cross-boundary journeys as separate sections', () => {
   const base = { cas_version: '1.11.0', system: { name: 'x', type: 'application' }, nodes: [], edges: [], entry_points: [], exit_points: [] } as unknown as CASOutput;
-  const withoutJourneys = buildProductMap(base);
-  assert.equal(withoutJourneys.journeys.total, 0);
-  assert.equal(withoutJourneys.entry_point_flows.total, 0);
-  const withJourneys = buildProductMap({
+  const withoutEntryPointFlows = buildProductMap(base);
+  assert.equal(withoutEntryPointFlows.journeys.total, 0);
+  assert.equal(withoutEntryPointFlows.entry_point_flows.total, 0);
+  const withEntryPointFlows = buildProductMap({
     ...base,
     causal_journeys: [{ id: 'j1', label: 'Send a message', does: 'types and delivers', rank: 1, representative: true, steps: [{ file: 'a.ts', symbol: 'a', does: 'sends' }] }],
   } as unknown as CASOutput);
-  assert.equal(withJourneys.journeys.total, 1);
-  assert.equal(withJourneys.journeys.representative, 1);
-  assert.equal(withJourneys.journeys.top[0].steps, 1);
-  assert.equal(withJourneys.entry_point_flows.total, 0);
+  assert.equal(withEntryPointFlows.journeys.total, 1);
+  assert.equal(withEntryPointFlows.journeys.representative, 1);
+  assert.equal(withEntryPointFlows.journeys.top[0].steps, 1);
+  assert.equal(withEntryPointFlows.entry_point_flows.total, 0);
 });

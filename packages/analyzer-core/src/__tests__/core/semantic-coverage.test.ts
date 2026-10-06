@@ -82,7 +82,7 @@ function buildFixtureCas(): CASOutput {
     {
       entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
       writers: [{ node_id: 'n_saveOrder' } as any], readers: [{ node_id: 'n_validateOrder' } as any],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
@@ -221,7 +221,7 @@ describe('computeSemanticCoverage — unmapped.flows reason differentiation', ()
     (cas.data_lineage as CASEntityLineage[]).push({
       entity_id: 'entity_widget', entity_name: 'Widget', sensitive_fields: [],
       writers: [{ node_id: 'n_saveWidget' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     });
 

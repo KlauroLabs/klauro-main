@@ -528,7 +528,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
       readers: [{ node_id: 'mcp-route', file: '/tmp/zerac-api/apps/mcp-api/src/access-requests.controller.ts', via: 'access request lookup' }],
       external_recipients: [{ exit_point_id: 'exit:drop-admin', service: 'drop-server', via_node: 'admin-route' }],
       boundaries_crossed: [{ boundary: 'service-auth', guarded: true, guard_kinds: ['authentication'] }],
-      journeys_carrying: ['workflow:agent-registration'],
+      entry_point_flows_carrying: ['workflow:agent-registration'],
       exposure: { unguarded_paths: 0, external_transfer: true, sensitive: true },
     }],
     capabilities: [{

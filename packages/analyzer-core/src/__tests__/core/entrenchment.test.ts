@@ -44,7 +44,7 @@ function sharedOrderEntity(writerId: string, readerId: string): CASEntityLineage
     readers: [{ node_id: readerId, file: 'apps/reporting/report.service.ts', via: 'lifecycle:read' }],
     external_recipients: [],
     boundaries_crossed: [],
-    journeys_carrying: [],
+    entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
   } as CASEntityLineage;
 }

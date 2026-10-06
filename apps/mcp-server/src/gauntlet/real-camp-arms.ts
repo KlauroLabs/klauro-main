@@ -320,34 +320,41 @@ export function startCodebaseMemoryDaemon(bin = codebaseMemoryPath()): CodebaseM
   };
 }
 
-function codebaseMemoryProject(dir: string): string {
-  return dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
+export function codebaseMemoryCli(bin: string, tool: string, params: Record<string, unknown>, timeout = 120_000): any | null {
+  let out = '';
+  try {
+    out = execFileSync(bin, ['cli', tool, JSON.stringify(params)], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+  const line = out.split('\n').find(candidate => candidate.trim().startsWith('{'));
+  if (!line) return null;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+export function indexCodebaseMemory(bin: string, dir: string, timeout = 120_000): string | null {
+  const indexed = codebaseMemoryCli(bin, 'index_repository', { repo_path: dir }, timeout);
+  return typeof indexed?.project === 'string' ? indexed.project : null;
 }
 
 function codebaseMemoryString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-function codebaseMemoryRows(output: string): string[] {
-  const rows: string[] = [];
-  let insideRows = false;
-  for (const line of output.split('\n')) {
-    if (line.startsWith('rows:')) {
-      insideRows = true;
-      continue;
-    }
-    if (line.startsWith('total:')) break;
-    if (insideRows && line.startsWith('  ') && line.trim()) rows.push(line.trim());
-  }
-  return rows;
+function codebaseMemoryQueryRows(bin: string, project: string, query: string): string[] | null {
+  const result = codebaseMemoryCli(bin, 'query_graph', { project, query });
+  if (!result || !Array.isArray(result.rows)) return null;
+  return result.rows.map((row: unknown[]) => String(row[0]));
 }
-
-
-
-
-
-
-
 
 export function codebaseMemoryCallers(
   dir: string,
@@ -357,19 +364,8 @@ export function codebaseMemoryCallers(
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   const t0 = Date.now();
-  const project = codebaseMemoryProject(dir);
-  try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-      stdio: 'ignore',
-      timeout: 120_000,
-    });
-  } catch {
-    return null;
-  }
-
-
-
-
+  const project = indexCodebaseMemory(bin, dir);
+  if (!project) return null;
   const qualifiedSuffix = `.${className}.${methodName}`;
   const query = [
     'MATCH (caller)-[:CALLS]->(callee)',
@@ -377,18 +373,9 @@ export function codebaseMemoryCallers(
     `AND callee.qualified_name ENDS WITH '${codebaseMemoryString(qualifiedSuffix)}'`,
     'RETURN caller.file_path AS caller_file',
   ].join(' ');
-  let out = '';
-  try {
-    out = execFileSync(bin, ['cli', 'query_graph', '--project', project, '--query', query], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
-  const files = new Set<string>();
-  for (const filePath of codebaseMemoryRows(out)) files.add(path.basename(filePath));
-  return { files: [...files], ms: Date.now() - t0 };
+  const rows = codebaseMemoryQueryRows(bin, project, query);
+  if (!rows) return null;
+  return { files: [...new Set(rows.map(filePath => path.basename(filePath)))], ms: Date.now() - t0 };
 }
 
 export function codebaseMemoryRelatedNodeQualifiedNames(
@@ -401,37 +388,16 @@ export function codebaseMemoryRelatedNodeQualifiedNames(
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   const t0 = Date.now();
-  const project = codebaseMemoryProject(dir);
-  try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], { stdio: 'ignore', timeout: 120_000 });
-  } catch {
-    return null;
-  }
+  const project = indexCodebaseMemory(bin, dir);
+  if (!project) return null;
   const query = [
     `MATCH (source)-[:${relation}]->(target:${targetLabel})`,
     `WHERE source.name = '${codebaseMemoryString(sourceName)}'`,
     'RETURN target.qualified_name AS target',
   ].join(' ');
-  try {
-    const output = execFileSync(
-      bin,
-      ['cli', 'query_graph', '--project', project, '--query', query],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    );
-    return { qualifiedNames: codebaseMemoryRows(output), ms: Date.now() - t0 };
-  } catch {
-    return null;
-  }
+  const rows = codebaseMemoryQueryRows(bin, project, query);
+  return rows ? { qualifiedNames: rows, ms: Date.now() - t0 } : null;
 }
-
-
-
-
-
-
-
-
-
 
 export function codebaseMemoryNodesByLabel(
   dir: string,
@@ -440,69 +406,21 @@ export function codebaseMemoryNodesByLabel(
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   const t0 = Date.now();
-  const project = codebaseMemoryProject(dir);
-  try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-      stdio: 'ignore',
-      timeout: 120_000,
-    });
-  } catch {
-    return null;
-  }
-  let out = '';
-  try {
-    out = execFileSync(bin, ['cli', 'search_graph', '--project', project, '--label', label, '--format', 'json', '--limit', '100000'], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
-  const jsonLine = out.split('\n').find(l => l.trim().startsWith('{')) || '{}';
-  let parsed: any;
-  try {
-    parsed = JSON.parse(jsonLine);
-  } catch {
-    return null;
-  }
-  const names: string[] = (parsed.groups || []).flatMap((group: any) =>
-    (group.rows || []).map((row: any) => String(row[0])),
-  );
-  return { names, ms: Date.now() - t0 };
+  const project = indexCodebaseMemory(bin, dir);
+  if (!project) return null;
+  const found = codebaseMemoryCli(bin, 'search_graph', { project, label, limit: 100000 });
+  if (!found || !Array.isArray(found.results)) return null;
+  return { names: found.results.map((item: { name: unknown }) => String(item.name)), ms: Date.now() - t0 };
 }
-
-
-
-
-
-
-
-
 
 export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: number } | null {
   const bin = codebaseMemoryPath();
   if (!bin) return null;
   const t0 = Date.now();
-  const project = codebaseMemoryProject(dir);
-  try {
-    execFileSync(bin, ['cli', 'index_repository', '--repo-path', dir, '--name', project], {
-      stdio: 'ignore',
-      timeout: 120_000,
-    });
-  } catch {
-    return null;
-  }
-  let out = '';
-  try {
-    out = execFileSync(bin, ['cli', 'query_graph', '--project', project, '--query', 'MATCH ()-[relation]->() RETURN DISTINCT type(relation) AS edge_type'], {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
-  const types = codebaseMemoryRows(out);
-  return { types, ms: Date.now() - t0 };
+  const project = indexCodebaseMemory(bin, dir);
+  if (!project) return null;
+  const rows = codebaseMemoryQueryRows(bin, project, 'MATCH ()-[relation]->() RETURN DISTINCT type(relation) AS edge_type');
+  return rows ? { types: rows, ms: Date.now() - t0 } : null;
 }
 
 

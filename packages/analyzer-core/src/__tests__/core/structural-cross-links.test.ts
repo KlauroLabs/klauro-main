@@ -82,7 +82,7 @@ function buildFixtureCas(): CASOutput {
       readers: [{ node_id: 'n_validateOrder' } as any],
       external_recipients: [{ service: 'warehouse-service' } as any],
       boundaries_crossed: [],
-      journeys_carrying: [],
+      entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: true, sensitive: false },
     },
   ];

@@ -1355,9 +1355,9 @@ export class AnalyzerOrchestrator {
       callChains, dataEntities, capabilities: systemCapabilities, behaviorSurfaces,
       changeRisks: enhancedChangeRisks, nodeLookup: this.getNodeLookup(allNodes),
     });
-    const flowsForJourneys = comprehensionGraph.flows;
-    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    let entryPointFlowResult = comprehensionGraph.journeyResult;
+    const flowsForEntryPointFlows = comprehensionGraph.flows;
+    this.rollupSystemCapabilityDependencies(flowsForEntryPointFlows, systemCapabilities, dataEntities);
+    let entryPointFlowResult = comprehensionGraph.entryPointFlowResult;
     const paradigmConformance = buildParadigmConformance({
       nodes: allNodes,
       edges: allEdges,
@@ -1375,7 +1375,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_entryPointFlows', phaseStart);
     await yieldToEventLoop();
     if (allBehaviors.length === 0 && entryPointFlowResult.entryPointFlows.length > 0) {
-      allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(entryPointFlowResult.entryPointFlows));
+      allBehaviors.push(...this.synthesizeBehaviorsFromEntryPointFlows(entryPointFlowResult.entryPointFlows));
     }
     phaseStart = startPhase();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
@@ -1386,13 +1386,13 @@ export class AnalyzerOrchestrator {
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath, allEntryPoints);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
-    const comprehensionJourneys = this.filterPrimaryProductJourneys(
+    const comprehensionEntryPointFlows = this.filterPrimaryProductEntryPointFlows(
       entryPointFlowResult.entryPointFlows, allEntryPoints, allNodes, projectPath
     );
     await yieldToEventLoop();
     const comprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, allNodes, projectPath);
     const terminalSignal = buildTerminalSignal({
-      journeys: comprehensionJourneys,
+      journeys: comprehensionEntryPointFlows,
       systemCapabilities,
     });
     await yieldToEventLoop();
@@ -1405,7 +1405,7 @@ export class AnalyzerOrchestrator {
       frameworkNames,
       externalServiceNames,
       systemCapabilities,
-      flowsForJourneys,
+      flowsForEntryPointFlows,
       systemName,
       projectTextSignal,
       allNodes,
@@ -1480,7 +1480,7 @@ export class AnalyzerOrchestrator {
         dependencyNamesForAI,
         comprehensionDataEntities,
         projectTextSignal,
-        comprehensionJourneys,
+        comprehensionEntryPointFlows,
         independentlyDeployableCount,
         allNodes,
         allEdges,
@@ -1604,7 +1604,7 @@ export class AnalyzerOrchestrator {
       callChains, dataEntities, capabilities: canonicalSystemCapabilities, behaviorSurfaces,
       changeRisks: enhancedChangeRisks, nodeLookup: this.getNodeLookup(allNodes),
     });
-    entryPointFlowResult = finalizedComprehensionGraph.journeyResult;
+    entryPointFlowResult = finalizedComprehensionGraph.entryPointFlowResult;
     dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
@@ -2579,6 +2579,7 @@ export class AnalyzerOrchestrator {
     this.dedupeEntryPointTwins(entryPoints, projectPath, edges);
     linkHttpTestCoverage(nodes, edges, entryPoints);
     this.normalizeNodeMetrics(nodes);
+    markEntryPointNodes(nodes, entryPoints);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     assignNodeRoles({ nodes, edges, entry_points: entryPoints, exit_points: exitPoints, resetDerivedRoles: true });
     const categories = previousOutput.categories || {};
@@ -2645,9 +2646,9 @@ export class AnalyzerOrchestrator {
       capabilities: systemCapabilities, behaviorSurfaces, changeRisks: enhancedChangeRisks,
       nodeLookup: this.getNodeLookup(nodes),
     });
-    const flowsForJourneys = comprehensionGraph.flows;
-    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    let entryPointFlowResult = comprehensionGraph.journeyResult;
+    const flowsForEntryPointFlows = comprehensionGraph.flows;
+    this.rollupSystemCapabilityDependencies(flowsForEntryPointFlows, systemCapabilities, dataEntities);
+    let entryPointFlowResult = comprehensionGraph.entryPointFlowResult;
     const paradigmConformance = buildParadigmConformance({
       nodes,
       edges,
@@ -2691,7 +2692,7 @@ export class AnalyzerOrchestrator {
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
-    const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
+    const incrComprehensionEntryPointFlows = this.filterPrimaryProductEntryPointFlows(
       entryPointFlowResult.entryPointFlows, entryPoints, nodes, projectPath
     );
     const incrComprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, nodes, projectPath);
@@ -2704,12 +2705,12 @@ export class AnalyzerOrchestrator {
       incrFrameworkNames,
       incrExternalServiceNames,
       systemCapabilities,
-      flowsForJourneys,
+      flowsForEntryPointFlows,
       previousOutput.system?.name || path.basename(projectPath),
       incrProjectTextSignal,
       nodes,
       projectPath,
-      buildTerminalSignal({ journeys: incrComprehensionJourneys, systemCapabilities }),
+      buildTerminalSignal({ journeys: incrComprehensionEntryPointFlows, systemCapabilities }),
       exitPoints
     );
     const incrementalCapabilityCandidates = systemCapabilities.map(capability => ({
@@ -2720,7 +2721,7 @@ export class AnalyzerOrchestrator {
     }));
     const incrementalCandidateSnapshot = this.filterIsolatedUncorroboratedCandidates(
       incrementalCapabilityCandidates,
-      incrComprehensionJourneys,
+      incrComprehensionEntryPointFlows,
       incrProjectTextSignal,
     );
     const incrementalDescriptionEvidence = this.catalogEvidenceCandidates(
@@ -2729,10 +2730,10 @@ export class AnalyzerOrchestrator {
       incrComprehensionDataEntities,
       String(enhancedSystemPurpose.artifact_type || 'app'),
       incrProjectTextSignal,
-      { entryPoints, nodes, entryPointFlows: incrComprehensionJourneys },
+      { entryPoints, nodes, entryPointFlows: incrComprehensionEntryPointFlows },
     );
     const incrementalNarrativeCandidates = selectCapabilityCatalogPromptCandidates(
-      this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionJourneys),
+      this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionEntryPointFlows),
       catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(incrementalDescriptionEvidence)),
     );
     const incrementalAIRefreshDecision = firstPartyProductEvidenceRefreshDecision(
@@ -2757,7 +2758,7 @@ export class AnalyzerOrchestrator {
       dataEntities,
     );
     const skipSemanticRefresh = shouldReuseComprehensionForInertPrivateAddition(comprehensionInertAddition, incrementalAIRefreshDecision.reason);
-    const reusableCapabilities = this.reusePreviousCapabilityCatalog(previousOutput.capabilities || [], systemCapabilities, { previousEntryPoints: previousOutput.entry_points || [], currentEntryPoints: entryPoints, currentFlows: flowsForJourneys });
+    const reusableCapabilities = this.reusePreviousCapabilityCatalog(previousOutput.capabilities || [], systemCapabilities, { previousEntryPoints: previousOutput.entry_points || [], currentEntryPoints: entryPoints, currentFlows: flowsForEntryPointFlows });
     const refreshCapabilityGrounding = reusableCapabilities.length < (previousOutput.capabilities || []).length;
     const refreshAIInterpretation = (incrementalAIRefreshRequested && !skipSemanticRefresh) || refreshCapabilityGrounding;
     writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${refreshCapabilityGrounding ? 'previous-capability-grounding-changed' : skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
@@ -2776,7 +2777,7 @@ export class AnalyzerOrchestrator {
         this.libraryNamesForInterpretation(libraries),
         incrComprehensionDataEntities,
         incrProjectTextSignal,
-        incrComprehensionJourneys,
+        incrComprehensionEntryPointFlows,
         incrementalDeployableCount,
         nodes,
         edges,
@@ -2865,7 +2866,7 @@ export class AnalyzerOrchestrator {
       capabilities: systemCapabilities, behaviorSurfaces, changeRisks: enhancedChangeRisks,
       nodeLookup: this.getNodeLookup(nodes),
     });
-    entryPointFlowResult = finalizedComprehensionGraph.journeyResult;
+    entryPointFlowResult = finalizedComprehensionGraph.entryPointFlowResult;
     dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
@@ -3698,7 +3699,7 @@ export class AnalyzerOrchestrator {
       addedNodes.length,
       modifiedNodes.length,
       deletedNodes.length,
-      affectedEntryPoints.length + semanticImpact.affected_journeys.length
+      affectedEntryPoints.length + semanticImpact.affected_entry_point_flows.length
     );
 
     return {
@@ -3942,7 +3943,7 @@ export class AnalyzerOrchestrator {
       addedNodes.length,
       modifiedNodes.length,
       deletedNodes.length,
-      affectedEntryPoints.length + semanticImpact.affected_journeys.length
+      affectedEntryPoints.length + semanticImpact.affected_entry_point_flows.length
     );
 
     return {
@@ -6493,7 +6494,7 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  private filterPrimaryProductJourneys(
+  private filterPrimaryProductEntryPointFlows(
     journeys: CASEntryPointFlow[],
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
@@ -7878,7 +7879,7 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
-  private synthesizeBehaviorsFromJourneys(journeys: CASEntryPointFlow[]): CASBehavior[] {
+  private synthesizeBehaviorsFromEntryPointFlows(journeys: CASEntryPointFlow[]): CASBehavior[] {
     return journeys.slice(0, 100).map(journey => {
       const steps = (journey.steps || []).slice(0, 24);
       const flow = steps.slice(0, -1).map((step, i) => ({
@@ -8171,18 +8172,18 @@ export class AnalyzerOrchestrator {
     return token;
   }
 
-  private buildJourneyTerminologyTokens(
+  private buildEntryPointFlowTerminologyTokens(
     entryPointFlows: CASEntryPointFlow[],
     projectTextSignal?: ProjectTextSignal,
   ): Set<string> {
-    const journeyTokens = new Set<string>();
+    const entryPointFlowTokens = new Set<string>();
     const addFromText = (text: string) => {
       for (const token of String(text || '')
         .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|supports?|enables?|creates?|updates?|deletes?|views?)\s+/i, '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .split(/[^a-z0-9]+/)) {
-        if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
+        if (token.length > 2 && !this.isGenericCapabilityToken(token)) entryPointFlowTokens.add(this.stemTerminologyToken(token));
       }
     };
     for (const journey of entryPointFlows) addFromText(journey.name || '');
@@ -8191,7 +8192,7 @@ export class AnalyzerOrchestrator {
       addFromText(projectTextSignal.summary || '');
       addFromText(projectTextSignal.manifestDescription || '');
     }
-    return journeyTokens;
+    return entryPointFlowTokens;
   }
 
   private candidateSubjectTerminologyTokens(candidate: SystemCapability): string[] {
@@ -8211,11 +8212,11 @@ export class AnalyzerOrchestrator {
     candidates: SystemCapability[],
     entryPointFlows: CASEntryPointFlow[],
   ): SystemCapability[] {
-    const journeyTokens = this.buildJourneyTerminologyTokens(entryPointFlows);
+    const entryPointFlowTokens = this.buildEntryPointFlowTerminologyTokens(entryPointFlows);
     const terminality = this.catalogCandidateTerminality(candidates);
     const scored = candidates.map(candidate => {
       const subjectTokens = this.candidateSubjectTerminologyTokens(candidate);
-      const journeyCorroboration = new Set(subjectTokens.filter(token => journeyTokens.has(token))).size;
+      const entryPointFlowCorroboration = new Set(subjectTokens.filter(token => entryPointFlowTokens.has(token))).size;
       const entityCount = (candidate.related_entities || []).length;
       const externalOps = (candidate.operations || [])
         .filter(operation => operation.entry_point_type && operation.entry_point_type !== 'internal').length;
@@ -8224,7 +8225,7 @@ export class AnalyzerOrchestrator {
         : candidate.evidence_role === 'unresolved' || candidate.evidence_role === undefined ? 1
           : candidate.evidence_role === 'supporting-mechanism' ? 2 : 3;
       const distanceToTerminal = terminality.get(candidate.id)?.distance_to_terminal ?? Number.MAX_SAFE_INTEGER;
-      return { candidate, evidenceRoleRank, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, distanceToTerminal, entityCount, journeyCorroboration, categoryRank, externalOps };
+      return { candidate, evidenceRoleRank, grounded: entityCount > 0 || entryPointFlowCorroboration > 0 ? 0 : 1, distanceToTerminal, entityCount, entryPointFlowCorroboration, categoryRank, externalOps };
     });
     return scored
       .sort((a, b) =>
@@ -8232,7 +8233,7 @@ export class AnalyzerOrchestrator {
         a.grounded - b.grounded ||
         a.distanceToTerminal - b.distanceToTerminal ||
         b.entityCount - a.entityCount ||
-        b.journeyCorroboration - a.journeyCorroboration ||
+        b.entryPointFlowCorroboration - a.entryPointFlowCorroboration ||
         a.categoryRank - b.categoryRank ||
         b.externalOps - a.externalOps ||
         (b.candidate.operations || []).length - (a.candidate.operations || []).length ||
@@ -10195,7 +10196,7 @@ export class AnalyzerOrchestrator {
         return false;
       });
     };
-    const domainTokens = this.buildJourneyTerminologyTokens(entryPointFlows, projectTextSignal);
+    const domainTokens = this.buildEntryPointFlowTerminologyTokens(entryPointFlows, projectTextSignal);
     return candidates.filter(candidate => {
       if (!inScope(candidate)) return true;
       if (hasCrossCandidateReference(candidate)) return true;
@@ -11135,7 +11136,7 @@ export class AnalyzerOrchestrator {
     const currentTokens = new Set(currentDomainTokens.map(stem));
 
     const writeEntities = (this.activeTerminalSignal?.ranked_entities || [])
-      .filter(entity => entity.write_journeys > 0);
+      .filter(entity => entity.write_entry_point_flows > 0);
     const terminalVocabulary = new Set<string>();
     for (const entity of writeEntities) {
       for (const token of this.humanizePascalName(entity.name).toLowerCase().split(/[^a-z0-9]+/)) {
@@ -11300,7 +11301,7 @@ export class AnalyzerOrchestrator {
     const entityTargetContext = context.includeEntities ? {
       relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || [], entities),
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
-      journeysByEntityName: this.buildJourneysByEntityName(context.entryPointFlows || []),
+      entryPointFlowsByEntityName: this.buildEntryPointFlowsByEntityName(context.entryPointFlows || []),
     } : undefined;
     const entityTargets = context.includeEntities
       ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext))
@@ -11695,12 +11696,12 @@ export class AnalyzerOrchestrator {
     context?: {
       relationsByName?: Map<string, Array<{ targetName: string; relationType: string; field?: string }>>;
       capabilitiesByEntityId?: Map<string, string[]>;
-      journeysByEntityName?: Map<string, string[]>;
+      entryPointFlowsByEntityName?: Map<string, string[]>;
     }
   ): DescriptionTarget {
     const relations = context?.relationsByName?.get(entity.name.toLowerCase()) || [];
     const servingCapabilities = context?.capabilitiesByEntityId?.get(entity.id) || [];
-    const journeys = context?.journeysByEntityName?.get(entity.name.toLowerCase()) || [];
+    const journeys = context?.entryPointFlowsByEntityName?.get(entity.name.toLowerCase()) || [];
     const creates = entity.lifecycle.created_by.length;
     const reads = entity.lifecycle.read_by.length;
     const updates = entity.lifecycle.updated_by.length;
@@ -11772,14 +11773,14 @@ export class AnalyzerOrchestrator {
     return byEntityId;
   }
 
-  private buildJourneysByEntityName(journeys: CASEntryPointFlow[]): Map<string, string[]> {
+  private buildEntryPointFlowsByEntityName(journeys: CASEntryPointFlow[]): Map<string, string[]> {
     const byEntityName = new Map<string, string[]>();
-    const add = (entityName: string | undefined, journeyName: string) => {
+    const add = (entityName: string | undefined, entryPointFlowName: string) => {
       const key = String(entityName || '').toLowerCase().trim();
       if (!key) return;
       const list = byEntityName.get(key);
-      if (list) { if (!list.includes(journeyName)) list.push(journeyName); }
-      else byEntityName.set(key, [journeyName]);
+      if (list) { if (!list.includes(entryPointFlowName)) list.push(entryPointFlowName); }
+      else byEntityName.set(key, [entryPointFlowName]);
     };
     for (const journey of journeys) {
       for (const name of journey.terminal_effects?.entities_written || []) add(name, journey.name);
@@ -13391,7 +13392,7 @@ export class AnalyzerOrchestrator {
       ? {
         ...(rankedTerminalOutputs.length > 0 ? {
           terminalOutputs: rankedTerminalOutputs.slice(0, 8).map(entity =>
-            `${entity.name} (${entity.write_journeys > 0 ? 'written' : 'read'} by ${entity.journey_count} journeys)`),
+            `${entity.name} (${entity.write_entry_point_flows > 0 ? 'written' : 'read'} by ${entity.entry_point_flow_count} journeys)`),
         } : {}),
         nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 6).map(stage => stage.name),
         terminalCapabilities: this.activeTerminalSignal.ranked_capabilities.slice(0, 6).map(cap => cap.name),
@@ -23829,11 +23830,11 @@ export class AnalyzerOrchestrator {
         }];
 
       facts.push({
-        id: `fact_journey_${journey.id}`,
-        subject_type: 'journey',
+        id: `fact_entry_point_flow_${journey.id}`,
+        subject_type: 'entry_point_flow',
         subject_id: journey.id,
-        fact_type: 'journey',
-        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.flow_kind} journey`,
+        fact_type: 'entry_point_flow',
+        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.flow_kind} entry-point flow`,
         confidence: 0.75,
         produced_by: analyzerName,
         evidence

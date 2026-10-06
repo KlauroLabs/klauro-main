@@ -204,7 +204,7 @@ function buildFixtureCas(): CASOutput {
       readers: [{ node_id: 'n_validateOrder' } as any],
       external_recipients: [{ service: 'warehouse-service' } as any],
       boundaries_crossed: [],
-      journeys_carrying: [],
+      entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: true, sensitive: false },
     },
   ];
@@ -801,7 +801,7 @@ function buildRelationshipFixtureCas(): CASOutput {
       entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
       writers: [{ node_id: 'n_save' } as any, { node_id: 'n_ship' } as any],
       readers: [{ node_id: 'n_emit' } as any, { node_id: 'n_ship' } as any],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
@@ -1005,7 +1005,7 @@ function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
     {
       entity_id: 'entity_invoice', entity_name: 'Invoice', sensitive_fields: [],
       writers: [{ node_id: 'n_writeInvoice' } as any],
-      readers: [{ node_id: 'n_readInvoice' } as any], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      readers: [{ node_id: 'n_readInvoice' } as any], external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];
@@ -1469,7 +1469,7 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const data_lineage: CASEntityLineage[] = [{
       entity_id: 'entity_booking', entity_name: 'Booking', sensitive_fields: [],
       writers: [{ node_id: 'n_createBooking' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     }];
     const call_chains = [{
@@ -1625,7 +1625,7 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const data_lineage: CASEntityLineage[] = [{
       entity_id: 'entity_shippingrate', entity_name: 'ShippingRate', sensitive_fields: [],
       writers: [], readers: [{ node_id: 'n_calc' } as any],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     }];
     const cas = {

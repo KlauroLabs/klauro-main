@@ -7120,28 +7120,28 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
   }
 
   for (const journey of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
-    const journeyWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.flow_kind === 'user-facing' ? 2 : 1;
+    const entryPointFlowWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.flow_kind === 'user-facing' ? 2 : 1;
 
-    const externalCommandNames = journeyExternalCommandNames(journey);
+    const externalCommandNames = entryPointFlowExternalCommandNames(journey);
     const isExternalCommand = (name: unknown) => matchesExternalCommandName(externalCommandNames, name);
     for (const entity of journey.terminal_entities || []) {
       if (isExternalCommand(entity.name)) continue;
       const writeWeight = entity.access === 'created' || entity.access === 'updated' || entity.access === 'deleted' ? 14 : 6;
-      addTerminalNameSeed(entity.name, writeWeight + journeyWeight, `terminal_entity:${journey.name || journey.id}:${entity.name}:${entity.access}`);
+      addTerminalNameSeed(entity.name, writeWeight + entryPointFlowWeight, `terminal_entity:${journey.name || journey.id}:${entity.name}:${entity.access}`);
     }
     for (const entity of journey.terminal_effects?.entities_written || []) {
       if (isExternalCommand(entity)) continue;
-      addTerminalNameSeed(entity, 14 + journeyWeight, `terminal_write:${journey.name || journey.id}:${entity}`);
+      addTerminalNameSeed(entity, 14 + entryPointFlowWeight, `terminal_write:${journey.name || journey.id}:${entity}`);
     }
     for (const entity of journey.terminal_effects?.entities_read || []) {
       if (isExternalCommand(entity)) continue;
-      addTerminalNameSeed(entity, 5 + journeyWeight, `terminal_read:${journey.name || journey.id}:${entity}`);
+      addTerminalNameSeed(entity, 5 + entryPointFlowWeight, `terminal_read:${journey.name || journey.id}:${entity}`);
     }
-    for (const message of journey.terminal_effects?.messages_emitted || []) addName(message, 8 + journeyWeight, `terminal_message:${journey.name || journey.id}:${message}`);
+    for (const message of journey.terminal_effects?.messages_emitted || []) addName(message, 8 + entryPointFlowWeight, `terminal_message:${journey.name || journey.id}:${message}`);
     for (const service of journey.terminal_effects?.external_services || []) {
 
       if (isExternalCommandService(service)) continue;
-      addName(service, 4 + journeyWeight, `terminal_external:${journey.name || journey.id}:${service}`);
+      addName(service, 4 + entryPointFlowWeight, `terminal_external:${journey.name || journey.id}:${service}`);
     }
   }
 
@@ -7151,7 +7151,7 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
   return profile;
 }
 
-function journeyExternalCommandNames(journey: any): Set<string> {
+function entryPointFlowExternalCommandNames(journey: any): Set<string> {
   const names = new Set<string>();
   for (const service of journey?.terminal_effects?.external_services || []) {
     const match = String(service || '').match(/^\s*external command:\s*(.+)$/i);

@@ -87,19 +87,19 @@ function buildCliOneHopCas(): CASOutput {
     {
       entity_id: 'entity_fmcsa_data_transfer', entity_name: 'FMCSADataTransfer', sensitive_fields: [],
       writers: [{ node_id: 'n_data_transfer_manager' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
     {
       entity_id: 'entity_fmcsa_data_transfer', entity_name: 'FMCSADataTransfer', sensitive_fields: [],
       writers: [{ node_id: 'n_data_transfer_manager_2' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
     {
       entity_id: 'entity_fmcsa_data_transfer', entity_name: 'FMCSADataTransfer', sensitive_fields: [],
       writers: [{ node_id: 'n_data_transfer_manager_3' } as any], readers: [],
-      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      external_recipients: [], boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];

@@ -264,7 +264,7 @@ structural in the same way the persisted-entity gate now is.
   classification logic three times.
 - **Flow's M:N step model is architecturally present**, matching the spec's
   "a step may span many functions, one function, or part of one" — flow
-  concepts and journey steps (`CASUserJourneyStep`, cas.types.ts:3459) are
+  concepts and journey steps (`CASEntryPointFlowStep`, cas.types.ts:3459) are
   built as their own structures rather than 1:1 with functions. Whether this
   is fully M:N in *both directions* end-to-end, versus mostly 1-flow-step-to-
   1-function in practice, was **not verified against real output** in this
@@ -370,7 +370,7 @@ The following diagnosis describes the older node-only fusion path. It is retaine
 ### What is absent
 
 - Any join between `RuntimeFact`/`route_metrics` and `CASFlow` /
-  `CASUserJourneyStep` / `SystemCapability` records. Since flows/steps are
+  `CASEntryPointFlowStep` / `SystemCapability` records. Since flows/steps are
   themselves graphs over nodes (per Tier 3), the join is theoretically
   cheap — a `RuntimeFact.node_id` could be resolved against
   `flow.steps[].node_ids` (or equivalent) to roll counts up — but nothing in

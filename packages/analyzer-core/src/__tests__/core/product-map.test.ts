@@ -14,7 +14,7 @@ test('keeps unresolved transfer exposure visible without asserting a destination
       entity_id: 'entity', entity_name: 'Article', sensitive_fields: [],
       writers: [], readers: [], external_recipients: [],
       unresolved_exit_point_ids: ['dependency'],
-      boundaries_crossed: [], journeys_carrying: [],
+      boundaries_crossed: [], entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, sensitive: false, external_transfer: false, external_transfer_unresolved: true },
     }],
   } as unknown as CASOutput;
@@ -105,7 +105,7 @@ const lineage: CASEntityLineage[] = [
     readers: [],
     external_recipients: [{ exit_point_id: 'exit_stripe', service: 'stripe' }],
     boundaries_crossed: [],
-    journeys_carrying: ['j_charge'],
+    entry_point_flows_carrying: ['j_charge'],
     exposure: { unguarded_paths: 1, external_transfer: true, sensitive: true },
   },
   {
@@ -116,7 +116,7 @@ const lineage: CASEntityLineage[] = [
     readers: [],
     external_recipients: [],
     boundaries_crossed: [],
-    journeys_carrying: [],
+    entry_point_flows_carrying: [],
     exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
   },
 ];
@@ -555,7 +555,7 @@ describe('journey attachment discriminates on primary (terminal produced) entiti
     },
   ];
 
-  const discriminationJourneys: CASEntryPointFlow[] = [
+  const discriminationEntryPointFlows: CASEntryPointFlow[] = [
     // Writes UserProfile terminally, only READS EconomyTransaction mid-chain —
     // the mtg fan-out shape (socket journeys pasted onto every economy cap).
     journey({
@@ -589,25 +589,25 @@ describe('journey attachment discriminates on primary (terminal produced) entiti
     analyzer_contributions: [],
     progressive_levels: {} as any,
     capabilities: discriminationCapabilities,
-    entry_point_flows: discriminationJourneys,
+    entry_point_flows: discriminationEntryPointFlows,
   } as unknown as CASOutput;
 
   const map = buildProductMap(cas);
-  const journeyNamesFor = (capabilityName: string) =>
+  const entryPointFlowNamesFor = (capabilityName: string) =>
     (map.capabilities.find(capability => capability.name === capabilityName)?.entry_point_flows || []).map(j => j.name);
 
   it('a journey with terminal entity A attaches only to the A-anchored capability', () => {
-    expect(journeyNamesFor('Economy')).toContain('Purchase item');
-    expect(journeyNamesFor('Profiles')).not.toContain('Purchase item');
+    expect(entryPointFlowNamesFor('Economy')).toContain('Purchase item');
+    expect(entryPointFlowNamesFor('Profiles')).not.toContain('Purchase item');
   });
 
   it('mid-chain reads do not fan a writing journey onto every capability sharing the entity', () => {
-    expect(journeyNamesFor('Profiles')).toContain('Socket presence update');
-    expect(journeyNamesFor('Economy')).not.toContain('Socket presence update');
+    expect(entryPointFlowNamesFor('Profiles')).toContain('Socket presence update');
+    expect(entryPointFlowNamesFor('Economy')).not.toContain('Socket presence update');
   });
 
   it('a read-only journey attaches via its terminal read subject', () => {
-    expect(journeyNamesFor('Economy')).toContain('View balance');
-    expect(journeyNamesFor('Profiles')).not.toContain('View balance');
+    expect(entryPointFlowNamesFor('Economy')).toContain('View balance');
+    expect(entryPointFlowNamesFor('Profiles')).not.toContain('View balance');
   });
 });

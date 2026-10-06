@@ -77,7 +77,7 @@ function compactCandidate(value: unknown, required: boolean): Record<string, unk
   };
 }
 
-function compactJourney(value: unknown): Record<string, unknown> {
+function compactEntryPointFlow(value: unknown): Record<string, unknown> {
   const journey = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
     name: boundedText(journey.name, 240),
@@ -166,7 +166,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     };
   });
   const boundedFacts: Record<string, unknown> = {
-    entry_point_flows: (Array.isArray(facts.entry_point_flows) ? facts.entry_point_flows : []).slice(0, 12).map(compactJourney),
+    entry_point_flows: (Array.isArray(facts.entry_point_flows) ? facts.entry_point_flows : []).slice(0, 12).map(compactEntryPointFlow),
     entities: (Array.isArray(facts.entities) ? facts.entities : []).slice(0, 18).map(compactEntity),
     candidate_route_areas: [] as Record<string, unknown>[],
     required_behavior_candidate_ids: [] as string[],

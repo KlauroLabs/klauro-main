@@ -1713,14 +1713,14 @@ test('agent context carries target-scoped pillar digests when pillar data touche
       target: 'UsersService',
     });
 
-    const journeyContext = context.work_context.entry_point_flow_context;
-    assert.ok(journeyContext, 'entry_point_flow_context missing');
-    assert.equal(journeyContext.total_matching, 1);
-    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
-    assert.equal(journeyContext.entry_point_flows[0].kind, 'user-facing');
-    assert.ok(journeyContext.entry_point_flows[0].boundaries.includes('JWT auth'));
-    assert.equal(journeyContext.entry_point_flows[0].tests, 1);
-    assert.ok(!journeyContext.entry_point_flows.some((journey: any) => journey.id === 'journey-billing-export'));
+    const entryPointFlowContext = context.work_context.entry_point_flow_context;
+    assert.ok(entryPointFlowContext, 'entry_point_flow_context missing');
+    assert.equal(entryPointFlowContext.total_matching, 1);
+    assert.equal(entryPointFlowContext.entry_point_flows[0].id, 'journey-create-user');
+    assert.equal(entryPointFlowContext.entry_point_flows[0].kind, 'user-facing');
+    assert.ok(entryPointFlowContext.entry_point_flows[0].boundaries.includes('JWT auth'));
+    assert.equal(entryPointFlowContext.entry_point_flows[0].tests, 1);
+    assert.ok(!entryPointFlowContext.entry_point_flows.some((journey: any) => journey.id === 'journey-billing-export'));
 
     const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing');
@@ -1738,7 +1738,7 @@ test('agent context carries target-scoped pillar digests when pillar data touche
     assert.equal(conformanceContext.deviations[0].severity, 'error');
     assert.ok(!conformanceContext.deviations.some((deviation: any) => deviation.file.startsWith('src/billing/')));
 
-    for (const digest of [journeyContext.entry_point_flows, lineageContext.entities, conformanceContext.deviations]) {
+    for (const digest of [entryPointFlowContext.entry_point_flows, lineageContext.entities, conformanceContext.deviations]) {
       assert.ok(JSON.stringify(digest).length <= 600, `pillar digest exceeds token budget: ${JSON.stringify(digest).length} chars`);
     }
   });
@@ -1756,12 +1756,12 @@ test('agent context bounds journey digests and reports the true match count', as
       task_type: 'modify',
       target: 'UsersService',
     });
-    const journeyContext = context.work_context.entry_point_flow_context;
-    assert.ok(journeyContext);
-    assert.equal(journeyContext.total_matching, 8);
-    assert.ok(journeyContext.entry_point_flows.length <= 5);
-    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
-    assert.ok(JSON.stringify(journeyContext.entry_point_flows).length <= 600);
+    const entryPointFlowContext = context.work_context.entry_point_flow_context;
+    assert.ok(entryPointFlowContext);
+    assert.equal(entryPointFlowContext.total_matching, 8);
+    assert.ok(entryPointFlowContext.entry_point_flows.length <= 5);
+    assert.equal(entryPointFlowContext.entry_point_flows[0].id, 'journey-create-user');
+    assert.ok(JSON.stringify(entryPointFlowContext.entry_point_flows).length <= 600);
   });
 });
 
@@ -1775,9 +1775,9 @@ test('agent context pillar digests match entity targets through terminal entitie
       target: 'User',
     });
     assert.equal(context.selected_node?.name, 'User');
-    const journeyContext = context.work_context.entry_point_flow_context;
-    assert.ok(journeyContext, 'entry_point_flow_context missing for entity target');
-    assert.equal(journeyContext.entry_point_flows[0].id, 'journey-create-user');
+    const entryPointFlowContext = context.work_context.entry_point_flow_context;
+    assert.ok(entryPointFlowContext, 'entry_point_flow_context missing for entity target');
+    assert.equal(entryPointFlowContext.entry_point_flows[0].id, 'journey-create-user');
     const lineageContext = context.work_context.lineage_context;
     assert.ok(lineageContext, 'lineage_context missing for entity target');
     assert.equal(lineageContext.entities[0].entity, 'User');
@@ -2111,7 +2111,7 @@ function pillarFixtureCas(): CASOutput {
       readers: [{ node_id: 'users-controller', file: 'src/users/users.controller.ts', via: 'list' }],
       external_recipients: [],
       boundaries_crossed: [],
-      journeys_carrying: ['journey-create-user'],
+      entry_point_flows_carrying: ['journey-create-user'],
       exposure: { unguarded_paths: 1, external_transfer: false, sensitive: true },
     },
     {
@@ -2122,7 +2122,7 @@ function pillarFixtureCas(): CASOutput {
       readers: [],
       external_recipients: [],
       boundaries_crossed: [],
-      journeys_carrying: [],
+      entry_point_flows_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];

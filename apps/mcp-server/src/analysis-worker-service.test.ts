@@ -326,8 +326,8 @@ test('service-backed analysis recovers after a worker crash and preserves layere
       onPhase: phase => { phases.push(phase.phase); statuses.push(phase.status); },
     });
     assert.equal(layered.nodes, first.nodes);
-    assert.deepEqual(phases, ['l0', 'rest', 'enrichment']);
-    assert.deepEqual(statuses, ['succeeded', 'succeeded', 'failed']);
+    assert.deepEqual(phases, ['l0', 'rest']);
+    assert.deepEqual(statuses, ['succeeded', 'succeeded']);
   } finally {
     shutdownAnalysisWorker();
     await new Promise<void>(resolve => server.close(() => resolve()));

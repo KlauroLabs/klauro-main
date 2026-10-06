@@ -93,8 +93,8 @@ interface LineageIndex {
   exitPointsById: Map<string, CASExitPoint>;
   databaseExitsByResourceKey: Map<string, CASExitPoint[]>;
   entityNodeIdsByKey: Map<string, string[]>;
-  journeysByEntityKey: Map<string, CASEntryPointFlow[]>;
-  journeysByEntityId: Map<string, CASEntryPointFlow[]>;
+  entryPointFlowsByEntityKey: Map<string, CASEntryPointFlow[]>;
+  entryPointFlowsByEntityId: Map<string, CASEntryPointFlow[]>;
 }
 
 export function buildDataLineage(input: DataLineageInput): CASEntityLineage[] {
@@ -177,9 +177,9 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
     entityNodeIdsByKey.set(key, list);
   }
 
-  const journeysByEntityKey = new Map<string, CASEntryPointFlow[]>();
-  const journeysByEntityId = new Map<string, CASEntryPointFlow[]>();
-  const linkJourney = (map: Map<string, CASEntryPointFlow[]>, key: string, journey: CASEntryPointFlow) => {
+  const entryPointFlowsByEntityKey = new Map<string, CASEntryPointFlow[]>();
+  const entryPointFlowsByEntityId = new Map<string, CASEntryPointFlow[]>();
+  const linkEntryPointFlow = (map: Map<string, CASEntryPointFlow[]>, key: string, journey: CASEntryPointFlow) => {
     const list = map.get(key) || [];
     if (!list.includes(journey)) {
       list.push(journey);
@@ -188,15 +188,15 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
   };
   for (const journey of input.entryPointFlows) {
     for (const terminal of journey.terminal_entities || []) {
-      if (terminal.entity_id) linkJourney(journeysByEntityId, terminal.entity_id, journey);
-      for (const key of entityNameKeys(terminal.name)) linkJourney(journeysByEntityKey, key, journey);
+      if (terminal.entity_id) linkEntryPointFlow(entryPointFlowsByEntityId, terminal.entity_id, journey);
+      for (const key of entityNameKeys(terminal.name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, journey);
     }
     const effectNames = [
       ...(journey.terminal_effects?.entities_written || []),
       ...(journey.terminal_effects?.entities_read || []),
     ];
     for (const name of effectNames) {
-      for (const key of entityNameKeys(name)) linkJourney(journeysByEntityKey, key, journey);
+      for (const key of entityNameKeys(name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, journey);
     }
   }
 
@@ -210,8 +210,8 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
     exitPointsById,
     databaseExitsByResourceKey,
     entityNodeIdsByKey,
-    journeysByEntityKey,
-    journeysByEntityId,
+    entryPointFlowsByEntityKey,
+    entryPointFlowsByEntityId,
   };
 }
 
@@ -259,7 +259,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     }
   }
 
-  const journeys = collectJourneys(entity, index);
+  const journeys = collectEntryPointFlows(entity, index);
 
   const recipients = new Map<string, CASEntityLineageExternalRecipient>();
   const unresolvedExitPointIds = new Set<string>();
@@ -303,12 +303,12 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   let unguardedPaths = 0;
   let nonAuthGuardedPaths = 0;
   for (const journey of journeys) {
-    const journeyBoundaries = journey.security_boundaries || [];
-    const kinds = journeyBoundaries.map(boundaryGuardKind);
+    const entryPointFlowBoundaries = journey.security_boundaries || [];
+    const kinds = entryPointFlowBoundaries.map(boundaryGuardKind);
     const guarded = kinds.some(isAuthProtectionKind);
     if (!guarded) {
       unguardedPaths += 1;
-      if (journeyBoundaries.length > 0) nonAuthGuardedPaths += 1;
+      if (entryPointFlowBoundaries.length > 0) nonAuthGuardedPaths += 1;
     }
     const label = boundaryLabel(journey);
     const existing = boundaries.get(label);
@@ -336,7 +336,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     external_recipients: [...recipients.values()].sort((a, b) => a.exit_point_id.localeCompare(b.exit_point_id)),
     ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
     boundaries_crossed: [...boundaries.values()].sort((a, b) => a.boundary.localeCompare(b.boundary)),
-    journeys_carrying: journeys.map(journey => journey.id).sort(),
+    entry_point_flows_carrying: journeys.map(journey => journey.id).sort(),
     exposure: {
       unguarded_paths: unguardedPaths,
       non_auth_guarded_paths: nonAuthGuardedPaths,
@@ -347,10 +347,10 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   };
 }
 
-function collectJourneys(entity: CASDataEntity, index: LineageIndex): CASEntryPointFlow[] {
-  const journeys = new Set<CASEntryPointFlow>(index.journeysByEntityId.get(entity.id) || []);
+function collectEntryPointFlows(entity: CASDataEntity, index: LineageIndex): CASEntryPointFlow[] {
+  const journeys = new Set<CASEntryPointFlow>(index.entryPointFlowsByEntityId.get(entity.id) || []);
   for (const key of entityNameKeys(entity.name)) {
-    for (const journey of index.journeysByEntityKey.get(key) || []) journeys.add(journey);
+    for (const journey of index.entryPointFlowsByEntityKey.get(key) || []) journeys.add(journey);
   }
   return [...journeys].sort((a, b) => a.id.localeCompare(b.id));
 }

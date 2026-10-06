@@ -54,7 +54,7 @@ import {
   extractStructure,
   type StructuralExtract,
 } from '../../../../packages/analyzer-core/src/analyzer/core/generic-tree-sitter-analyzer';
-import { codebaseMemoryPath, runCodebaseMemoryJson, startCodebaseMemoryDaemon } from './real-camp-arms';
+import { codebaseMemoryCli, codebaseMemoryPath, indexCodebaseMemory, startCodebaseMemoryDaemon } from './real-camp-arms';
 import { TOP_LANGS } from './camp-a-langs';
 
 
@@ -218,10 +218,6 @@ function tokensOf(s: string): number {
 
 
 
-function cbmProjectId(dir: string): string {
-  return dir.replace(/^\/+/, '').replace(/[^A-Za-z0-9_]+/g, '-');
-}
-
 interface CbmStructuralCounts {
   functions: number;
   classes: number;
@@ -247,46 +243,35 @@ interface CbmStructuralCounts {
 
 
 function cbmStructuralCorpus(bin: string, dir: string): Map<string, CbmStructuralCounts> {
-  const project = cbmProjectId(dir);
-  runCodebaseMemoryJson(bin, 'index_repository', ['--repo-path', dir, '--name', project]);
-  const search: any = runCodebaseMemoryJson(bin, 'search_graph', [
-    '--project', project,
-    '--format', 'json',
-    '--limit', '100000',
-  ]);
-  const columns: string[] = search.cols || [];
-  const nameIndex = columns.indexOf('name');
-  const labelIndex = columns.indexOf('label');
-  if (nameIndex < 0 || labelIndex < 0) {
-    throw new Error(`codebase-memory search_graph omitted required columns: ${columns.join(', ')}`);
-  }
-  const groupsByFile = new Map<string, any[]>();
-  for (const group of search.groups || []) {
-    const file = path.basename(String(group.file || ''));
+  const project = indexCodebaseMemory(bin, dir);
+  if (!project) throw new Error('codebase-memory index_repository returned no project');
+  const search = codebaseMemoryCli(bin, 'search_graph', { project, limit: 100000 });
+  if (!search || !Array.isArray(search.results)) throw new Error('codebase-memory search_graph returned no results');
+  const itemsByFile = new Map<string, Array<{ name: unknown; label: unknown; file_path: unknown }>>();
+  for (const item of search.results) {
+    const file = path.basename(String(item.file_path || ''));
     if (!file) continue;
-    const groups = groupsByFile.get(file) || [];
-    groups.push(group);
-    groupsByFile.set(file, groups);
+    const items = itemsByFile.get(file) || [];
+    items.push(item);
+    itemsByFile.set(file, items);
   }
   const byFile = new Map<string, CbmStructuralCounts>();
-  for (const [file, groups] of groupsByFile) {
+  for (const [file, items] of itemsByFile) {
     const fnNames = new Set<string>();
     const classNames = new Set<string>();
-    for (const group of groups) {
-      for (const row of group.rows || []) {
-        const name = String(row[nameIndex] || '');
-        const label = String(row[labelIndex] || '');
-        if (!name) continue;
-        if (label === 'Function' || label === 'Method') fnNames.add(name);
-        else if (label === 'Class' || label === 'Struct' || label === 'Interface') classNames.add(name);
-      }
+    for (const item of items) {
+      const name = String(item.name || '');
+      const label = String(item.label || '');
+      if (!name) continue;
+      if (label === 'Function' || label === 'Method') fnNames.add(name);
+      else if (label === 'Class' || label === 'Struct' || label === 'Interface') classNames.add(name);
     }
     byFile.set(file, {
       functions: fnNames.size,
       classes: classNames.size,
       fnNames,
       classNames,
-      schemaRaw: JSON.stringify({ cols: columns, groups }),
+      schemaRaw: JSON.stringify({ results: items }),
       available: fnNames.size + classNames.size > 0,
     });
   }

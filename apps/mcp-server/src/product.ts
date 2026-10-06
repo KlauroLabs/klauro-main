@@ -1515,9 +1515,9 @@ export function buildCrossRepoJourneys(
     ) || (provider.cas.entry_points || []).find(entry => (link.target_repository?.node_ids || []).includes(entry.source_node));
     if (!providerEntry) continue;
 
-    const journeyKey = `${providerEntry.trigger?.method || ''} ${providerEntry.trigger?.path || providerEntry.name}:${consumerNode?.source?.file || consumerNodeId || ''}`;
-    if (seen.has(journeyKey)) continue;
-    seen.add(journeyKey);
+    const entryPointFlowKey = `${providerEntry.trigger?.method || ''} ${providerEntry.trigger?.path || providerEntry.name}:${consumerNode?.source?.file || consumerNodeId || ''}`;
+    if (seen.has(entryPointFlowKey)) continue;
+    seen.add(entryPointFlowKey);
 
     const handlerFile = providerEntry.handler?.file || provider.cas.nodes.find(node => node.id === providerEntry.handler?.node_id)?.source?.file;
     const handlerImports = handlerFile

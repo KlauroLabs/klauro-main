@@ -107,7 +107,7 @@ function makeCurrentAnalysis(): CASOutput {
         readers: [],
         external_recipients: [],
         boundaries_crossed: [],
-        journeys_carrying: ['journey-create-thing'],
+        entry_point_flows_carrying: ['journey-create-thing'],
         exposure: { sensitive: false, unguarded_paths: 0, external_transfer: false },
       },
     ],
@@ -213,9 +213,9 @@ test('pillar tools return an explicit version notice on a pre-pillar analysis', 
   assert.equal(flows.total, 0);
   assert.ok(flows.analysis_version_notice?.includes('entry-point flows'));
 
-  const journeyDetail = getUserJourneys(legacy, { journeyId: 'missing' }) as { journey: unknown; analysis_version_notice?: string };
-  assert.equal(journeyDetail.journey, null);
-  assert.ok(journeyDetail.analysis_version_notice?.includes('journeys'));
+  const entryPointFlowDetail = getUserJourneys(legacy, { journeyId: 'missing' }) as { journey: unknown; analysis_version_notice?: string };
+  assert.equal(entryPointFlowDetail.journey, null);
+  assert.ok(entryPointFlowDetail.analysis_version_notice?.includes('journeys'));
 
   const paradigms = getParadigmConformance(legacy) as { total: number; analysis_version_notice?: string };
   assert.equal(paradigms.total, 0);

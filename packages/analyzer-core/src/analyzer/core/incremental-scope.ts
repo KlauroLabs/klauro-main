@@ -118,7 +118,7 @@ export function buildSemanticChangeImpact(
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ) {
-    const affected_journeys = projectEntryPointFlowsFromCas(output).entryPointFlows
+    const affected_entry_point_flows = projectEntryPointFlowsFromCas(output).entryPointFlows
       .filter(journey =>
         affectedEntryPointIds.has(journey.entry_point_id) ||
         journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
@@ -128,7 +128,7 @@ export function buildSemanticChangeImpact(
       .map(journey => ({
         id: journey.id,
         name: journey.name,
-        reason: 'Changed nodes or entry points participate in this journey'
+        reason: 'Changed nodes or entry points participate in this entry-point flow'
       }));
 
     const affected_capabilities = (output.capabilities || [])
@@ -186,14 +186,14 @@ export function buildSemanticChangeImpact(
     ];
 
     const risk_reasons: string[] = [];
-    if (affected_journeys.length > 0) risk_reasons.push(`${affected_journeys.length} journey(s) affected`);
+    if (affected_entry_point_flows.length > 0) risk_reasons.push(`${affected_entry_point_flows.length} entry-point flow(s) affected`);
     if (affected_capabilities.length > 0) risk_reasons.push(`${affected_capabilities.length} capability/capabilities affected`);
     if (affected_data_entities.length > 0) risk_reasons.push(`${affected_data_entities.length} data entity/entities affected`);
     if (affected_runtime_links.length > 0) risk_reasons.push(`${affected_runtime_links.length} runtime signal(s) affected`);
     if (changed_contracts.length > 0) risk_reasons.push(`${changed_contracts.length} externally visible contract(s) changed`);
 
     return {
-      affected_journeys,
+      affected_entry_point_flows,
       affected_capabilities,
       affected_data_entities,
       affected_runtime_links,
@@ -210,7 +210,7 @@ export function buildScopedSemanticChangeImpact(
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ): ChangeSemanticImpact {
-    const affected_journeys = projectEntryPointFlowsFromCas(currentOutput).entryPointFlows
+    const affected_entry_point_flows = projectEntryPointFlowsFromCas(currentOutput).entryPointFlows
       .filter(journey =>
         journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
         affectedEntryPointIds.has(journey.entry_point_id)
@@ -219,7 +219,7 @@ export function buildScopedSemanticChangeImpact(
       .map(journey => ({
         id: journey.id,
         name: journey.name,
-        reason: 'Journey is connected to a changed file or entry point'
+        reason: 'Entry-point flow is connected to a changed file or entry point'
       }));
     const affected_capabilities = (currentOutput.capabilities || [])
       .filter(capability =>
@@ -266,11 +266,11 @@ export function buildScopedSemanticChangeImpact(
       })),
     ];
     const risk_reasons: string[] = [];
-    if (affected_journeys.length > 0) risk_reasons.push('Changed nodes are connected to journey paths');
+    if (affected_entry_point_flows.length > 0) risk_reasons.push('Changed nodes are connected to entry-point flow paths');
     if (affected_data_entities.length > 0) risk_reasons.push('Changed nodes participate in data entity lifecycle');
     if (changed_contracts.length > 0) risk_reasons.push('Entry or exit contracts changed');
     return {
-      affected_journeys,
+      affected_entry_point_flows,
       affected_capabilities,
       affected_data_entities,
       affected_runtime_links,

@@ -46,7 +46,7 @@ export function buildComprehensionGraph(input: ComprehensionGraphInput) {
     capabilities: input.capabilities,
     behavior_surfaces: input.behaviorSurfaces,
   } as CASOutput, {});
-  const journeyResult = projectEntryPointFlowsFromFlows({
+  const entryPointFlowResult = projectEntryPointFlowsFromFlows({
     nodes: input.nodes,
     edges: input.edges,
     entryPoints: input.entryPoints,
@@ -62,7 +62,7 @@ export function buildComprehensionGraph(input: ComprehensionGraphInput) {
     dataEntities: input.dataEntities,
     exitPoints: input.exitPoints,
     entryPoints: input.entryPoints,
-    entryPointFlows: journeyResult.entryPointFlows,
+    entryPointFlows: entryPointFlowResult.entryPointFlows,
   });
-  return { flows, journeyResult, dataLineage };
+  return { flows, entryPointFlowResult, dataLineage };
 }

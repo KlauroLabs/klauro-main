@@ -1,3 +1,5 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 
 test('incremental reuse refuses an older multi-operation AI outcome without exact citations', () => {
@@ -38,6 +40,8 @@ test('stabilization keeps a freshly cited outcome instead of expanding the old i
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { McpToolRegistrationAnalyzer } from '../libraries/mcp-tool-registration-analyzer';
+import { AnalyzerOrchestrator } from './orchestrator';
+import type { SystemCapability } from '../../types/cas.types';
 
 test('real MCP registration metadata retains its identity across persistence without ignoring changed evidence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-capability-contract-'));

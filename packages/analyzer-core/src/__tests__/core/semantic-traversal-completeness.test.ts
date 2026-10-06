@@ -113,15 +113,15 @@ describe('semantic traversal completeness', () => {
 
   test('journeys preserve complete cyclic reachability and do not default-truncate discovered entries', () => {
     const cas = graphCas(70);
-    const longJourney = buildEntryPointFlows({
+    const longEntryPointFlow = buildEntryPointFlows({
       nodes: cas.nodes,
       edges: cas.edges,
       entryPoints: cas.entry_points || [],
       exitPoints: cas.exit_points || [],
       callChains: cas.call_chains || [],
     });
-    expect(longJourney.entryPointFlows).toHaveLength(1);
-    expect(new Set(longJourney.entryPointFlows[0].steps.map(step => step.node_id)).size).toBe(70);
+    expect(longEntryPointFlow.entryPointFlows).toHaveLength(1);
+    expect(new Set(longEntryPointFlow.entryPointFlows[0].steps.map(step => step.node_id)).size).toBe(70);
 
     const manyNodes = Array.from({ length: 55 }, (_, index) => [
       {

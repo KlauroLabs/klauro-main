@@ -141,15 +141,15 @@ Proposal: treat as **derived views over tiers, computed at read time and never s
 
 ### D. Journeys and workflows — resolved (owner, post-2026-08-09)
 
-Fields: `user_journeys`, `workflows`, both populated today, both distinct from `flows`.
+Fields: `entry_point_flows`, `workflows`, both populated today, both distinct from `flows`.
 
 The comprehension layer was defined as four members: capabilities, flows, steps, entities. So either journeys and workflows are **a fifth member**, or they are **projections of flows** at a different granularity (a journey being a user-visible flow sequence, a workflow being an operational one). Today they are separate builders producing separate output, which suggested members — until the evidence was checked.
 
-**Decision: journeys and workflows collapse into flows.** There is no fifth comprehension member. `CASWorkflow` carries `entry_points`/`call_chains`/`exit_points`/`entities_touched`/`services_used`/`classification`/`criticality` — that is a flow one granularity coarser (`call_chains` where a flow has steps), and an earlier audit found "414 workflows with 0 steps". `CASUserJourney` adds only `kind` (`user-facing`/`system`/`scheduled`), per-step `layer` and `depth`, `boundaries`, and `tests` — and `kind` is derivable from entry-point kind, while `layer` is a tier-2 node-role fact. So: **one comprehension member for paths (flows)**, with journey/workflow-shaped fields as derived facets over that one member, and "journeys" / "workflows" become **named views**, not separate builders or separate stored members.
+**Decision: journeys and workflows collapse into flows.** There is no fifth comprehension member. `CASWorkflow` carries `entry_points`/`call_chains`/`exit_points`/`entities_touched`/`services_used`/`classification`/`criticality` — that is a flow one granularity coarser (`call_chains` where a flow has steps), and an earlier audit found "414 workflows with 0 steps". `CASEntryPointFlow` adds only `kind` (`user-facing`/`system`/`scheduled`), per-step `layer` and `depth`, `boundaries`, and `tests` — and `kind` is derivable from entry-point kind, while `layer` is a tier-2 node-role fact. So: **one comprehension member for paths (flows)**, with journey/workflow-shaped fields as derived facets over that one member, and "journeys" / "workflows" become **named views**, not separate builders or separate stored members.
 
 **Rationale.** Three parallel representations of paths mean three builders that can disagree, and that exact failure already shipped: one API response contained two capability lists disagreeing on count and quality. Collapsing to one member with derived views removes the class of defect, not just this instance of it.
 
-**Pre-work required before removal.** Check consumers of `user_journeys`/`workflows` — the journey builder, the product map, and any UI surface — before removing the separate builders, since a consumer may depend on journey-specific fields (`kind`, `layer`, `depth`, `boundaries`, `tests`) that must be preserved as derived facets on flows rather than silently dropped.
+**Pre-work required before removal.** Check consumers of `entry_point_flows`/`workflows` — the journey builder, the product map, and any UI surface — before removing the separate builders, since a consumer may depend on journey-specific fields (`kind`, `layer`, `depth`, `boundaries`, `tests`) that must be preserved as derived facets on flows rather than silently dropped.
 
 This resolves the open question this section originally posed. `docs/cas/SPECIFICATION.md` §0.5.1 restates the same decision in the recursive-CAS context: journeys and workflows are derived views over `flows`, not a fifth comprehension member.
 

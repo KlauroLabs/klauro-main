@@ -3810,11 +3810,11 @@ describe('architecture and capability inference', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     localOrch.activeTerminalSignal = {
       ranked_entities: [
-        { name: 'DexTrade', score: 9, journey_count: 4, write_journeys: 4, read_journeys: 0, user_facing_journeys: 2 },
-        { name: 'WhaleTransaction', score: 8, journey_count: 3, write_journeys: 3, read_journeys: 0, user_facing_journeys: 1 },
-        { name: 'OhlcvCandle', score: 7, journey_count: 3, write_journeys: 2, read_journeys: 1, user_facing_journeys: 1 },
+        { name: 'DexTrade', score: 9, entry_point_flow_count: 4, write_entry_point_flows: 4, read_entry_point_flows: 0, user_facing_entry_point_flows: 2 },
+        { name: 'WhaleTransaction', score: 8, entry_point_flow_count: 3, write_entry_point_flows: 3, read_entry_point_flows: 0, user_facing_entry_point_flows: 1 },
+        { name: 'OhlcvCandle', score: 7, entry_point_flow_count: 3, write_entry_point_flows: 2, read_entry_point_flows: 1, user_facing_entry_point_flows: 1 },
       ],
-      ranked_stages: [{ name: 'DexPricingService', score: 6, journey_count: 3, min_distance_from_terminal: 1 }],
+      ranked_stages: [{ name: 'DexPricingService', score: 6, entry_point_flow_count: 3, min_distance_from_terminal: 1 }],
       ranked_capabilities: [{ name: 'DEX market pricing', score: 9, matched_terminal_entities: ['DexTrade', 'OhlcvCandle'] }],
       domain_seed_text: 'DexTrade WhaleTransaction OhlcvCandle DexTrade DexPricingService',
     };
@@ -7025,7 +7025,7 @@ describe('entity description evidence bundle (entity descriptions authored LAST)
     expect(byEntityId.get('entity_customer')?.sort()).toEqual(['Billing Management', 'Dispatch Management']);
   });
 
-  it('buildJourneysByEntityName maps each entity name to the journeys that write/read/terminate on it', () => {
+  it('buildEntryPointFlowsByEntityName maps each entity name to the journeys that write/read/terminate on it', () => {
     const journeys = [
       {
         id: 'journey_1', name: 'Create Booking', flow_kind: 'user-facing', entry_point_id: 'ep_1',
@@ -7042,7 +7042,7 @@ describe('entity description evidence bundle (entity descriptions authored LAST)
         security_boundaries: [],
       },
     ] as any[];
-    const byEntityName = orch.buildJourneysByEntityName(journeys) as Map<string, string[]>;
+    const byEntityName = orch.buildEntryPointFlowsByEntityName(journeys) as Map<string, string[]>;
     expect(byEntityName.get('booking')?.sort()).toEqual(['Create Booking', 'View Booking']);
   });
 
@@ -7062,9 +7062,9 @@ describe('entity description evidence bundle (entity descriptions authored LAST)
       ]],
     ]);
     const capabilitiesByEntityId = new Map([['entity_doctrine_deviceconnectionbind', ['Integration Sync Management']]]);
-    const journeysByEntityName = new Map([['deviceconnectionbind', ['Sync Device From Provider']]]);
+    const entryPointFlowsByEntityName = new Map([['deviceconnectionbind', ['Sync Device From Provider']]]);
 
-    const target = orch.entityDescriptionTarget(entity, { relationsByName, capabilitiesByEntityId, journeysByEntityName });
+    const target = orch.entityDescriptionTarget(entity, { relationsByName, capabilitiesByEntityId, entryPointFlowsByEntityName });
 
     expect(target.kind).toBe('entity');
     expect(target.fields).toEqual(['remoteId:string']);
@@ -8334,7 +8334,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
       journey('journey_entry_mcp_tool_do_thing_integration_test_ts', 'ep_test', 'test-handler'),
       journey('journey_entry_scheduled_job_nestjs_schedule_scheduledScan_0', 'ep_fixture', 'fixture-handler'),
     ];
-    const filtered = orch.filterPrimaryProductJourneys(journeys, entryPoints, nodes, projectPath);
+    const filtered = orch.filterPrimaryProductEntryPointFlows(journeys, entryPoints, nodes, projectPath);
     expect(filtered.map((j: any) => j.id)).toEqual(['journey_product']);
     // Structural facts keep every journey: the input array is not mutated.
     expect(journeys).toHaveLength(3);
@@ -8346,7 +8346,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
       journey('journey_orphan_product', 'ep_unknown', 'product-handler'),
       journey('journey_no_evidence', 'ep_unknown', undefined),
     ];
-    const filtered = orch.filterPrimaryProductJourneys(journeys, entryPoints, nodes, projectPath);
+    const filtered = orch.filterPrimaryProductEntryPointFlows(journeys, entryPoints, nodes, projectPath);
     expect(filtered.map((j: any) => j.id)).toEqual(['journey_orphan_product', 'journey_no_evidence']);
   });
 
@@ -8408,10 +8408,10 @@ describe('terminal-outputs prompt fact is kind-filtered (no raw node names as ou
   const factsWith = (dataEntities: CASDataEntity[]): Record<string, unknown> => {
     orch.activeTerminalSignal = {
       ranked_entities: [
-        { name: 'AssetAnalysis', score: 9, journey_count: 4, write_journeys: 3, read_journeys: 1, user_facing_journeys: 3 },
-        { name: 'GraphExplorer', score: 7, journey_count: 2, write_journeys: 0, read_journeys: 2, user_facing_journeys: 2 },
-        { name: 'InMemoryMemoryGraphAdapter', score: 5, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 0 },
-        { name: 'OrderQuery', score: 4, journey_count: 1, write_journeys: 0, read_journeys: 1, user_facing_journeys: 1 },
+        { name: 'AssetAnalysis', score: 9, entry_point_flow_count: 4, write_entry_point_flows: 3, read_entry_point_flows: 1, user_facing_entry_point_flows: 3 },
+        { name: 'GraphExplorer', score: 7, entry_point_flow_count: 2, write_entry_point_flows: 0, read_entry_point_flows: 2, user_facing_entry_point_flows: 2 },
+        { name: 'InMemoryMemoryGraphAdapter', score: 5, entry_point_flow_count: 1, write_entry_point_flows: 1, read_entry_point_flows: 0, user_facing_entry_point_flows: 0 },
+        { name: 'OrderQuery', score: 4, entry_point_flow_count: 1, write_entry_point_flows: 0, read_entry_point_flows: 1, user_facing_entry_point_flows: 1 },
       ],
       ranked_stages: [],
       ranked_capabilities: [],
@@ -10787,11 +10787,11 @@ describe('top-down capability evidence (C2)', () => {
       entry_point_id: `node:n_${i}`, entry_point_type: 'internal', action: 'Coordinate', path_or_command: `src/n_${i}.ts`,
     }));
     const entityRich = { name: 'Dispatch Resource Management', related_entities: ['entity_booking', 'entity_stop', 'entity_trip'], related_domains: ['dispatch'], operations: mkOps(4) };
-    const journeyCorroborated = { name: 'Inspection Resource Management', related_entities: [], related_domains: ['inspection'], operations: mkOps(2) };
+    const entryPointFlowCorroborated = { name: 'Inspection Resource Management', related_entities: [], related_domains: ['inspection'], operations: mkOps(2) };
     const entitylessAnchor = { name: 'Runtime Coordination', related_entities: [], related_domains: ['runtime'], operations: internalOps(200) };
     const journeys = [{ name: 'Create inspection report' }] as any[];
     const ranked = orch.rankCatalogPromptCandidates(
-      [entitylessAnchor, journeyCorroborated, entityRich] as any[],
+      [entitylessAnchor, entryPointFlowCorroborated, entityRich] as any[],
       journeys
     ).map((candidate: any) => candidate.name);
     // Grounded candidates (entities or journey-terminology corroboration)
