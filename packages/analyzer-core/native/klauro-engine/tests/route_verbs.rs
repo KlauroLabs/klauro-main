@@ -50,3 +50,11 @@ fn a_django_view_serves_the_methods_it_declares() {
         ]
     );
 }
+
+#[test]
+fn a_mount_prefixes_the_attribute_routes_it_lists() {
+    assert_eq!(
+        served("route-verbs/rocket"),
+        vec![pair("GET", "/api/users"), pair("GET", "/ping"), pair("POST", "/api/users")]
+    );
+}

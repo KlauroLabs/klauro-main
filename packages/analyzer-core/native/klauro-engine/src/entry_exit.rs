@@ -454,6 +454,47 @@ fn declared_methods(decorator: &Decorator) -> Vec<String> {
     found
 }
 
+fn crate_root(path: &str) -> &str {
+    match path.rfind("/src/") {
+        Some(at) => &path[..at],
+        None => "",
+    }
+}
+
+fn mount_attribute_routes(
+    entry_points: &mut Vec<EntryPoint>,
+    named_of: &HashMap<&str, &IndexNode>,
+    files: &[String],
+    mounted_at: &mut HashMap<(&str, &str), Vec<String>>,
+) {
+    if mounted_at.is_empty() {
+        return;
+    }
+    for bases in mounted_at.values_mut() {
+        bases.sort();
+        bases.dedup();
+    }
+    let mut mounted: Vec<EntryPoint> = Vec::new();
+    entry_points.retain(|entry| {
+        let attributed = entry.kind == "http" && entry.path.is_some() && entry.registrar != "mount";
+        let Some(bases) = attributed
+            .then(|| named_of.get(entry.handler.as_str()))
+            .flatten()
+            .filter(|node| node.file == entry.file && node.decorators.iter().any(|held| names::leaf(&held.name) == entry.registrar))
+            .and_then(|node| mounted_at.get(&(crate_root(files.get(node.file as usize)?), node.name.as_str())))
+        else {
+            return true;
+        };
+        let path = entry.path.as_deref().unwrap_or_default();
+        for base in bases {
+            let at = join_paths(base, path);
+            mounted.push(EntryPoint { id: format!("{}:{base}", entry.id), name: at.clone(), path: Some(at), ..entry.clone() });
+        }
+        false
+    });
+    entry_points.extend(mounted);
+}
+
 static DEFAULT_VERBS: &[(&str, &str, &str)] = &[("route", ".jl", "GET")];
 
 fn default_verb(registrar: &str, path: &str) -> Option<String> {
@@ -2802,6 +2843,7 @@ pub fn derive(
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
     }
     let mut registered: HashSet<(u32, u32, String)> = HashSet::default();
+    let mut mounted_at: HashMap<(&str, &str), Vec<String>> = HashMap::default();
     for registration in registrations {
         let label: std::borrow::Cow<str> = match registration.label.strip_prefix(DISPATCH_CONST_MARKER) {
             Some(leaf) => match const_values.get(leaf) {
@@ -2810,6 +2852,14 @@ pub fn derive(
             },
             None => std::borrow::Cow::Borrowed(registration.label.as_str()),
         };
+        if names::leaf(&registration.registrar) == "mount"
+            && files[registration.file as usize].ends_with(".rs")
+            && let Some(base) = a_route_prefix(&label).or_else(|| (label.trim() == "/").then(String::new))
+        {
+            let routed = names::leaf(registration.handler.rsplit("::").next().unwrap_or(&registration.handler));
+            mounted_at.entry((crate_root(&files[registration.file as usize]), routed)).or_default().push(base);
+            continue;
+        }
         let Some(kind) = classify_registration(&registration.registrar, Some(&label), mcp_files.contains(&registration.file), speaks_a_routing_dsl(&files[registration.file as usize])) else {
             continue;
         };
@@ -2972,6 +3022,7 @@ pub fn derive(
         }
     }
 
+    mount_attribute_routes(&mut entry_points, &named_of, files, &mut mounted_at);
     lap("registered routes");
     let declared_cases: HashSet<String> = entry_points
         .iter()
