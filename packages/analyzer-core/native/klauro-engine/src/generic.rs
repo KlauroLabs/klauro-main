@@ -441,9 +441,24 @@ impl<'a> Extractor<'a> {
         None
     }
 
+    fn method_keyword(&self, argument: Node) -> Option<String> {
+        let written = self.text(argument);
+        let (name, value) = written.split_once('=')?;
+        if !NAMES_A_METHOD.contains(&name.trim().to_ascii_lowercase().as_str()) {
+            return None;
+        }
+        let verb = trim_quotes(value.trim()).rsplit('.').next()?.to_ascii_lowercase();
+        REQUEST_METHODS.binary_search(&verb.as_str()).is_ok().then(|| verb.to_ascii_uppercase())
+    }
+
     fn mounted_method(&self, node: Node) -> Option<String> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
+            if configures_the_call(child.kind())
+                && let Some(found) = self.method_keyword(child)
+            {
+                return Some(found);
+            }
             if self.spec.calls.kinds.contains(&child.kind())
                 && let Some(function) = child.child_by_field_name("function")
             {

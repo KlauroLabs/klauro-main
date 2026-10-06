@@ -454,6 +454,15 @@ fn declared_methods(decorator: &Decorator) -> Vec<String> {
     found
 }
 
+static DEFAULT_VERBS: &[(&str, &str, &str)] = &[("route", ".jl", "GET")];
+
+fn default_verb(registrar: &str, path: &str) -> Option<String> {
+    DEFAULT_VERBS
+        .iter()
+        .find(|(verb, extension, _)| *verb == registrar && path.ends_with(extension))
+        .map(|(_, _, method)| (*method).to_string())
+}
+
 static VIEW_CLASS_METHODS: &[&str] = &["delete", "get", "head", "options", "patch", "post", "put"];
 
 fn methods_the_view_serves(view: &IndexNode, members: &HashMap<&str, Vec<&IndexNode>>) -> Vec<String> {
@@ -1810,11 +1819,19 @@ fn used_guards<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBindin
     for call in calls {
         let leaf = names::leaf(&call.callee);
         if leaf.eq_ignore_ascii_case("use")
-            && let (Some(receiver), Some(caller)) = (call.receiver.as_deref(), call.caller.as_deref())
+            && let Some(receiver) = call.receiver.as_deref()
         {
-            used.entry((call.file, caller, names::root(receiver)))
+            let passed = call.passes.iter().filter_map(|held| held.split_once('=')).map(|(_, root)| root);
+            used.entry((call.file, call.caller.as_deref().unwrap_or_default(), names::root(receiver)))
                 .or_default()
-                .extend(call.literals.iter().filter(guard_like).map(|literal| (call.line, literal.as_str())));
+                .extend(
+                    call.literals
+                        .iter()
+                        .filter(guard_like)
+                        .map(String::as_str)
+                        .chain(passed.filter(|root| guarding(root).is_some()))
+                        .map(|written| (call.line, written)),
+                );
         }
         if GATHERS_ROUTES.iter().any(|gathers| leaf.eq_ignore_ascii_case(gathers)) {
             for local in defined.get(&(call.file, call.line)).into_iter().flatten() {
@@ -1840,7 +1857,8 @@ impl Gathering<'_> {
     fn guards_at(&self, file: u32, line: u32, registrar: &str) -> Vec<Guard> {
         let verb = names::leaf(registrar).to_ascii_lowercase();
         let Some(call) = self.by_line.get(&(file, line, verb)) else { return Vec::new() };
-        let (Some(caller), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref()) else { return Vec::new() };
+        let Some(receiver) = call.receiver.as_deref() else { return Vec::new() };
+        let caller = call.caller.as_deref().unwrap_or_default();
         let mut found = Vec::new();
         let mut variable = Some(names::root(receiver));
         for _ in 0..8 {
@@ -2837,6 +2855,7 @@ pub fn derive(
             .or_else(|| {
                 (kind == "http"
                     && (registered_on_a_router(&registration.registrar)
+                        || registration.registrar == "route"
                         || speaks_a_routing_dsl(&files[registration.file as usize])))
                 .then(|| files[registration.file as usize].clone())
             })
@@ -2896,7 +2915,8 @@ pub fn derive(
                         .binary_search(&verb.to_ascii_lowercase().as_str())
                         .is_ok()
                         .then(|| verb.to_ascii_uppercase())
-                }),
+                })
+                .or_else(|| default_verb(verb, &files[registration.file as usize])),
             false => None,
         };
         if kind == "http" && handler == files[registration.file as usize] {

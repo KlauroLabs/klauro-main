@@ -48,3 +48,11 @@ fn a_layer_chained_after_a_route_guards_it() {
 fn middleware_chained_after_a_route_guards_it_even_when_no_controller_is_declared() {
     assert_eq!(guarded("route-scopes/laravel"), vec![route("GET", "/users", 0), route("POST", "/users", 1)]);
 }
+
+#[test]
+fn a_router_that_uses_a_guard_guards_only_the_routes_registered_after_it() {
+    let found = guarded("route-scopes/express");
+    assert!(found.contains(&route("GET", "/health", 0)), "{found:?}");
+    assert!(found.contains(&route("GET", "/users", 1)), "{found:?}");
+    assert!(found.contains(&route("POST", "/users", 1)), "{found:?}");
+}
