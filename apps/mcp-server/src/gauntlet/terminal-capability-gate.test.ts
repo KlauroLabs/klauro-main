@@ -11,33 +11,10 @@ import {
   runTerminalCapabilityGate,
   type RepoCapabilityFacts,
 } from './terminal-capability-gate';
+import { computeDerivedFingerprintForRoot, computeParserFingerprintForRoot } from '../../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 import type { CASCompositionRelation } from '../../../../packages/analyzer-core/src/analyzer/core/cas-composition';
 
 const fixturePath = path.join(__dirname, 'fixtures/terminality-public-corpus.json');
-
-function analyzerSourceDigest(repoRoot: string): { digest: string; fileCount: number } {
-  const files: string[] = [];
-  const visit = (absolutePath: string) => {
-    const stat = fs.statSync(absolutePath);
-    if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(absolutePath).sort()) visit(path.join(absolutePath, name));
-      return;
-    }
-    const relativePath = path.relative(repoRoot, absolutePath).split(path.sep).join('/');
-    if (relativePath.includes('/__tests__/') || /\.(test|spec)\.ts$/.test(relativePath)) return;
-    files.push(relativePath);
-  };
-  visit(path.join(repoRoot, 'packages/analyzer-core/src'));
-  visit(path.join(repoRoot, 'apps/mcp-server/src/analyzer.ts'));
-  const hash = createHash('sha256');
-  for (const relativePath of files.sort()) {
-    hash.update(relativePath);
-    hash.update('\0');
-    hash.update(fs.readFileSync(path.join(repoRoot, relativePath)));
-    hash.update('\0');
-  }
-  return { digest: hash.digest('hex'), fileCount: files.length };
-}
 
 function repo(repoId: string, capabilityId: string): RepoCapabilityFacts {
   return {
@@ -171,17 +148,11 @@ test('real public package and app corpus uses production-emitted capabilities wi
             analysis_timestamp: string;
             analyzer_build: string;
             analyzer_source_base_commit: string;
-            analyzer_source_sha256: string;
-            analyzer_source_file_count: number;
             production_cas: string;
             production_cas_sha256: string;
             capabilities_sha256: string;
-            provider: string;
-            model: string;
-            prompt_version: string;
-            semantic_schema_version: string;
-            semantic_trace: string;
-            semantic_trace_sha256: string;
+            author_endpoint: string;
+            author_models: string[];
             ai_cache: string;
             parser_fingerprint: string;
             derived_fingerprint: string;
@@ -204,18 +175,16 @@ test('real public package and app corpus uses production-emitted capabilities wi
         assert.ok(receipt.analysis.analysis_id);
         assert.ok(receipt.analysis.analysis_timestamp);
         assert.match(receipt.analysis.analyzer_source_base_commit, /^[0-9a-f]{40}$/);
-        const repoRoot = path.resolve(__dirname, '../../../..');
-        const sourceIdentity = analyzerSourceDigest(repoRoot);
-        assert.equal(receipt.analysis.analyzer_source_sha256, sourceIdentity.digest);
-        assert.equal(receipt.analysis.analyzer_source_file_count, sourceIdentity.fileCount);
-        assert.equal(receipt.analysis.analyzer_build, `source-sha256:${sourceIdentity.digest}`);
-        assert.equal(receipt.analysis.provider, 'deepinfra');
-        assert.equal(receipt.analysis.model, 'Qwen/Qwen3-Next-80B-A3B-Instruct');
-        assert.equal(receipt.analysis.prompt_version, 'capability_catalog.v2');
-        assert.equal(receipt.analysis.semantic_schema_version, 'e1.1');
+        const analyzerCoreRoot = path.resolve(__dirname, '../../../../packages/analyzer-core');
+        const parserFingerprint = computeParserFingerprintForRoot(analyzerCoreRoot);
+        const derivedFingerprint = computeDerivedFingerprintForRoot(analyzerCoreRoot);
+        assert.equal(receipt.analysis.parser_fingerprint, parserFingerprint);
+        assert.equal(receipt.analysis.derived_fingerprint, derivedFingerprint);
+        assert.equal(receipt.analysis.analyzer_build, `parser:${parserFingerprint};derived:${derivedFingerprint}`);
+        assert.match(receipt.analysis.author_endpoint, /^https:\/\//);
+        assert.ok(!/deepinfra/i.test(receipt.analysis.author_endpoint));
+        assert.ok(receipt.analysis.author_models.length > 0);
         assert.equal(receipt.analysis.ai_cache, 'disabled');
-        assert.ok(receipt.analysis.parser_fingerprint);
-        assert.ok(receipt.analysis.derived_fingerprint);
         const fixtureDirectory = path.dirname(receiptPath);
         const productionCasBytes = fs.readFileSync(path.join(fixtureDirectory, receipt.analysis.production_cas));
         assert.equal(createHash('sha256').update(productionCasBytes).digest('hex'), receipt.analysis.production_cas_sha256);
@@ -232,13 +201,6 @@ test('real public package and app corpus uses production-emitted capabilities wi
         assert.deepEqual(receiptCapabilityPayload, productionCas.capabilities);
         assert.deepEqual(receipt.known_node_ids, productionCas.nodes.map(node => node.id).sort());
         assert.deepEqual(receipt.known_flow_ids, (productionCas.flows || []).map(flow => flow.flow_id).sort());
-        const semanticTraceBytes = fs.readFileSync(path.join(fixtureDirectory, receipt.analysis.semantic_trace));
-        assert.equal(createHash('sha256').update(semanticTraceBytes).digest('hex'), receipt.analysis.semantic_trace_sha256);
-        const semanticDecisions = semanticTraceBytes.toString('utf8').trim().split('\n').map(line => JSON.parse(line));
-        assert.ok(semanticDecisions.some(decision => decision.schema_version === receipt.analysis.semantic_schema_version
-          && decision.provider === receipt.analysis.provider
-          && decision.model === receipt.analysis.model));
-        assert.ok(semanticDecisions.some(decision => decision.prompt_version === receipt.analysis.prompt_version));
         for (const [relativeFile, expectedHash] of Object.entries(receipt.source.file_sha256)) {
           const bytes = fs.readFileSync(path.join(packageRoot, relativeFile));
           assert.equal(createHash('sha256').update(bytes).digest('hex'), expectedHash);

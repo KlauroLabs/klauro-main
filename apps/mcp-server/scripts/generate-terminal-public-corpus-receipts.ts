@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
-import { analyzeProject } from '../src/analyzer';
+import { analyzeForBench } from '../src/gauntlet/product-analysis';
 import {
   generateTerminalPublicCorpusReceipts,
   resolveTerminalReceiptSourceIdentity,
@@ -8,13 +8,15 @@ import {
 
 const packageRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(packageRoot, '../..');
+const answerRoot = process.env.KLAURO_AI_CACHE_PATH;
+if (!answerRoot) throw new Error('KLAURO_AI_CACHE_PATH is required');
 
 void generateTerminalPublicCorpusReceipts({
   repoRoot,
   fixturePath: path.join(packageRoot, 'src/gauntlet/fixtures/terminality-public-corpus.json'),
-  semanticTraceRoot: path.join(packageRoot, '.terminal-public-corpus-semantic'),
+  answerRoot,
   dependencies: {
-    analyze: root => analyzeProject(root, undefined, { persist: false }),
+    analyze: root => analyzeForBench(root, { readinessRequirement: 'complete' }),
     resolveSourceIdentity: resolveTerminalReceiptSourceIdentity,
     runTerminalGate: root => {
       execFileSync(process.execPath, [

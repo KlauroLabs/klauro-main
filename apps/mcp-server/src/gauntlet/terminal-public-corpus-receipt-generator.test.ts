@@ -4,21 +4,23 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { generateTerminalPublicCorpusReceipts, assertTerminalReceiptEnvironment, recoverTerminalReceiptPublication, TERMINAL_RECEIPT_IDENTITY } from './terminal-public-corpus-receipt-generator';
+import { generateTerminalPublicCorpusReceipts, assertTerminalReceiptEnvironment, recoverTerminalReceiptPublication, readAuthorIdentity } from './terminal-public-corpus-receipt-generator';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 const env = {
-  DEEPINFRA_API_KEY: 'secret',
-  DEEPINFRA_MODEL: TERMINAL_RECEIPT_IDENTITY.model,
-  DEEPINFRA_STRUCTURED_MODEL: TERMINAL_RECEIPT_IDENTITY.model,
-  DEEPINFRA_FAST_FALLBACK_MODEL: TERMINAL_RECEIPT_IDENTITY.model,
-  KLAURO_AI_ENABLED: 'true',
-  KLAURO_AI_INTERPRETATION: 'true',
-  KLAURO_AI_INTERPRETATION_FORCE: '1',
+  KLAURO_AUTHOR_ENDPOINT: 'https://relay.example/api/author/api/chat',
+  KLAURO_AUTHOR_KEY: 'secret',
   KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP: 'false',
-  AI_CACHE_ENABLED: 'false',
-  KLAURO_SEMANTIC_DATASET_DIR: '/trace',
+  KLAURO_FORCE_AI_REFRESH: '1',
+  KLAURO_BENCH_FORCE_ANALYSIS: '1',
+  KLAURO_AI_CACHE_PATH: '/answers',
 };
+
+function answered(target: string, model = 'answering-model') {
+  const folder = path.join(target, 'model-answers');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, model), `request\u0000${JSON.stringify({ model, message: { content: '{}' } })}`);
+}
 
 function fixtureRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-receipt-test-'));
@@ -55,10 +57,23 @@ function output(): CASOutput {
   } as unknown as CASOutput;
 }
 
-test('requires pinned live AI identity and disabled cache', () => {
-  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, AI_CACHE_ENABLED: 'true' }), /AI_CACHE_ENABLED/);
-  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, KLAURO_AI_PROVIDER_CHAIN: '[]' }), /KLAURO_AI_PROVIDER_CHAIN/);
+test('requires the Klauro author endpoint, a fresh answer store and no paid provider key', () => {
+  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, KLAURO_FORCE_AI_REFRESH: '0' }), /KLAURO_FORCE_AI_REFRESH/);
+  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, DEEPINFRA_API_KEY: 'paid' }), /DEEPINFRA_API_KEY/);
+  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, KLAURO_AUTHOR_ENDPOINT: 'http://relay.example/chat' }), /https/);
+  assert.throws(() => assertTerminalReceiptEnvironment({ ...env, KLAURO_AUTHOR_KEY: '' }), /KLAURO_AUTHOR_KEY/);
   assert.doesNotThrow(() => assertTerminalReceiptEnvironment(env));
+});
+
+test('records the endpoint and the models that actually answered', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-author-identity-'));
+  assert.throws(() => readAuthorIdentity(env, root), /names its model/);
+  answered(root, 'second');
+  answered(root, 'first');
+  assert.deepEqual(readAuthorIdentity({ ...env, KLAURO_AUTHOR_ENDPOINT: 'https://u:p@relay.example/api/chat?k=v' }, root), {
+    endpoint: 'https://relay.example/api/chat',
+    models: ['first', 'second'],
+  });
 });
 
 test('stages a fake production analysis, validates evidence, publishes, then runs the gate', async () => {
@@ -67,15 +82,11 @@ test('stages a fake production analysis, validates evidence, publishes, then run
   let gated = false;
   await generateTerminalPublicCorpusReceipts({
     repoRoot: fixture.root, fixturePath: path.join(fixture.fixtureDir, 'terminality-public-corpus.json'),
-    semanticTraceRoot: traces, env: { ...env, KLAURO_SEMANTIC_DATASET_DIR: traces },
+    answerRoot: traces, env: { ...env, KLAURO_AI_CACHE_PATH: traces },
     dependencies: {
-      resolveSourceIdentity: () => ({ commit: 'b'.repeat(40), digest: 'c'.repeat(64), fileCount: 2 }),
+      resolveSourceIdentity: () => ({ commit: 'b'.repeat(40), parserFingerprint: 'parser', derivedFingerprint: 'derived' }),
       analyze: async () => {
-        const target = process.env.KLAURO_SEMANTIC_DATASET_DIR!;
-        fs.writeFileSync(path.join(target, '2026-01-01.jsonl'), [
-          JSON.stringify({ decision_type: 'ai_provider_attempt', schema_version: TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion, provider: TERMINAL_RECEIPT_IDENTITY.provider, model: TERMINAL_RECEIPT_IDENTITY.model }),
-          JSON.stringify({ decision_type: 'capability_catalog', schema_version: TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion, prompt_version: TERMINAL_RECEIPT_IDENTITY.promptVersion }),
-        ].join('\n'));
+        answered(traces);
         return output();
       },
       runTerminalGate: () => { gated = true; },
@@ -86,6 +97,9 @@ test('stages a fake production analysis, validates evidence, publishes, then run
   assert.deepEqual(receipt.capabilities[0].source_node_ids, ['entry-1']);
   assert.deepEqual(receipt.capabilities[0].source_flow_ids, ['flow-1']);
   assert.equal(receipt.analysis.analyzer_source_base_commit, 'b'.repeat(40));
+  assert.equal(receipt.analysis.author_endpoint, 'https://relay.example/api/author/api/chat');
+  assert.deepEqual(receipt.analysis.author_models, ['answering-model']);
+  assert.equal(receipt.analysis.parser_fingerprint, 'parser');
 });
 
 test('preserves the complete prior multi-member bundle when later analysis or the terminal gate fails', async () => {
@@ -101,17 +115,13 @@ test('preserves the complete prior multi-member bundle when later analysis or th
     let analysisCalls = 0;
     await assert.rejects(generateTerminalPublicCorpusReceipts({
       repoRoot: fixture.root, fixturePath: manifestPath,
-      semanticTraceRoot: traces, env: { ...env, KLAURO_SEMANTIC_DATASET_DIR: traces },
+      answerRoot: traces, env: { ...env, KLAURO_AI_CACHE_PATH: traces },
       dependencies: {
-        resolveSourceIdentity: () => ({ commit: 'b'.repeat(40), digest: 'c'.repeat(64), fileCount: 2 }),
+        resolveSourceIdentity: () => ({ commit: 'b'.repeat(40), parserFingerprint: 'parser', derivedFingerprint: 'derived' }),
         analyze: async () => {
           analysisCalls += 1;
           if (failAt === 'analysis' && analysisCalls === 2) throw new Error('analysis failed');
-          const target = process.env.KLAURO_SEMANTIC_DATASET_DIR!;
-          fs.writeFileSync(path.join(target, 'trace.jsonl'), [
-            JSON.stringify({ decision_type: 'ai_provider_attempt', schema_version: TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion, provider: TERMINAL_RECEIPT_IDENTITY.provider, model: TERMINAL_RECEIPT_IDENTITY.model }),
-            JSON.stringify({ decision_type: 'capability_catalog', schema_version: TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion, prompt_version: TERMINAL_RECEIPT_IDENTITY.promptVersion }),
-          ].join("\n"));
+          answered(traces);
           return output();
         },
         runTerminalGate: () => { if (failAt === 'gate') throw new Error('gate failed'); },

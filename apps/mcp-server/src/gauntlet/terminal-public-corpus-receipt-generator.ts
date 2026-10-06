@@ -5,13 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import type { CASOutput, SystemCapability } from '../../../../packages/analyzer-core/src/types/cas.types';
-
-export const TERMINAL_RECEIPT_IDENTITY = Object.freeze({
-  provider: 'deepinfra',
-  model: 'Qwen/Qwen3-Next-80B-A3B-Instruct',
-  promptVersion: 'capability_catalog.v2',
-  semanticSchemaVersion: 'e1.1',
-});
+import { computeDerivedFingerprintForRoot, computeParserFingerprintForRoot } from '../../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 
 interface CorpusMember {
   repoId: string;
@@ -25,7 +19,8 @@ interface CorpusMember {
   receipt?: string;
 }
 interface CorpusFixture { corpus: CorpusMember[]; }
-export interface AnalyzerSourceIdentity { commit: string; digest: string; fileCount: number; }
+export interface AnalyzerSourceIdentity { commit: string; parserFingerprint: string; derivedFingerprint: string; }
+export interface AuthorIdentity { endpoint: string; models: string[]; }
 export interface ReceiptGeneratorDependencies {
   analyze(root: string): Promise<CASOutput>;
   resolveSourceIdentity(root: string): AnalyzerSourceIdentity;
@@ -34,7 +29,7 @@ export interface ReceiptGeneratorDependencies {
 export interface ReceiptGeneratorOptions {
   repoRoot: string;
   fixturePath: string;
-  semanticTraceRoot: string;
+  answerRoot: string;
   dependencies: ReceiptGeneratorDependencies;
   env?: NodeJS.ProcessEnv;
 }
@@ -43,57 +38,29 @@ const sha256 = (value: string | Buffer) => createHash('sha256').update(value).di
 
 export function assertTerminalReceiptEnvironment(env: NodeJS.ProcessEnv): void {
   const exact: Record<string, string> = {
-    DEEPINFRA_MODEL: TERMINAL_RECEIPT_IDENTITY.model,
-    DEEPINFRA_STRUCTURED_MODEL: TERMINAL_RECEIPT_IDENTITY.model,
-    KLAURO_AI_ENABLED: 'true',
-    KLAURO_AI_INTERPRETATION: 'true',
     KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP: 'false',
-    AI_CACHE_ENABLED: 'false',
+    KLAURO_FORCE_AI_REFRESH: '1',
+    KLAURO_BENCH_FORCE_ANALYSIS: '1',
   };
-  if (!env.DEEPINFRA_API_KEY) throw new Error('DEEPINFRA_API_KEY is required');
-  const conflictingProviderKeys = [
-    'KLAURO_AI_PROVIDER_CHAIN', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY',
-    'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT', 'AZURE_OPENAI_MODEL',
-  ];
-  const configuredConflict = conflictingProviderKeys.find(name => env[name]);
-  if (configuredConflict) throw new Error(`${configuredConflict} conflicts with the pinned DeepInfra receipt identity`);
-  if (env.DEEPINFRA_FAST_FALLBACK_MODEL !== TERMINAL_RECEIPT_IDENTITY.model) {
-    throw new Error(`DEEPINFRA_FAST_FALLBACK_MODEL must equal ${TERMINAL_RECEIPT_IDENTITY.model}`);
-  }
-  if (!['1', 'true'].includes(env.KLAURO_AI_INTERPRETATION_FORCE || '')) {
-    throw new Error('KLAURO_AI_INTERPRETATION_FORCE must be true');
-  }
-  if (!env.KLAURO_SEMANTIC_DATASET_DIR) throw new Error('KLAURO_SEMANTIC_DATASET_DIR is required');
+  if (!env.KLAURO_AUTHOR_ENDPOINT) throw new Error('KLAURO_AUTHOR_ENDPOINT is required');
+  if (!/^https:\/\//.test(env.KLAURO_AUTHOR_ENDPOINT)) throw new Error('KLAURO_AUTHOR_ENDPOINT must be an https URL');
+  if (!env.KLAURO_AUTHOR_KEY) throw new Error('KLAURO_AUTHOR_KEY is required');
+  if (env.DEEPINFRA_API_KEY) throw new Error('DEEPINFRA_API_KEY must not be set: receipts are authored through the Klauro author endpoint');
+  if (env.KLAURO_AI_INTERPRETATION === 'false') throw new Error('KLAURO_AI_INTERPRETATION must not be false');
+  if (!env.KLAURO_AI_CACHE_PATH) throw new Error('KLAURO_AI_CACHE_PATH is required');
   for (const [name, expected] of Object.entries(exact)) {
     if (env[name] !== expected) throw new Error(`${name} must equal ${expected}`);
   }
 }
 
-function analyzerSourceFiles(repoRoot: string): string[] {
-  const files: string[] = [];
-  const visit = (absolute: string) => {
-    const stat = fs.statSync(absolute);
-    if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(absolute).sort()) visit(path.join(absolute, name));
-      return;
-    }
-    const relative = path.relative(repoRoot, absolute).split(path.sep).join('/');
-    if (!relative.includes('/__tests__/') && !/\.(test|spec)\.ts$/.test(relative)) files.push(relative);
-  };
-  visit(path.join(repoRoot, 'packages/analyzer-core/src'));
-  visit(path.join(repoRoot, 'apps/mcp-server/src/analyzer.ts'));
-  return files.sort();
-}
-
 export function resolveTerminalReceiptSourceIdentity(repoRoot: string): AnalyzerSourceIdentity {
-  const trackedStatus = execFileSync('git', ['diff-index', '--name-only', 'HEAD', '--'], { cwd: repoRoot, encoding: 'utf8' });
-  if (trackedStatus.trim()) throw new Error('Terminal corpus receipt generation requires tracked files to match HEAD');
+  const analyzerCoreRoot = path.join(repoRoot, 'packages/analyzer-core');
   const identityPaths = [
-    'packages/analyzer-core/src',
-    'apps/mcp-server/src/analyzer.ts',
     'apps/mcp-server/src/gauntlet/fixtures/terminality-public-corpus.json',
     'apps/mcp-server/src/gauntlet/fixtures/terminality-public-corpus',
   ];
+  const changedIdentityFiles = execFileSync('git', ['diff-index', '--name-only', 'HEAD', '--', ...identityPaths], { cwd: repoRoot, encoding: 'utf8' });
+  if (changedIdentityFiles.trim()) throw new Error('Terminal corpus identity paths must match HEAD');
   const untrackedIdentityFiles = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', ...identityPaths], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -101,53 +68,52 @@ export function resolveTerminalReceiptSourceIdentity(repoRoot: string): Analyzer
   if (untrackedIdentityFiles.trim()) throw new Error('Terminal corpus identity paths contain untracked files');
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Terminal corpus receipt generation requires an exact 40-character commit');
-  const digest = createHash('sha256');
-  const files = analyzerSourceFiles(repoRoot);
-  for (const relative of files) {
-    digest.update(relative);
-    digest.update('\0');
-    digest.update(fs.readFileSync(path.join(repoRoot, relative)));
-    digest.update('\0');
-  }
-  return { commit, digest: digest.digest('hex'), fileCount: files.length };
+  return {
+    commit,
+    parserFingerprint: computeParserFingerprintForRoot(analyzerCoreRoot),
+    derivedFingerprint: computeDerivedFingerprintForRoot(analyzerCoreRoot),
+  };
 }
 
-function readSemanticTrace(directory: string): Buffer {
-  const files = fs.readdirSync(directory).filter(file => file.endsWith('.jsonl')).sort();
-  if (files.length !== 1) throw new Error(`Expected exactly one semantic trace, found ${files.length}`);
-  const bytes = fs.readFileSync(path.join(directory, files[0]));
-  const rows = bytes.toString('utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-  const providerAttempts = rows.filter(row => row.decision_type === 'ai_provider_attempt');
-  const catalogDecisions = rows.filter(row => row.decision_type === 'capability_catalog');
-  if (!providerAttempts.length || !catalogDecisions.length) throw new Error('Semantic trace lacks provider or catalog decisions');
-  if (!providerAttempts.every(row => row.provider === TERMINAL_RECEIPT_IDENTITY.provider
-    && row.model === TERMINAL_RECEIPT_IDENTITY.model
-    && row.schema_version === TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion)) {
-    throw new Error('Every provider attempt must use the pinned provider/model/schema identity');
+function answeredFolder(answerRoot: string): string {
+  return path.join(answerRoot, 'model-answers');
+}
+
+export function readAuthorIdentity(env: NodeJS.ProcessEnv, answerRoot: string): AuthorIdentity {
+  const endpoint = new URL(env.KLAURO_AUTHOR_ENDPOINT || '');
+  const folder = answeredFolder(answerRoot);
+  const models = new Set<string>();
+  const files = fs.existsSync(folder) ? fs.readdirSync(folder) : [];
+  for (const file of files) {
+    const held = fs.readFileSync(path.join(folder, file), 'utf8');
+    const answered = held.slice(held.indexOf('\0') + 1);
+    try {
+      const model = (JSON.parse(answered) as { model?: unknown }).model;
+      if (typeof model === 'string' && model) models.add(model);
+    } catch { continue; }
   }
-  if (!catalogDecisions.every(row => row.prompt_version === TERMINAL_RECEIPT_IDENTITY.promptVersion
-    && row.schema_version === TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion)) {
-    throw new Error('Every capability catalog decision must use the pinned prompt/schema identity');
-  }
-  return bytes;
+  if (!models.size) throw new Error('The author endpoint answered nothing that names its model');
+  return { endpoint: `${endpoint.origin}${endpoint.pathname}`, models: [...models].sort() };
 }
 
 function evidenceFor(capability: SystemCapability, nodes: Set<string>, flows: Set<string>) {
-  const source_node_ids = [...new Set((capability.operations || [])
-    .map(operation => operation.entry_point_id)
-    .filter((id): id is string => typeof id === 'string' && nodes.has(id)))].sort();
-  const source_flow_ids = [...new Set((capability.related_flows || [])
-    .map(flow => flow.flow_id)
-    .filter(id => flows.has(id)))].sort();
+  const provenance = capability.composition_provenance || [];
+  const source_node_ids = [...new Set([
+    ...(capability.operations || []).map(operation => operation.entry_point_id),
+    ...provenance.flatMap(item => item.source_node_ids || []),
+  ].filter((id): id is string => typeof id === 'string' && nodes.has(id)))].sort();
+  const source_flow_ids = [...new Set([
+    ...(capability.related_flows || []).map(flow => flow.flow_id),
+    ...provenance.flatMap(item => item.source_flow_ids || []),
+  ].filter(id => flows.has(id)))].sort();
   if (source_node_ids.length + source_flow_ids.length === 0) {
     throw new Error(`Capability ${capability.id} has no source evidence in its produced CAS`);
   }
   return { source_node_ids, source_flow_ids };
 }
 
-function validateStaged(output: CASOutput, receipt: any, casBytes: Buffer, semanticBytes: Buffer): void {
+function validateStaged(output: CASOutput, receipt: any, casBytes: Buffer): void {
   if (sha256(casBytes) !== receipt.analysis.production_cas_sha256) throw new Error('Production CAS digest mismatch');
-  if (sha256(semanticBytes) !== receipt.analysis.semantic_trace_sha256) throw new Error('Semantic trace digest mismatch');
   const decoded = JSON.parse(gunzipSync(casBytes).toString('utf8')) as CASOutput;
   const payload = receipt.capabilities.map((item: any) => item.capability);
   if (sha256(JSON.stringify(payload)) !== receipt.analysis.capabilities_sha256) throw new Error('Capability digest mismatch');
@@ -162,7 +128,7 @@ function validateStaged(output: CASOutput, receipt: any, casBytes: Buffer, seman
 }
 
 async function stageMember(member: CorpusMember, fixtureDir: string, stagedBundle: string, extractionRoot: string,
-  traceRoot: string, identity: AnalyzerSourceIdentity, analyze: ReceiptGeneratorDependencies['analyze']): Promise<void> {
+  answerRoot: string, identity: AnalyzerSourceIdentity, env: NodeJS.ProcessEnv, analyze: ReceiptGeneratorDependencies['analyze']): Promise<void> {
   if (!member.receipt) return;
   const archivePath = path.join(fixtureDir, member.archive);
   const archiveBytes = fs.readFileSync(archivePath);
@@ -174,24 +140,19 @@ async function stageMember(member: CorpusMember, fixtureDir: string, stagedBundl
   if (sha256(fs.readFileSync(path.join(projectRoot, member.sourceFile))) !== member.sourceSha256) {
     throw new Error(`Pinned source digest mismatch for ${member.repoId}`);
   }
-  const memberTraceRoot = path.join(traceRoot, member.repoId.replace(/[^a-z0-9]+/gi, '-'));
-  fs.mkdirSync(memberTraceRoot, { recursive: true });
-  process.env.KLAURO_SEMANTIC_DATASET_DIR = memberTraceRoot;
+  fs.rmSync(answeredFolder(answerRoot), { recursive: true, force: true });
   const output = await analyze(projectRoot);
   if (output.analysis_errors?.length) throw new Error(`Analysis failed for ${member.repoId}: ${output.analysis_errors.join('; ')}`);
   if (!output.capabilities?.length) throw new Error(`Analysis emitted no capabilities for ${member.repoId}`);
-  if (!output.analysis_id || !output.analysis_timestamp || !output.parser_fingerprint || !output.derived_fingerprint) {
-    throw new Error(`Analysis identity is incomplete for ${member.repoId}`);
-  }
+  if (!output.analysis_id || !output.analysis_timestamp) throw new Error(`Analysis identity is incomplete for ${member.repoId}`);
+  const author = readAuthorIdentity(env, answerRoot);
   const nodes = new Set(output.nodes.map(node => node.id));
   const flows = new Set((output.flows || []).map(flow => flow.flow_id));
   const capabilities = output.capabilities.map(capability => ({ capability, ...evidenceFor(capability, nodes, flows) }));
-  const semanticBytes = readSemanticTrace(memberTraceRoot);
   const casBytes = gzipSync(JSON.stringify(output), { level: 9 });
   const relativeReceipt = member.receipt.replace(/^terminality-public-corpus\//, '');
   const stem = path.basename(relativeReceipt, '-receipt.json');
   const casName = `${stem}-cas.json.gz`;
-  const traceName = `${stem}-semantic.jsonl`;
   const commit = member.repoId.slice(member.repoId.lastIndexOf('@') + 1);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`${member.repoId} is not commit-pinned`);
   const repository = member.source.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/archive\//)?.[1];
@@ -203,18 +164,14 @@ async function stageMember(member: CorpusMember, fixtureDir: string, stagedBundl
     source: { repository, commit, license: member.license, archive: path.basename(member.archive), archive_sha256: member.archiveSha256,
       root: member.root, file_sha256: Object.fromEntries(sourceFiles.map(file => [file, sha256(fs.readFileSync(path.join(projectRoot, file)))])) },
     analysis: { analysis_id: output.analysis_id, analysis_timestamp: output.analysis_timestamp,
-      analyzer_build: `source-sha256:${identity.digest}`, analyzer_source_base_commit: identity.commit,
-      analyzer_source_sha256: identity.digest, analyzer_source_file_count: identity.fileCount,
-      production_cas: casName, production_cas_sha256: sha256(casBytes), capabilities_sha256: sha256(JSON.stringify(output.capabilities)),
-      provider: TERMINAL_RECEIPT_IDENTITY.provider, model: TERMINAL_RECEIPT_IDENTITY.model,
-      prompt_version: TERMINAL_RECEIPT_IDENTITY.promptVersion, semantic_schema_version: TERMINAL_RECEIPT_IDENTITY.semanticSchemaVersion,
-      semantic_trace: traceName, semantic_trace_sha256: sha256(semanticBytes), ai_cache: 'disabled',
-      parser_fingerprint: output.parser_fingerprint, derived_fingerprint: output.derived_fingerprint },
+      analyzer_build: `parser:${identity.parserFingerprint};derived:${identity.derivedFingerprint}`, analyzer_source_base_commit: identity.commit,
+      production_cas: casName, production_cas_sha256: sha256(casBytes), capabilities_sha256: sha256(JSON.stringify(capabilities.map(item => item.capability))),
+      author_endpoint: author.endpoint, author_models: author.models, ai_cache: 'disabled',
+      parser_fingerprint: identity.parserFingerprint, derived_fingerprint: identity.derivedFingerprint },
     repo_id: member.repoId, known_node_ids: [...nodes].sort(), known_flow_ids: [...flows].sort(), capabilities,
   };
-  validateStaged(output, receipt, casBytes, semanticBytes);
+  validateStaged(output, receipt, casBytes);
   fs.writeFileSync(path.join(stagedBundle, casName), casBytes);
-  fs.writeFileSync(path.join(stagedBundle, traceName), semanticBytes);
   fs.writeFileSync(path.join(stagedBundle, relativeReceipt), `${JSON.stringify(receipt, null, 2)}\n`);
 }
 
@@ -276,11 +233,10 @@ export async function generateTerminalPublicCorpusReceipts(options: ReceiptGener
   const extractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-terminal-source-'));
   const backup = `${current}.backup-${process.pid}-${randomUUID()}`;
   fs.cpSync(current, staged, { recursive: true });
-  fs.rmSync(options.semanticTraceRoot, { recursive: true, force: true });
-  fs.mkdirSync(options.semanticTraceRoot, { recursive: true });
-  const previousTraceRoot = process.env.KLAURO_SEMANTIC_DATASET_DIR;
+  fs.rmSync(options.answerRoot, { recursive: true, force: true });
+  fs.mkdirSync(options.answerRoot, { recursive: true });
   try {
-    for (const member of members) await stageMember(member, fixtureDir, staged, extractionRoot, options.semanticTraceRoot, identity, options.dependencies.analyze);
+    for (const member of members) await stageMember(member, fixtureDir, staged, extractionRoot, options.answerRoot, identity, env, options.dependencies.analyze);
     fsyncTree(staged);
     writeJournal(journalPath, { current, backup, staged, stagingParent });
     fs.renameSync(current, backup);
@@ -297,8 +253,6 @@ export async function generateTerminalPublicCorpusReceipts(options: ReceiptGener
       throw error;
     }
   } finally {
-    if (previousTraceRoot === undefined) delete process.env.KLAURO_SEMANTIC_DATASET_DIR;
-    else process.env.KLAURO_SEMANTIC_DATASET_DIR = previousTraceRoot;
     if (fs.existsSync(journalPath)) recoverTerminalReceiptPublication(journalPath);
     fs.rmSync(stagingParent, { recursive: true, force: true });
     fs.rmSync(extractionRoot, { recursive: true, force: true });
