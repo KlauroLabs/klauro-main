@@ -991,7 +991,7 @@ export async function resolveAnalysisExportArtifact(
     const exportPath = segmentedLegacyExportPath(resolved.filePath, path.basename(segmented.directory));
     const exportStat = await fs.stat(exportPath).catch(() => null);
     if (!exportStat) {
-      const { runIsolatedAnalysisExport } = await import('./analysis-export-process');
+      const { runIsolatedAnalysisExport } = await import('./analysis-export-process.js');
       return runIsolatedAnalysisExport(projectPath, options);
     }
     return { filePath: exportPath, codec: compressionCodecForPath(exportPath), bytes: exportStat.size };
