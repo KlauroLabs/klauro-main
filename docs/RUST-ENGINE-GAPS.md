@@ -238,3 +238,26 @@ Marked "in progress" are the items lanes L1 to L5 are porting now. Every other i
 5. Hosted build (`build-bundle.mjs --hosted`). It requires the native parser and engine binaries and copies `klauro-parse` and grammars; update the probe and the copy steps in the same change or the hosted build aborts.
 6. Mixed tests (160 files). Deleting them hides regressions in the live code they also cover; split before deleting.
 7. `analyzer.ts` AI-description guards (`preservePreviousAIDescriptions`, `hasStaleNarrativePattern`). They shape stored text across runs. Keep them until descriptions come from the engine.
+
+## 9. Phase A outcome and exceptions
+
+Phase A removed the orchestrator and everything reachable only through it, the incremental baseline, the legacy `server.ts`, the native parse helper (`klauro-parse`) and the benches that drove deleted code. Stage fingerprints now hash the engine crate (sources, data tables, grammars, Cargo and build files) as the parser stage and the tier-stack mapper plus the core modules it imports as the derived stage; the module list lives in `packages/analyzer-core/parser-stage-manifest.json` and a test fails when the mapper imports a module the manifest does not hash.
+
+Known exceptions to the Rust-only rule, kept on purpose:
+
+| Area | Kept | Reason |
+|---|---|---|
+| Embeddings and semantic search | `analyzer/embedding/*`, `semantic-search.ts`, `ai-cache`, the AI SDKs, `pg` and `ioredis` | Owner decision: deferred until after beta. |
+| Declarative analyzer packs (G13) | `analyzer/packs/*`, their tests, `wasm-tree-sitter.ts`, `tree-sitter-ts-extractor.ts` and helpers, `base-analyzer.ts`, `source-corpus.ts`, `errors.ts`, `vendored-grammars`, and the `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`, `web-tree-sitter`, `tree-sitter-wasms` and `js-yaml` dependencies | Port planned to the Rust engine. A later lane removes the pack code once the port lands. |
+| Phase B modules | `communication-seams`, `link-coverage`, `graph-validation`, `idiom-detector` (with `idiom-data-access`, `glob-cache`, `event-loop-yield`, `build-artifact-paths`), and every LIVE query-time module in section 3.2 and 3.3 | Imported by the tier-stack mapper or by `query.ts`; they are ported to the engine first. `tier-stack-evidence.ts` imports only `EMPTY_CATEGORY_COUNTS` from `idiom-detector`; the one-line rewire belongs to the tier-stack owner. |
+| CAS type imports | `codebase-type`, `consistency-model`, `conventions-applier`, `co-change-index` | `cas.types.ts` and `context-fabric.ts` import their types. Their implementations are dead; reduce them to types when `cas.types.ts` is free. `IncrementalState` and `FileAnalysisRecord` in `cas.types.ts` are unused and can be dropped with it. |
+| Language tables | `language-registry.ts`, `scaffold-paths.ts` | Still LIVE for upload scope (`layered-analysis`, `remote-source`, `upload-scope-guard`). |
+| Review tooling | `external-service-plausibility.ts`, `understanding-contract-integrity.ts` | Used by `analysis-usefulness-review` and `deployable-analysis.test` as evaluators of live output. |
+
+Rewires made in Phase A:
+
+- `generate-language-tables.mjs` is deleted. The checked-in `language_tables.rs` had already diverged from the TypeScript registry (razor, appxmanifest, wixproj, wxs, gemspec, `.pnpm-store`, `.yarn` were added by hand), so running the generator removed entries. The Rust table is the source of truth.
+- A missing incremental baseline no longer exists as a concept: `incremental-state*.json` is no longer written or read, `analysis-freshness-deep` derives freshness from source mtimes against the analysis timestamp only, and the `tracked_files` field is gone.
+- The hosted bundle no longer probes or copies `klauro-parse` or the wasm grammars; `gate.sh` and the API Dockerfile build and mount the engine instead.
+- Gate benches `incremental-locality-benchmark`, `full-grid`, `camps-bench`, `camp-a-langs-bench`, `camp-b-structural`, `ui-server`, `competitor-scorecard`, `installed-intelligence-gauntlet` and `gauntlet/index` were deleted because they drove the TypeScript analyzers or registries directly.
+- CI pipeline facts (G8) have no engine rule yet: `query-cicd.test.ts` now analyzes through `analyzeForBench` and is the acceptance test.
