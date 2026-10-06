@@ -8,6 +8,8 @@ use serde::Serialize;
 
 use value::{Kind, Value};
 
+const LARGEST_SOURCE: u64 = 1_000_000;
+
 #[derive(Serialize, Default)]
 pub struct Trigger {
     pub event: String,
@@ -107,7 +109,11 @@ pub fn extract(root: &Path, paths: &[&str]) -> Vec<Pipeline> {
         .enumerate()
         .filter_map(|(file, path)| {
             let detected = tables::detect(path)?;
-            let source = std::fs::read_to_string(root.join(path)).ok()?;
+            let held = crate::paths::kept_inside(root, Path::new(path))?;
+            if std::fs::metadata(held).ok()?.len() > LARGEST_SOURCE {
+                return None;
+            }
+            let source = crate::paths::read_inside(root, path)?;
             let mut builder = Builder::new(path, detected.provider, file as u32);
             match detected.layout {
                 "jenkins" => jenkins::read(&mut builder, &source),
