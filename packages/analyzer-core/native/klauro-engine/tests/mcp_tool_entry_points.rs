@@ -119,3 +119,20 @@ fn go_add_tool_new_tool_pairs_are_tool_entries() {
         .unwrap_or_else(|| panic!("expected a tool entry named list_go_tools from Go AddTool, found {entries:?}"));
     assert!(common::names(entry["handler"].as_str().unwrap(), "listGoToolsHandler"));
 }
+
+#[test]
+fn a_tool_registered_through_a_forwarding_wrapper_is_a_tool_entry_whose_handler_reaches_its_effects() {
+    let index = common::read("mcp_tools");
+    let entries = tool_entries(&index);
+
+    let entry = find_by_name(&entries, "push_record")
+        .unwrap_or_else(|| panic!("expected a tool entry named push_record through the wrappers, found {entries:?}"));
+    assert!(
+        common::calls(&index, entry["handler"].as_str().unwrap(), "pushRecord"),
+        "the wrapped handler is the entry's body, so the flow must reach pushRecord"
+    );
+    assert!(
+        !entries.iter().any(|entry| entry["name"] == "not_a_tool_either"),
+        "a parameter named register in a file that never forwards registerTool is not a registrar, found {entries:?}"
+    );
+}

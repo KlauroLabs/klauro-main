@@ -179,6 +179,12 @@ pub(crate) const DISPATCH_CONST_MARKER: &str = "\u{1}const:";
 
 static MCP_TOOL_REGISTRARS: &[&str] = &["addtool", "registertool", "tool"];
 
+pub(crate) const MCP_TOOL_REGISTRAR: &str = "registerTool";
+
+pub(crate) fn names_an_mcp_tool_registrar(name: &str) -> bool {
+    MCP_TOOL_REGISTRARS.contains(&names::leaf(name).to_ascii_lowercase().as_str())
+}
+
 fn named_by_an_mcp_sdk(specifier: &str) -> bool {
     let specifier = specifier.trim_start_matches("./").trim_start_matches("node:");
     specifier == "@modelcontextprotocol/sdk"
@@ -228,7 +234,7 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
         Some("cli") => return Some("cli"),
         _ => {}
     }
-    if speaks_the_mcp_sdk && MCP_TOOL_REGISTRARS.contains(&names::leaf(registrar).to_ascii_lowercase().as_str()) {
+    if speaks_the_mcp_sdk && names_an_mcp_tool_registrar(registrar) {
         return Some("tool");
     }
     crate::rules::registrar_kind(registrar, label, in_a_routing_dsl)

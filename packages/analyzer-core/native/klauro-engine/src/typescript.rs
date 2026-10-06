@@ -21,6 +21,7 @@ pub struct Extractor<'a> {
     option_bags: rustc_hash::FxHashSet<String>,
     placed: Option<Placed>,
     speaks_the_mcp_sdk: bool,
+    tool_registrar_aliases: rustc_hash::FxHashSet<String>,
     roots: rustc_hash::FxHashSet<String>,
     containers: rustc_hash::FxHashSet<String>,
     returned_paths: std::cell::OnceCell<rustc_hash::FxHashMap<String, String>>,
@@ -105,6 +106,7 @@ impl<'a> Extractor<'a> {
             option_bags: rustc_hash::FxHashSet::default(),
             placed: None,
             speaks_the_mcp_sdk: false,
+            tool_registrar_aliases: rustc_hash::FxHashSet::default(),
             roots: rustc_hash::FxHashSet::default(),
             containers: rustc_hash::FxHashSet::default(),
             returned_paths: std::cell::OnceCell::new(),
@@ -1397,6 +1399,12 @@ impl<'a> Extractor<'a> {
                     self.remember_a_table_of_paths(&name, value, line_of(declarator));
                 }
             }
+            if self.speaks_the_mcp_sdk
+                && name_node.kind() == "identifier"
+                && value.is_some_and(|value| self.forwards_tool_registration(value))
+            {
+                self.tool_registrar_aliases.insert(name.clone());
+            }
             if name_node.kind() == "identifier" && value.is_some_and(|value| unwrap_value(value).kind() == "object") {
                 self.option_bags.insert(name.clone());
             }
@@ -1718,6 +1726,7 @@ impl<'a> Extractor<'a> {
         if let Some(arguments) = arguments {
             let registrar = match receiver.as_deref() {
                 Some(receiver) => format!("{receiver}.{callee}"),
+                None if self.tool_registrar_aliases.contains(&callee) && !self.shadowed_by_a_parameter(node, &callee) => crate::entry_exit::MCP_TOOL_REGISTRAR.to_string(),
                 None => callee.clone(),
             };
             let dispatches_mcp_tools = self.speaks_the_mcp_sdk
@@ -1764,6 +1773,57 @@ impl<'a> Extractor<'a> {
             },
             passes,
         });
+    }
+
+    fn shadowed_by_a_parameter(&self, node: Node, name: &str) -> bool {
+        let mut above = node.parent();
+        while let Some(held) = above {
+            if let Some(parameters) = held.child_by_field_name("parameters").or_else(|| held.child_by_field_name("parameter")) {
+                let mut pending = vec![parameters];
+                while let Some(candidate) = pending.pop() {
+                    if candidate.kind() == "identifier" && self.text(candidate) == name {
+                        return true;
+                    }
+                    let mut cursor = candidate.walk();
+                    pending.extend(candidate.named_children(&mut cursor).filter(|child| child.kind() != "type_annotation"));
+                }
+            }
+            above = held.parent();
+        }
+        false
+    }
+
+    fn forwards_tool_registration(&self, value: Node) -> bool {
+        let mut pending = vec![value];
+        while let Some(node) = pending.pop() {
+            let calls_it_directly = node.parent().is_some_and(|parent| {
+                parent.kind() == "call_expression" && parent.child_by_field_name("function") == Some(node)
+            });
+            match node.kind() {
+                "member_expression" if !calls_it_directly => {
+                    let property = node.child_by_field_name("property").map(|held| self.text(held));
+                    if property.is_some_and(crate::entry_exit::names_an_mcp_tool_registrar) {
+                        return true;
+                    }
+                }
+                "call_expression" => {
+                    let forwarded = node.child_by_field_name("function").is_some_and(|function| {
+                        function.kind() == "identifier" && self.tool_registrar_aliases.contains(self.text(function))
+                    });
+                    let named_by_a_parameter = node
+                        .child_by_field_name("arguments")
+                        .and_then(|arguments| arguments.named_child(0))
+                        .is_some_and(|first| first.kind() == "identifier");
+                    if forwarded && named_by_a_parameter {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+        false
     }
 
     fn property_holding(&self, arguments: Node) -> Option<String> {
