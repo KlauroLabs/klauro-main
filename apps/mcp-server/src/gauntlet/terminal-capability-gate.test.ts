@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import {
   runTerminalCapabilityGate,
   type RepoCapabilityFacts,
@@ -147,7 +147,7 @@ test('real public package and app corpus uses production-emitted capabilities wi
       const packageLock = fs.existsSync(packageLockPath)
         ? JSON.parse(fs.readFileSync(packageLockPath, 'utf8'))
         : undefined;
-      const analyzed = await createOrchestrator().orchestrateAnalysis(packageRoot);
+      const analyzed = await analyzeForBench(packageRoot);
       const nodeIds = new Set(analyzed.nodes.map(node => node.id));
       const flowIds = new Set((analyzed.flows || []).map(flow => flow.flow_id));
       let capabilities: RepoCapabilityFacts['capabilities'] = [];

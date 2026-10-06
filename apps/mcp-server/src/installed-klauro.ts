@@ -21,7 +21,6 @@ export interface InstalledKlauroRunOptions {
 
 export interface InstalledKlauroAnalysisResult {
   output: CASOutput;
-  state?: IncrementalAnalysisResult['state'];
   changeReport?: IncrementalAnalysisResult['changeReport'];
   wasFullRebuild: boolean;
   fullRebuildReason?: string;
@@ -109,7 +108,6 @@ export async function syncWithInstalledKlauro(
   }
   return {
     output: result.output,
-    state: result.state as IncrementalAnalysisResult['state'],
     changeReport: result.changeReport,
     wasFullRebuild: result.wasFullRebuild,
     fullRebuildReason: result.fullRebuildReason,
@@ -145,7 +143,6 @@ function parseInstalledAnalysis(
   }
   return {
     output,
-    state: result.state,
     changeReport: result?.changeReport ?? result?.change_report,
     wasFullRebuild: Boolean(
       result.wasFullRebuild

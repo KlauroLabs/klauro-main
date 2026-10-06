@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
-import { createOrchestrator } from '../src/analyzer';
+import { analyzeProject } from '../src/analyzer';
 import {
   generateTerminalPublicCorpusReceipts,
   resolveTerminalReceiptSourceIdentity,
@@ -14,7 +14,7 @@ void generateTerminalPublicCorpusReceipts({
   fixturePath: path.join(packageRoot, 'src/gauntlet/fixtures/terminality-public-corpus.json'),
   semanticTraceRoot: path.join(packageRoot, '.terminal-public-corpus-semantic'),
   dependencies: {
-    analyze: root => createOrchestrator().orchestrateAnalysis(root),
+    analyze: root => analyzeProject(root, undefined, { persist: false }),
     resolveSourceIdentity: resolveTerminalReceiptSourceIdentity,
     runTerminalGate: root => {
       execFileSync(process.execPath, [

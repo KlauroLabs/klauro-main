@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { CiPipelineAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getCicdPipelines, buildOrientCapsule } from './query';
 
-// Build a CASOutput whose nodes/edges/entry_points come straight from the real
-// CiPipelineAnalyzer, so getCicdPipelines is verified against actual emitted
+// Build a CASOutput from the real analysis of the repository, so getCicdPipelines is verified against actual emitted
 // facts (not a hand-rolled fixture) — it must read, never recompute.
 async function analyzedCas(): Promise<CASOutput> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'query-cicd-test-'));
@@ -41,13 +40,7 @@ async function analyzedCas(): Promise<CASOutput> {
     path.join(dir, '.gitlab-ci.yml'),
     ['stages:', '  - test', 'unit:', '  stage: test', '  script:', '    - npm test', ''].join('\n'),
   );
-  const contribution = await new CiPipelineAnalyzer().analyze({ projectPath: dir });
-  return {
-    nodes: contribution.nodes,
-    edges: contribution.edges,
-    entry_points: contribution.entry_points,
-    exit_points: contribution.exit_points,
-  } as unknown as CASOutput;
+  return analyzeForBench(dir);
 }
 
 test('getCicdPipelines assembles pipeline -> job -> step -> trigger -> deploy + job DAG from stored facts', async () => {

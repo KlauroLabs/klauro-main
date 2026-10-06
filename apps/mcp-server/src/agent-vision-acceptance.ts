@@ -38,7 +38,6 @@ const REPORTS = {
   agenticBenchmark: '.klauro-agent-benchmark/latest-report.json',
   qualityBenchmark: '.klauro-agent-quality-benchmark/latest-report.json',
   incrementalBenchmark: '.klauro-incremental-benchmark/latest-report.json',
-  incrementalLocalityBenchmark: '.klauro-incremental-locality/latest-report.json',
   descriptionQualityBenchmark: '.klauro-description-quality-benchmark/latest-report.json',
   analysisFocusBenchmark: '.klauro-analysis-focus-benchmark/latest-report.json',
   competitorBaselineBenchmark: '.klauro-competitor-baseline-benchmark/latest-report.json',
@@ -63,7 +62,6 @@ async function main(): Promise<void> {
   const agenticBenchmark = await readReport(REPORTS.agenticBenchmark);
   const qualityBenchmark = await readReport(REPORTS.qualityBenchmark);
   const incrementalBenchmark = await readReport(REPORTS.incrementalBenchmark);
-  const incrementalLocalityBenchmark = await readReport(REPORTS.incrementalLocalityBenchmark);
   const descriptionQualityBenchmark = await readReport(REPORTS.descriptionQualityBenchmark);
   const analysisFocusBenchmark = await readReport(REPORTS.analysisFocusBenchmark);
   const competitorBaselineBenchmark = await readReport(REPORTS.competitorBaselineBenchmark);
@@ -83,7 +81,6 @@ async function main(): Promise<void> {
     'agentic-benchmark': agenticBenchmark,
     'agent-quality-benchmark': qualityBenchmark,
     'incremental-benchmark': incrementalBenchmark,
-    'incremental-locality-benchmark': incrementalLocalityBenchmark,
     'description-quality-benchmark': descriptionQualityBenchmark,
     'analysis-focus-benchmark': analysisFocusBenchmark,
     'competitor-baseline-benchmark': competitorBaselineBenchmark,
@@ -103,7 +100,6 @@ async function main(): Promise<void> {
   gates.push(...agenticBenchmarkGates(agenticBenchmark));
   gates.push(...qualityBenchmarkGates(qualityBenchmark));
   gates.push(...incrementalBenchmarkGates(incrementalBenchmark));
-  gates.push(...incrementalLocalityBenchmarkGates(incrementalLocalityBenchmark));
   gates.push(...descriptionQualityBenchmarkGates(descriptionQualityBenchmark));
   gates.push(...analysisFocusBenchmarkGates(analysisFocusBenchmark));
   gates.push(...competitorBaselineBenchmarkGates(competitorBaselineBenchmark));
@@ -301,34 +297,6 @@ function incrementalBenchmarkGates(report: JsonObject): Gate[] {
       Number(summary.full_verify_target_count) >= Number(summary.target_count) && Number(summary.full_verify_graph_equivalence_rate) === 1,
       `${percent(summary.full_verify_graph_equivalence_rate)} exact graph equivalence across ${summary.full_verify_target_count || 0}/${summary.target_count || 0} targets`
     ),
-  ];
-}
-
-function incrementalLocalityBenchmarkGates(report: JsonObject): Gate[] {
-  const summary = report.summary || {};
-  const scopes = array(report.scopes);
-  const scopeNames = new Set(scopes.map(scope => String(scope.scope)));
-  const requiredScopes = ['single-symbol', 'file', 'package', 'deployable', 'cross-repository'];
-  const packageScope = scopes.find(scope => scope.scope === 'package') || {};
-  const deployableScope = scopes.find(scope => scope.scope === 'deployable') || {};
-  const crossRepositoryScope = scopes.find(scope => scope.scope === 'cross-repository') || {};
-  return [
-    gate('incremental-locality:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
-    gate('incremental-locality:scope-coverage',
-      requiredScopes.every(scope => scopeNames.has(scope)) && Number(summary.scope_count) === requiredScopes.length,
-      `${[...scopeNames].join(', ') || 'missing'} scopes`),
-    gate('incremental-locality:exact-parity',
-      Number(summary.graph_equivalence_rate) === 1 && scopes.every(scope => scope.graph_equivalent === true),
-      `${percent(summary.graph_equivalence_rate)} exact canonical graph equivalence`),
-    gate('incremental-locality:file-reuse',
-      scopes.every(scope => Number(scope.reuse_ratio) > 0),
-      `${Math.round(Number(summary.average_reuse_ratio || 0) * 100)}% average unaffected-work reuse`),
-    gate('incremental-locality:boundaries',
-      (packageScope.affected_package_roots || []).map(String).includes('packages/core') &&
-        (deployableScope.affected_deployable_roots || []).map(String).includes('services/api') &&
-        array(crossRepositoryScope.changed_members).length === 1 &&
-        array(crossRepositoryScope.reused_members).length === 1,
-      `package=${array(packageScope.affected_package_roots).join(', ') || 'missing'}; deployable=${array(deployableScope.affected_deployable_roots).join(', ') || 'missing'}; cross-repo changed/reused=${array(crossRepositoryScope.changed_members).length}/${array(crossRepositoryScope.reused_members).length}`),
   ];
 }
 

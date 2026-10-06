@@ -1,14 +1,5 @@
 ARG NODE_VERSION=22.22.0
 
-FROM rust:1.88-bookworm AS native-parser-builder
-
-WORKDIR /build/klauro-parse
-
-COPY packages/analyzer-core/native/klauro-parse/Cargo.toml packages/analyzer-core/native/klauro-parse/Cargo.lock ./
-RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release && rm -rf src
-COPY packages/analyzer-core/native/klauro-parse/src ./src
-RUN touch src/main.rs && cargo build --release
-
 FROM rust:1.93-bookworm AS native-engine-builder
 
 WORKDIR /build/klauro-engine
@@ -48,7 +39,6 @@ COPY packages/analyzer-core/package.json ./packages/analyzer-core/package.json
 # image whose parser is broken should fail loudly at build time, not serve empty
 # analyses in production.
 COPY packages/analyzer-core/scripts/verify-native-parser.cjs ./packages/analyzer-core/scripts/verify-native-parser.cjs
-COPY apps/mcp-server/scripts/verify-native-parser.cjs ./apps/mcp-server/scripts/verify-native-parser.cjs
 
 RUN npm ci \
   --workspace @klauro/api \
@@ -61,7 +51,6 @@ RUN npm ci \
 COPY apps/api ./apps/api
 COPY apps/mcp-server ./apps/mcp-server
 COPY packages/analyzer-core ./packages/analyzer-core
-COPY --from=native-parser-builder /build/klauro-parse/target/release/klauro-parse /app/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse
 COPY --from=native-engine-builder /build/klauro-engine/target/release/klauro-engine /app/packages/analyzer-core/native/klauro-engine/target/release/klauro-engine
 # @klauro/telemetry SDK is imported by relative path (self-telemetry.ts, env-gated);
 # zero runtime deps, run from source via tsx — just needs to be present in the image.

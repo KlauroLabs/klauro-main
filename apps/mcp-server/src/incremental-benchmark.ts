@@ -3,10 +3,10 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
 import pLimit from 'p-limit';
-import { analyzeProject, analyzeProjectIncremental, createOrchestrator, type IncrementalAnalysisResult } from './analyzer';
+import { analyzeProject, analyzeProjectIncremental, type IncrementalAnalysisResult } from './analyzer';
 import { getAgentContext } from './agent-adoption';
 import { discoverTargets, type RepoTarget } from './gauntlet';
-import { getFileCacheSize, loadIncrementalState, saveAgenticBenchmarkReport, waitForPendingSegmentedWrites } from './storage';
+import { getFileCacheSize, saveAgenticBenchmarkReport, waitForPendingSegmentedWrites } from './storage';
 import { isDirectCliInvocation } from './cli-invocation';
 import { analyzeCasWithInstalledKlauro, initializeInstalledKlauroProject, prepareInstalledKlauroIncrementalBaseline, syncWithInstalledKlauro } from './installed-klauro';
 import { appendSemanticSourceProbe, supportsSemanticSourceProbe } from './semantic-source-probe';
@@ -68,7 +68,6 @@ interface IncrementalTargetReport {
     edit_apply_ms?: number;
     context_generation_ms?: number;
     token_proof_ms?: number;
-    state_load_ms?: number;
     cache_size_ms?: number;
   };
   speedups: {
@@ -418,9 +417,6 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
       );
       const editLoopWallMs = Math.max(1, Date.now() - editLoopStartedAt);
       const verify = edited.fingerprint ? await verifyFullGraph(analyzeFull, edited.fingerprint) : undefined;
-      const stateLoadStartedAt = Date.now();
-      const state = await loadIncrementalState(workspace);
-      const stateLoadMs = Math.max(1, Date.now() - stateLoadStartedAt);
       const cacheSizeStartedAt = Date.now();
       const cacheSize = await getFileCacheSize(workspace);
       const cacheSizeMs = Math.max(1, Date.now() - cacheSizeStartedAt);
@@ -451,7 +447,6 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           edit_apply_ms: editApplyMs,
           context_generation_ms: edited.contextGenerationMs,
           token_proof_ms: edited.tokenProofMs,
-          state_load_ms: stateLoadMs,
           cache_size_ms: cacheSizeMs,
         },
         speedups: {
@@ -469,7 +464,7 @@ async function benchmarkTarget(target: IncrementalTargetInput, options: Incremen
           analysis_errors: edited.evidence.output.analysisErrors,
           analysis_warnings: edited.evidence.output.analysisWarnings,
           analysis_information: edited.evidence.output.analysisInformation,
-          tracked_files: Object.keys(state?.files || {}).length,
+          tracked_files: edited.evidence.changeReport.locality?.trackedFiles || 0,
           file_cache_entries: cacheSize.files,
           file_cache_bytes: cacheSize.bytes,
         },
@@ -693,13 +688,6 @@ function incrementalEditScore(
   if (/utils?|helpers?|constants?|types?|lib|shared/i.test(file)) score += 20;
   const nodes = nodesByFile.get(file) || [];
   if (nodes.length === 0) return score - 10;
-  const incrementalAnalyzers = registeredIncrementalAnalyzers();
-  const unsafeAnalyzers = nodes.flatMap(node => [
-    ...(node.analyzers || []),
-    ...(node.primaryAnalyzer ? [node.primaryAnalyzer] : []),
-  ]).filter(analyzer => analyzer && !incrementalAnalyzers.has(analyzer));
-  if (unsafeAnalyzers.length === 0) score += 45;
-  else score -= Math.min(60, unsafeAnalyzers.length * 15);
   return score;
 }
 
@@ -752,19 +740,6 @@ function isTestFile(file: string): boolean {
   return /(^|\/)(test|tests|__tests__|spec)\//i.test(file) ||
     /\.(test|spec|cy)\./i.test(file) ||
     /(_test|Test|Tests)\.(go|java|cs|py)$/i.test(file);
-}
-
-let incrementalAnalyzerIds: ReadonlySet<string> | null = null;
-
-function registeredIncrementalAnalyzers(): ReadonlySet<string> {
-  if (incrementalAnalyzerIds) return incrementalAnalyzerIds;
-  incrementalAnalyzerIds = new Set(
-    createOrchestrator()
-      .listRegisteredAnalyzers()
-      .filter(analyzer => analyzer.incremental)
-      .map(analyzer => analyzer.id)
-  );
-  return incrementalAnalyzerIds;
 }
 
 async function applySafeSourceEdit(filePath: string): Promise<IncrementalTargetReport['edit']> {

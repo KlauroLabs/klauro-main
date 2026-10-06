@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compactCasSourceInputIdentities } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
-import { sourceInputObservation } from '../../../packages/analyzer-core/src/analyzer/core/analyzer-source-inputs';
+import * as crypto from 'node:crypto';
 import { buildAgentContextFreshness } from './agent-context-freshness';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
@@ -179,3 +179,7 @@ test('child projection rejects runtime fields absent from its exhaustive policy'
     /future_cas_section/,
   );
 });
+
+function sourceInputObservation(value: string, _encoding: string) {
+  return { status: 'captured' as const, representation: 'utf8-text' as const, sha256: crypto.createHash('sha256').update(value).digest('hex'), bytes: Buffer.byteLength(value, 'utf8') };
+}

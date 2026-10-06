@@ -19,10 +19,9 @@
     "mcp:test": "npm --prefix apps/mcp-server test",
     "analyzer:build": "npm --prefix packages/analyzer-core run build",
     "analyzer:test": "npm --prefix packages/analyzer-core test",
-    "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test && npm run parity:extractor",
+    "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test",
     "perf:budget": "npm --prefix apps/mcp-server run perf:budget",
-    "security:audit": "npm audit",
-    "parity:extractor": "npm --prefix packages/analyzer-core run parity:extractor"
+    "security:audit": "npm audit"
   },
   "overrides": {
     "fast-xml-parser": "5.10.1",

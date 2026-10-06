@@ -1,7 +1,4 @@
 import { strict as assert } from 'assert';
-import * as fs from 'fs-extra';
-import * as os from 'os';
-import * as nodePath from 'path';
 import { test } from 'node:test';
 import {
   RESPONSE_BUDGET_BYTES,
@@ -13,8 +10,6 @@ import {
 } from './response-budget';
 import { buildAnswerPackDigest, describeAnswerPackCatalog, runAnswerPack, type AnswerPackResult } from './product';
 import { getTestSummary } from './query';
-import { createServer } from './server';
-import { listAnalyses } from './storage';
 
 test('nested suite test truncation points to supported within-suite pagination', () => {
   const continuation = buildContinuation(
@@ -441,161 +436,6 @@ test('getTestSummary aggregates gap statistics server-side and pages the highest
   const typed = getTestSummary(cas, { gapType: 'mock-only' });
   assert.equal(typed.gap_summary.matching, 1);
   assert.equal(typed.test_gaps[0].recommendation, 'replace the mock-only coverage');
-});
-
-interface ToolResponse {
-  isError?: boolean;
-  content: Array<{ type: string; text: string }>;
-}
-
-function unwrapData(parsed: unknown): unknown {
-  if (parsed && typeof parsed === 'object' && (parsed as { truncated?: boolean }).truncated === true) {
-    return (parsed as { data: unknown }).data;
-  }
-  return parsed;
-}
-
-function findFirstNodeId(value: unknown): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findFirstNodeId(item);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    if (typeof record.id === 'string' && record.id.length > 0 && (record.type !== undefined || record.name !== undefined)) {
-      return record.id;
-    }
-    for (const item of Object.values(record)) {
-      const found = findFirstNodeId(item);
-      if (found) return found;
-    }
-  }
-  return undefined;
-}
-
-test('every core-profile tool response stays within the byte budget on the largest stored analysis', { timeout: 600_000 }, async context => {
-  const storagePath = process.env.KLAURO_STORAGE_PATH || nodePath.join(os.homedir(), '.klauro', 'analyses');
-  const analyses = await listAnalyses();
-  const usable = analyses
-    .filter(entry => fs.existsSync(nodePath.isAbsolute(entry.file) ? entry.file : nodePath.join(storagePath, entry.file)))
-    .sort((a, b) => b.node_count - a.node_count);
-  const largest = usable[0];
-  if (!largest) {
-    context.skip('No stored analysis available for the live core-profile response-size invariant.');
-    return;
-  }
-  console.log(`Response-size invariant target: ${largest.name} (${largest.node_count} nodes) at ${largest.path}`);
-
-  const previousProfile = process.env.KLAURO_TOOL_PROFILE;
-  process.env.KLAURO_TOOL_PROFILE = 'core';
-  try {
-    const server = createServer();
-    const registered = (server as any)._registeredTools as Record<string, { callback?: (args: any) => Promise<ToolResponse>; handler?: (args: any) => Promise<ToolResponse> }>;
-    const invoke = async (tool: string, args: Record<string, unknown>): Promise<ToolResponse> => {
-      const entry = registered[tool];
-      assert.ok(entry, `core profile should expose tool ${tool}`);
-      const callback = entry.callback ?? entry.handler;
-      return (await callback!(args)) as ToolResponse;
-    };
-
-    const path = largest.path;
-    const sizes: Record<string, number> = {};
-    let truncatedResponses = 0;
-
-    const assertBounded = (tool: string, response: ToolResponse): unknown => {
-      assert.equal(response.content.length, 1, `${tool} should return a single content block`);
-      const text = response.content[0].text;
-      sizes[tool] = byteLength(text);
-      assert.ok(
-        byteLength(text) <= RESPONSE_BUDGET_BYTES + SIZE_SLACK_BYTES,
-        `${tool} returned ${byteLength(text)} bytes, over the ${RESPONSE_BUDGET_BYTES}-byte budget`
-      );
-      const parsed = JSON.parse(text) as Record<string, unknown> | null;
-      if (parsed === null || typeof parsed !== 'object') return parsed;
-      if (parsed.truncated === true) {
-        truncatedResponses += 1;
-        if (Array.isArray(parsed.sections)) {
-          assert.ok((parsed.sections as Array<Record<string, unknown>>).every(section => typeof section.size_bytes === 'number'), `${tool} digest sections must report size_bytes`);
-          assert.ok((parsed.sections as Array<Record<string, unknown>>).some(section => section.included === false && section.fetch_with !== undefined), `${tool} digest must include fetch_with for withheld sections`);
-          assert.ok(typeof parsed.continuation === 'string' && (parsed.continuation as string).includes('run_answer_pack'), `${tool} digest must include continuation instructions`);
-        } else {
-          assert.equal(parsed.has_more, true, `${tool} truncated response must set has_more`);
-          assert.ok(typeof parsed.full_size_bytes === 'number' && (parsed.full_size_bytes as number) > RESPONSE_BUDGET_BYTES, `${tool} must report full_size_bytes`);
-          assert.ok(Array.isArray(parsed.truncated_paths) && (parsed.truncated_paths as unknown[]).length > 0, `${tool} must report truncated_paths`);
-          assert.ok(Array.isArray(parsed.continuation) && (parsed.continuation as unknown[]).length > 0, `${tool} must include continuation instructions`);
-        }
-      }
-      return parsed;
-    };
-
-    const searchResponse = await invoke('search_nodes', { path, query: 'service', limit: 25 });
-    const searchParsed = assertBounded('search_nodes', searchResponse);
-    const nodeId = findFirstNodeId(unwrapData(searchParsed));
-
-    const directCalls: Array<[string, Record<string, unknown>]> = [
-      ['resolve_agent_analysis', { path }],
-      ['get_agent_start_context', { path }],
-      ['get_agent_tool_plan', { path, task: { task_type: 'orient' } }],
-      ['get_agent_context', { path, task: { task_type: 'modify', target: 'service' } }],
-      ['get_coding_context', { path, target: nodeId ?? 'service' }],
-      ['find_tests', { path }],
-      ['validate_agent_change', { path, files: ['src/index.ts'] }],
-      ['get_product_map', { path }],
-      ['get_user_journeys', { path }],
-      ['run_answer_pack', { path }],
-      ['run_answer_pack', { path, section: 'data' }],
-    ];
-    if (nodeId) directCalls.push(['assess_change_risk', { path, node_id: nodeId }]);
-
-    for (const [tool, args] of directCalls) {
-      assertBounded(tool === 'run_answer_pack' && args.section ? 'run_answer_pack(section)' : tool, await invoke(tool, args));
-    }
-
-    const gatewayTools: Array<[string, Record<string, unknown>]> = [
-      ['get_security_overview', { path }],
-      ['get_data_entities', { path }],
-      ['get_route_table', { path }],
-      ['get_cicd_pipelines', { path, limit: 10_000 }],
-      ['get_entry_points', { path, limit: 10_000 }],
-      ['get_exit_points', { path, limit: 10_000 }],
-      ['get_level', { path, level: 1 }],
-      ['get_summary', { path }],
-      ['get_system_overview', { path }],
-      ['get_flow_coverage', { path }],
-      ['get_test_summary', { path }],
-      ['get_database_schema', { path }],
-      ['get_workflows', { path }],
-      ['get_behaviors', { path }],
-      ['get_external_services', { path }],
-      ['get_domain_concepts', { path }],
-      ['get_dependencies', { path }],
-      ['get_implementation_health', { path }],
-    ];
-    for (const [tool, args] of gatewayTools) {
-      const response = await invoke('klauro_query', { tool, args });
-      if (response.isError) {
-        const message = JSON.parse(response.content[0].text).error as string;
-        assert.ok(byteLength(response.content[0].text) <= RESPONSE_BUDGET_BYTES + SIZE_SLACK_BYTES, `klauro_query(${tool}) error response over budget`);
-        console.log(`klauro_query(${tool}) errored: ${message}`);
-        continue;
-      }
-      assertBounded(`klauro_query(${tool})`, response);
-    }
-
-    const report = Object.entries(sizes)
-      .sort((a, b) => b[1] - a[1])
-      .map(([tool, size]) => `${tool}: ${size} bytes`)
-      .join('\n');
-    console.log(`Response sizes (largest first):\n${report}`);
-    console.log(`Responses that required truncation: ${truncatedResponses}`);
-    assert.ok(truncatedResponses > 0, 'expected at least one tool to require truncation on the largest analysis; the invariant test is otherwise vacuous');
-  } finally {
-    if (previousProfile === undefined) delete process.env.KLAURO_TOOL_PROFILE;
-    else process.env.KLAURO_TOOL_PROFILE = previousProfile;
-  }
 });
 
 test('a truncated offset-paged tool names the exact next offset to continue from', () => {

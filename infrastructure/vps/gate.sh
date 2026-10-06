@@ -9,7 +9,7 @@ DOCKERFILE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 GATE_MAX_AGE_MIN="${GATE_MAX_AGE_MIN:-30}"
 GATE_TIMEOUT_S="${GATE_TIMEOUT_S:-3600}"
-NATIVE_PARSER_CACHE_ROOT="/opt/klauro/.gate-tools/native-parser"
+NATIVE_ENGINE_CACHE_ROOT="/opt/klauro/.gate-tools/native-engine"
 BENCH_CAS_CACHE="/opt/klauro/.gate-tools/bench-cas"
 
 reap_stale_containers() {
@@ -131,7 +131,7 @@ fi
 
 NATIVE_SOURCE_DIGEST="$(
   cd "$DEVGATE_DIR"
-  find packages/analyzer-core/native/klauro-parse -type f ! -path '*/target/*' -print0 |
+  find packages/analyzer-core/native/klauro-engine -type f ! -path '*/target/*' -print0 |
     sort -z |
     xargs -0 sha256sum |
     sha256sum |
@@ -139,22 +139,22 @@ NATIVE_SOURCE_DIGEST="$(
 )"
 NATIVE_ARCH="$(docker info --format '{{.Architecture}}')"
 NATIVE_CACHE_KEY="${KLAURO_GIT_SHA}-${NATIVE_ARCH}-${NATIVE_SOURCE_DIGEST}"
-NATIVE_PARSER_CACHE="${NATIVE_PARSER_CACHE_ROOT}/${NATIVE_CACHE_KEY}/klauro-parse"
-NATIVE_PARSER_DIGEST="${NATIVE_PARSER_CACHE}.sha256"
-ACTUAL_NATIVE_DIGEST="$(sha256sum "$NATIVE_PARSER_CACHE" 2>/dev/null | awk '{print $1}' || true)"
-if [ ! -x "$NATIVE_PARSER_CACHE" ] || [ "$ACTUAL_NATIVE_DIGEST" != "$(cat "$NATIVE_PARSER_DIGEST" 2>/dev/null || true)" ]; then
-  NATIVE_IMAGE="klauro-native-parser:${KLAURO_GIT_SHA}-${NATIVE_SOURCE_DIGEST:0:16}"
-  docker build --target native-parser-builder -f "$DEVGATE_DIR/apps/api/Dockerfile" -t "$NATIVE_IMAGE" "$DEVGATE_DIR"
-  mkdir -p "$(dirname "$NATIVE_PARSER_CACHE")"
-  PARSER_CONTAINER="$(docker create "$NATIVE_IMAGE")"
-  trap 'docker rm -f "$PARSER_CONTAINER" >/dev/null 2>&1 || true' EXIT
-  docker cp "$PARSER_CONTAINER:/build/klauro-parse/target/release/klauro-parse" "$NATIVE_PARSER_CACHE"
-  docker rm "$PARSER_CONTAINER" >/dev/null
+NATIVE_ENGINE_CACHE="${NATIVE_ENGINE_CACHE_ROOT}/${NATIVE_CACHE_KEY}/klauro-engine"
+NATIVE_ENGINE_DIGEST="${NATIVE_ENGINE_CACHE}.sha256"
+ACTUAL_NATIVE_DIGEST="$(sha256sum "$NATIVE_ENGINE_CACHE" 2>/dev/null | awk '{print $1}' || true)"
+if [ ! -x "$NATIVE_ENGINE_CACHE" ] || [ "$ACTUAL_NATIVE_DIGEST" != "$(cat "$NATIVE_ENGINE_DIGEST" 2>/dev/null || true)" ]; then
+  NATIVE_IMAGE="klauro-native-engine:${KLAURO_GIT_SHA}-${NATIVE_SOURCE_DIGEST:0:16}"
+  docker build --target native-engine-builder -f "$DEVGATE_DIR/apps/api/Dockerfile" -t "$NATIVE_IMAGE" "$DEVGATE_DIR"
+  mkdir -p "$(dirname "$NATIVE_ENGINE_CACHE")"
+  ENGINE_CONTAINER="$(docker create "$NATIVE_IMAGE")"
+  trap 'docker rm -f "$ENGINE_CONTAINER" >/dev/null 2>&1 || true' EXIT
+  docker cp "$ENGINE_CONTAINER:/build/klauro-engine/target/release/klauro-engine" "$NATIVE_ENGINE_CACHE"
+  docker rm "$ENGINE_CONTAINER" >/dev/null
   trap - EXIT
-  chmod 755 "$NATIVE_PARSER_CACHE"
-  sha256sum "$NATIVE_PARSER_CACHE" | awk '{print $1}' > "$NATIVE_PARSER_DIGEST"
+  chmod 755 "$NATIVE_ENGINE_CACHE"
+  sha256sum "$NATIVE_ENGINE_CACHE" | awk '{print $1}' > "$NATIVE_ENGINE_DIGEST"
 fi
-mkdir -p "$DEVGATE_DIR/packages/analyzer-core/native/klauro-parse/target/release"
+mkdir -p "$DEVGATE_DIR/packages/analyzer-core/native/klauro-engine/target/release"
 mkdir -p "$BENCH_CAS_CACHE"
 chmod -R a+rwX "$BENCH_CAS_CACHE" 2>/dev/null || true
 
@@ -236,7 +236,7 @@ timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
   -e KLAURO_BENCH_CAS_CACHE_DIR=/tmp/klauro-gate-bench-cas \
   "${DOCKER_ENV_ARGS[@]}" \
   -v "$DEVGATE_DIR:/gate" \
-  -v "$NATIVE_PARSER_CACHE:/gate/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse:ro" \
+  -v "$NATIVE_ENGINE_CACHE:/gate/packages/analyzer-core/native/klauro-engine/target/release/klauro-engine:ro" \
   -v "$BENCH_CAS_CACHE:/tmp/klauro-gate-bench-cas" \
   "${DOCKER_MOUNT_ARGS[@]}" \
   -w "/gate/$WORKSPACE" \

@@ -59,9 +59,9 @@ test('candidate gates require candidate identity and preserve proof artifacts', 
   assert.match(sync, /"git_sha":"\$CANDIDATE_SHA"/);
   assert.match(gate, /NATIVE_SOURCE_DIGEST=/);
   assert.match(gate, /NATIVE_CACHE_KEY="\$\{KLAURO_GIT_SHA\}-\$\{NATIVE_ARCH\}-\$\{NATIVE_SOURCE_DIGEST\}"/);
-  assert.match(gate, /docker build --target native-parser-builder/);
+  assert.match(gate, /docker build --target native-engine-builder/);
   assert.match(gate, /ACTUAL_NATIVE_DIGEST=.*sha256sum/);
-  assert.match(gate, /ACTUAL_NATIVE_DIGEST.*NATIVE_PARSER_DIGEST/);
+  assert.match(gate, /ACTUAL_NATIVE_DIGEST.*NATIVE_ENGINE_DIGEST/);
 });
 
 test('release artifacts are built, verified, and published from the VPS candidate', () => {

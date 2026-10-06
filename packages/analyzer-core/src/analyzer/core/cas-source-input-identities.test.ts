@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASAnalyzerContribution, CASOutput, CASSourceInputIdentity } from '../../types/cas.types';
 import { compactCasSourceInputIdentities, sourceInputIdentityAt } from './cas-source-input-identities';
-import { sourceInputObservation } from './analyzer-source-inputs';
-import { invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
+import * as crypto from 'node:crypto';
 
 function contributor(files: CASSourceInputIdentity[], id = 'first'): CASAnalyzerContribution {
   return { analyzer_id: id, analyzer_name: id, contribution_type: 'language',
@@ -21,6 +20,13 @@ function expand(cas: Catalog) {
       files: identity_indices.map(index => sourceInputIdentityAt(cas.source_input_identities, index)) } };
   });
 }
+
+const sourceInputObservation = (value: string, _encoding: string) => ({
+  status: 'captured' as const,
+  representation: 'utf8-text' as const,
+  sha256: crypto.createHash('sha256').update(value).digest('hex'),
+  bytes: Buffer.byteLength(value, 'utf8'),
+});
 
 const row = (file: string, content = file): CASSourceInputIdentity => ({ path: file, ...sourceInputObservation(content, 'utf8') });
 
@@ -111,16 +117,10 @@ test('child CAS identities remain local and never implicitly inherit the parent 
   assert.notDeepEqual(expand(parent)[0].source_inputs, expand(child)[0].source_inputs);
 });
 
-test('legacy absence remains absence and incremental invalidation remains explicit', () => {
+test('legacy absence remains absence', () => {
   const legacy: Catalog = { analyzer_contributions: [{ analyzer_id: 'legacy', analyzer_name: 'legacy', contribution_type: 'language' }] };
   compactCasSourceInputIdentities(legacy);
   assert.equal(legacy.source_input_identities, undefined);
-  const cas: Catalog = { analyzer_contributions: [contributor([row('source.ts')])] };
-  compactCasSourceInputIdentities(cas);
-  cas.analyzer_contributions = invalidateIncrementalSourceInputs(cas.analyzer_contributions);
-  compactCasSourceInputIdentities(cas);
-  assert.equal(cas.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
-  assert.equal(cas.analyzer_contributions[0].source_inputs?.reason, 'incremental-input-identities-not-refreshed');
 });
 
 test('JSON round trips preserve nullable and extension fields without merging distinct identities', () => {

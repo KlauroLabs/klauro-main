@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { runRouteFactsBench } from './framework-bench';
-import { createOrchestrator } from '../analyzer';
+import { analyzeForBench } from './product-analysis';
 import { getRouteTable } from '../query';
 
 const ROOT = path.resolve(__dirname, '../../fixtures/framework-bench');
@@ -49,7 +49,7 @@ test('framework-bench: the vapor-routes fixture exists', () => {
 // is a composition fact the route analyzer must resolve from group bindings.
 test('framework-bench: Klauro resolves Vapor grouped-authenticator endpoints', async () => {
   const dir = path.join(ROOT, 'vapor-routes');
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const routes: any[] = (getRouteTable(cas, { limit: 50 }) as any).routes;
   const byKey = new Map(routes.map(r => [`${r.method} ${r.path}`, r]));
 
@@ -65,7 +65,7 @@ test('framework-bench: Klauro resolves Vapor grouped-authenticator endpoints', a
 // like `requireAuth` must be captured, not swallowed by the arrow handler).
 test('framework-bench: Klauro links positional auth middleware to the right endpoints', async () => {
   const dir = path.join(ROOT, 'express-routes');
-  const cas: any = await createOrchestrator().orchestrateAnalysis(dir);
+  const cas: any = await analyzeForBench(dir);
   const routes: any[] = (getRouteTable(cas, { limit: 50 }) as any).routes;
   const byKey = new Map(routes.map(r => [`${r.method} ${r.path}`, r]));
 

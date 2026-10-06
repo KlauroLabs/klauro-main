@@ -12,14 +12,13 @@ function walkSourceFiles(directory, extensions) {
   }
 
   for (const entry of entries) {
-    if (entry.name === 'node_modules') continue;
+    if (entry.name === 'node_modules' || entry.name === 'target') continue;
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       files.push(...walkSourceFiles(target, extensions));
     } else if (
       extensions.some(extension => entry.name.endsWith(extension)) &&
-      !entry.name.endsWith('.test.ts') &&
-      !entry.name.endsWith('.test.tsx')
+      !entry.name.endsWith('.test.ts')
     ) {
       files.push(target);
     }
@@ -40,71 +39,23 @@ function hashSourceFiles(files, identityRoot) {
   return hash.digest('hex').slice(0, 16);
 }
 
-function hashBinaryContents(directory) {
-  let entries;
-  try {
-    entries = fs.readdirSync(directory).filter(file => file.endsWith('.wasm')).sort();
-  } catch {
-    return 'no-grammars';
-  }
-
-  const hash = crypto.createHash('sha256');
-  for (const name of entries) {
-    hash.update(name);
-    try {
-      hash.update(fs.readFileSync(path.join(directory, name)));
-    } catch {
-      hash.update('MISSING');
-    }
-  }
-  return hash.digest('hex').slice(0, 16);
-}
-
-function combineFingerprintParts(...parts) {
-  const hash = crypto.createHash('sha256');
-  for (const part of parts) {
-    hash.update(String(part.length));
-    hash.update(':');
-    hash.update(part);
-  }
-  return hash.digest('hex').slice(0, 16);
-}
-
 function loadManifest(analyzerCoreRoot) {
   return JSON.parse(fs.readFileSync(path.join(analyzerCoreRoot, 'parser-stage-manifest.json'), 'utf8'));
 }
 
-function computeParserFingerprint(analyzerCoreRoot, manifest) {
-  const walked = manifest.source_directories.flatMap(directory =>
+function computeStageFingerprint(analyzerCoreRoot, stage) {
+  const walked = stage.directories.flatMap(directory =>
     walkSourceFiles(path.join(analyzerCoreRoot, directory.path), directory.extensions)
   );
-  const declared = manifest.source_files.map(file => path.join(analyzerCoreRoot, file));
-  const sourceHash = hashSourceFiles([...walked, ...declared].sort(), analyzerCoreRoot);
-  const grammarHash = hashBinaryContents(path.join(analyzerCoreRoot, manifest.grammar_directory));
-  return combineFingerprintParts(sourceHash, grammarHash);
-}
-
-function computeDerivedFingerprint(analyzerCoreRoot, manifest) {
-  const analyzerDirectory = path.join(analyzerCoreRoot, 'src', 'analyzer');
-  const parserDirectories = manifest.source_directories
-    .map(directory => path.join(analyzerCoreRoot, directory.path))
-    .filter(directory => directory === analyzerDirectory || directory.startsWith(`${analyzerDirectory}${path.sep}`));
-  const parserFiles = new Set(manifest.source_files.map(file => path.join(analyzerCoreRoot, file)));
-  parserFiles.add(path.join(analyzerDirectory, 'core', 'stage-fingerprint.ts'));
-  parserFiles.add(path.join(analyzerDirectory, 'core', 'build-identity.ts'));
-
-  const derivedFiles = walkSourceFiles(analyzerDirectory, ['.ts', '.tsx']).filter(file =>
-    !parserFiles.has(file) &&
-    !parserDirectories.some(directory => file.startsWith(`${directory}${path.sep}`))
-  );
-  return hashSourceFiles(derivedFiles, analyzerCoreRoot);
+  const declared = stage.files.map(file => path.join(analyzerCoreRoot, file));
+  return hashSourceFiles([...new Set([...walked, ...declared])].sort(), analyzerCoreRoot);
 }
 
 function computeBuildStageFingerprints(analyzerCoreRoot) {
   const manifest = loadManifest(analyzerCoreRoot);
   return {
-    parser_fingerprint: computeParserFingerprint(analyzerCoreRoot, manifest),
-    derived_fingerprint: computeDerivedFingerprint(analyzerCoreRoot, manifest),
+    parser_fingerprint: computeStageFingerprint(analyzerCoreRoot, manifest.parser),
+    derived_fingerprint: computeStageFingerprint(analyzerCoreRoot, manifest.derived),
   };
 }
 

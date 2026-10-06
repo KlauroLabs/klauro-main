@@ -6,7 +6,6 @@ import { getHeapStatistics } from 'v8';
 import pLimit from 'p-limit';
 import type {
   CASOutput,
-  IncrementalState,
   FileAnalysisResult,
   ChangeHistoryEntry,
 } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -1569,83 +1568,10 @@ export async function loadProposalPreviewPayload(id = 'latest'): Promise<{
   };
 }
 
-const INCREMENTAL_STATE_VERSION_CURRENT = '1.0.0';
-
 export function getProjectStorageDir(projectPath: string): string {
   const storagePath = getStoragePath();
   const slug = projectSlug(projectPath);
   return path.join(storagePath, slug);
-}
-
-function incrementalStateBaseFileName(track: AnalysisTrack): string {
-  return `incremental-state${trackSuffix(track)}.json`;
-}
-
-function incrementalStateFileName(track: AnalysisTrack): string {
-  return `${incrementalStateBaseFileName(track)}${compressedJsonExtension()}`;
-}
-
-export async function saveIncrementalState(
-  projectPath: string,
-  state: IncrementalState,
-  track: AnalysisTrack = 'main'
-): Promise<void> {
-  const projectDir = getProjectStorageDir(projectPath);
-  await fs.ensureDir(projectDir);
-
-  const statePath = path.join(projectDir, incrementalStateFileName(track));
-
-  const stateToSave = {
-    ...state,
-    files: Object.fromEntries(
-      Object.entries(state.files).map(([k, v]) => [k, v])
-    ),
-  };
-
-  await writeCompressedJsonAtomic(statePath, stateToSave);
-  const basePath = path.join(projectDir, incrementalStateBaseFileName(track));
-  for (const stalePath of [basePath, ...jsonStoragePathCandidates(basePath)]) {
-    if (stalePath !== statePath) await fs.remove(stalePath).catch(() => undefined);
-  }
-}
-
-export async function loadIncrementalState(
-  projectPath: string,
-  track: AnalysisTrack = 'main'
-): Promise<IncrementalState | null> {
-  try {
-    const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, incrementalStateBaseFileName(track));
-    const resolved = await resolveJsonStoragePath(statePath);
-    if (!resolved) return null;
-    const state = await readJsonMaybeCompressed(resolved);
-
-    if (state.version !== INCREMENTAL_STATE_VERSION_CURRENT) {
-      console.warn(
-        `Incremental state version mismatch (${state.version} vs ${INCREMENTAL_STATE_VERSION_CURRENT}), discarding`
-      );
-      await deleteIncrementalState(projectPath, track);
-      return null;
-    }
-
-    return state as IncrementalState;
-  } catch (error) {
-    console.warn('Failed to load incremental state:', error);
-    return null;
-  }
-}
-
-export async function deleteIncrementalState(
-  projectPath: string,
-  track: AnalysisTrack = 'main'
-): Promise<void> {
-  try {
-    const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, incrementalStateBaseFileName(track));
-    await Promise.all([statePath, ...jsonStoragePathCandidates(statePath)].map(candidate => fs.remove(candidate).catch(() => undefined)));
-  } catch (error) {
-    console.warn('Failed to delete incremental state:', error);
-  }
 }
 
 export async function saveFileCache(

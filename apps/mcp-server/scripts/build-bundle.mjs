@@ -25,8 +25,7 @@ const definitions = {
 };
 
 const nativePackages = [
-  'tree-sitter', 'tree-sitter-javascript', 'tree-sitter-typescript', 'tree-sitter-c-sharp',
-  'tree-sitter-go', 'tree-sitter-php', 'tree-sitter-rust', 'web-tree-sitter', 'tree-sitter-wasms',
+  'tree-sitter', 'tree-sitter-javascript', 'tree-sitter-typescript', 'web-tree-sitter', 'tree-sitter-wasms',
   '@huggingface/transformers', '@xenova/transformers', 'onnxruntime-node', 'zstd-napi', 'fsevents',
 ];
 
@@ -55,35 +54,7 @@ const shared = {
   define: definitions,
 };
 
-function copyGrammars(outputDir) {
-  const grammarOut = path.join(outputDir, 'grammars');
-  mkdirSync(grammarOut, { recursive: true });
-  const sources = [path.join(analyzerCoreRoot, 'vendored-grammars')];
-  try {
-    const req = createRequire(path.join(packageRoot, 'resolve-anchor.js'));
-    sources.push(path.join(path.dirname(req.resolve('tree-sitter-wasms/package.json')), 'out'));
-  } catch {}
-  for (const source of sources) {
-    if (!existsSync(source)) continue;
-    for (const file of readdirSync(source)) {
-      if (!file.endsWith('.wasm')) continue;
-      const target = path.join(grammarOut, file);
-      if (!existsSync(target)) cpSync(path.join(source, file), target);
-    }
-  }
-}
-
 if (hostedBuild) {
-  const nativeParser = path.join(analyzerCoreRoot, 'native', 'klauro-parse', 'target', 'release', 'klauro-parse');
-  if (!existsSync(nativeParser) || !statSync(nativeParser).isFile()) {
-    throw new Error('Hosted build requires the exact-platform native parser; build packages/analyzer-core/native/klauro-parse first.');
-  }
-  const nativeProbe = JSON.parse(execFileSync(nativeParser, ['r'], {
-    input: '', encoding: 'utf8', timeout: 10_000, maxBuffer: 4096,
-  }));
-  if (nativeProbe.error || !nativeProbe.t) {
-    throw new Error('Hosted build native parser did not return a valid syntax tree.');
-  }
   const nativeEngine = path.join(analyzerCoreRoot, 'native', 'klauro-engine', 'target', 'release', 'klauro-engine');
   if (!existsSync(nativeEngine) || !statSync(nativeEngine).isFile()) {
     throw new Error('Hosted build requires the exact-platform native indexer; build packages/analyzer-core/native/klauro-engine first.');
@@ -107,13 +78,9 @@ if (hostedBuild) {
   await build({ ...shared, entryPoints: ['src/hosted-project-search-worker.ts'], outfile: 'dist-hosted/hosted-project-search-worker.cjs', plugins: [nativeExternals] });
   const queryWorker = await build({ ...shared, entryPoints: ['src/hosted-project-query-worker.ts'], outfile: 'dist-hosted/hosted-project-query-worker.cjs', metafile: true, plugins: [nativeExternals] });
   writeFileSync(path.join(output, 'query-runtime-metafile.json'), JSON.stringify({ runtime: queryRuntime.metafile, worker: queryWorker.metafile }));
-  await build({ ...shared, entryPoints: ['../../packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts'], outfile: 'dist-hosted/tree-sitter-ts-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/remote-analyzer-service.ts'], outfile: 'dist-hosted/analyzer-service.cjs', plugins: [nativeExternals] });
   writeFileSync(path.join(output, 'stage-fingerprints.json'), JSON.stringify(stageFingerprints, null, 2));
-  copyGrammars(output);
   mkdirSync(path.join(output, 'native'), { recursive: true });
-  cpSync(nativeParser, path.join(output, 'native', 'klauro-parse'));
-  chmodSync(path.join(output, 'native', 'klauro-parse'), 0o755);
   cpSync(nativeEngine, path.join(output, 'native', 'klauro-engine'));
   chmodSync(path.join(output, 'native', 'klauro-engine'), 0o755);
   console.log(`Built hosted analyzer artifacts in ${output}; these are never included in the customer package.`);
@@ -125,7 +92,6 @@ const analyzerSource = path.join(sourceRoot, 'analyzer.ts');
 const semanticSearchSource = path.join(sourceRoot, 'semantic-search.ts');
 const deployableAnalysisSource = path.join(sourceRoot, 'deployable-analysis.ts');
 const s3Source = path.join(sourceRoot, 's3-artifacts.ts');
-const orchestratorSource = path.join(analyzerCoreRoot, 'src', 'analyzer', 'core', 'orchestrator.ts');
 const buildIdentitySource = path.join(analyzerCoreRoot, 'src', 'analyzer', 'core', 'build-identity.ts');
 const deployableUtilSource = path.join(analyzerCoreRoot, 'src', 'analyzer', 'core', 'deployable-evidence', 'util.ts');
 
@@ -147,7 +113,7 @@ const installedBoundary = {
       if (resolved === analyzerSource || resolved === semanticSearchSource) {
         throw new Error(`Installed client attempted to import hosted-only module: ${resolved}`);
       }
-      if ([s3Source, deployableAnalysisSource, orchestratorSource, buildIdentitySource, deployableUtilSource].includes(resolved)) return { path: clientRuntime };
+      if ([s3Source, deployableAnalysisSource, buildIdentitySource, deployableUtilSource].includes(resolved)) return { path: clientRuntime };
       return null;
     });
   },
@@ -263,7 +229,7 @@ const forbidden = [
   /apps\/mcp-server\/src\/analysis-worker\.ts$/,
   /apps\/mcp-server\/src\/remote-analyzer-service\.ts$/,
   /packages\/analyzer-core\/src\/analyzer\/(languages|frameworks|libraries|embedding|ast|packs)\//,
-  /packages\/analyzer-core\/src\/analyzer\/core\/(orchestrator|tree-sitter|native-parse|generic-tree-sitter|graph-builder|enhanced-call-graph)/,
+  /packages\/analyzer-core\/src\/analyzer\/core\/(tree-sitter|wasm-tree-sitter)/,
 ];
 const inputs = [...Object.keys(serverResult.metafile.inputs), ...Object.keys(cliResult.metafile.inputs), ...Object.keys(seaEntryResult.metafile.inputs)].map(value => value.replace(/\\/g, '/'));
 const violations = [...new Set(inputs.filter(input => forbidden.some(pattern => pattern.test(input))))];
