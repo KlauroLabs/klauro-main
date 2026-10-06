@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::LazyLock;
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
@@ -239,8 +239,38 @@ pub fn derive(sources: &Sources) -> Vec<Found> {
         })
         .count() as u32;
     let controllers = roles.get("controller").copied().unwrap_or(0);
-    if controllers > 0 && rendered > 0 && roles.get("model").copied().unwrap_or(0) > 0 {
-        found_here.push(found("model-view-controller", "architecture", "controllers take requests, models keep data, views render it", controllers + rendered));
+    let controller_types: HashSet<&str> =
+        sources.roles.roles.iter().filter(|role| role.role == "controller").map(|role| role.node.as_str()).collect();
+    let answered_by_controllers = sources
+        .entry_points
+        .iter()
+        .filter(|entry| entry.kind == "http" && !tested(entry.file))
+        .filter(|entry| {
+            sources
+                .graph
+                .at(&entry.handler)
+                .and_then(|at| sources.graph.type_owner(at))
+                .is_some_and(|owner| controller_types.contains(sources.nodes[owner].id.as_str()))
+        })
+        .count() as u32;
+    let named_views = sources
+        .nodes
+        .iter()
+        .filter(|node| (node.kind.is_type() || node.kind.is_unit()) && !tested(node.file) && node.name.len() > "View".len() && node.name.ends_with("View"))
+        .count() as u32;
+    let views = rendered + answered_by_controllers + named_views;
+    let declared_in_a_schema = sources
+        .nodes
+        .iter()
+        .filter(|node| node.kind.is_type() && !tested(node.file))
+        .filter(|node| sources.paths.get(node.file as usize).is_some_and(|path| path.ends_with(".prisma")))
+        .count() as u32;
+    if controllers > 0 && views > 0 && roles.get("model").copied().unwrap_or(0) + declared_in_a_schema > 0 {
+        found_here.push(found("model-view-controller", "architecture", "controllers take requests, models keep data, views render it", controllers + views));
+    }
+    let components = roles.get("component").copied().unwrap_or(0);
+    if components > 0 {
+        found_here.push(found("component-based UI", "interface", "screens and pages composed from components", components));
     }
     let view_models = sources
         .nodes
@@ -253,7 +283,16 @@ pub fn derive(sources: &Sources) -> Vec<Found> {
             .iter()
             .filter(|reference| VIEW_MODELS.contains(&crate::names::leaf(reference.name.as_str())) && !tested(reference.file))
             .count() as u32;
-    if view_models >= 2 {
+    let bound_to_a_view_model = sources
+        .nodes
+        .iter()
+        .filter(|node| node.kind.is_unit() && !tested(node.file))
+        .any(|node| {
+            node.signature.as_ref().is_some_and(|signature| {
+                signature.parameters.iter().any(|parameter| parameter.type_annotation.as_deref().is_some_and(|held| held.contains("ViewModel")))
+            })
+        });
+    if view_models >= 2 || (view_models >= 1 && bound_to_a_view_model) {
         found_here.push(found("model-view-viewmodel", "architecture", "views bound to view models that hold their state", view_models));
     }
 

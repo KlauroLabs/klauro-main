@@ -84,6 +84,39 @@ pub fn rank_of(label: &str) -> u32 {
     LAYERED_ROLES.iter().find(|(role, _)| *role == label).map(|(_, rank)| *rank).unwrap_or(1)
 }
 
+pub fn layered(graph: &crate::shared::Graph, edges: &[IndexEdge], roles: &Roles) -> Option<crate::patterns::Found> {
+    let mut layer_of: HashMap<&str, (&'static str, u32)> = HashMap::default();
+    for role in &roles.roles {
+        let Some((named, rank)) = LAYERED_ROLES.iter().find(|(held, _)| *held == role.role) else { continue };
+        layer_of.entry(role.node.as_str()).or_insert((named, *rank));
+    }
+    let layer_at = |at: usize| -> Option<(&'static str, u32)> {
+        let owner = graph.type_owner(at).unwrap_or(at);
+        layer_of.get(graph.nodes[owner].id.as_str()).copied()
+    };
+    let mut held: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let (mut down, mut up) = (0u32, 0u32);
+    for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)) {
+        let (Some(from), Some(to)) = (graph.at(&edge.source), graph.at(&edge.target)) else { continue };
+        if graph.tested[from] || graph.tested[to] {
+            continue;
+        }
+        let (Some((above, high)), Some((below, low))) = (layer_at(from), layer_at(to)) else { continue };
+        if high < low {
+            down += 1;
+            held.insert(above);
+            held.insert(below);
+        } else if high > low {
+            up += 1;
+        }
+    }
+    (held.len() >= 2 && down > up).then(|| {
+        let mut found = crate::patterns::found("layered architecture", "architecture", "calls pass down from one layer to the next and rarely back up", held.len() as u32);
+        found.examples = held.into_iter().map(str::to_string).collect();
+        found
+    })
+}
+
 pub fn derive<'a>(
     graph: &crate::shared::Graph<'a>,
     edges: &[IndexEdge],

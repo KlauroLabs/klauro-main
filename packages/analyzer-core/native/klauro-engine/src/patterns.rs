@@ -50,6 +50,8 @@ pub struct Conformance {
     pub population: u32,
     pub following: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub following_at: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub departing: Vec<String>,
 }
 
@@ -80,6 +82,7 @@ pub struct Sources<'a> {
 
 const KEPT: usize = 12;
 const DEPARTING_SHOWN: usize = 12;
+const FOLLOWERS_SHOWN: usize = 8;
 const CONVENTION_FLOOR: f64 = 0.6;
 
 static HANDLES_A_MESSAGE: &[&str] = &["Consumer", "Handler", "Subscriber"];
@@ -242,9 +245,14 @@ pub fn derive(sources: &Sources) -> Derived {
             }
         }
         let receiver = call.receiver.as_deref().unwrap_or("").to_ascii_lowercase();
+        let through_a_mediator = MEDIATES.iter().any(|word| receiver.contains(word));
         for message in carried {
-            let Some((handlers, _)) = handled.get(message) else { continue };
-            if MEDIATES.iter().any(|word| receiver.contains(word)) {
+            let handlers = handled.get(message).map(|(held, _)| held);
+            if through_a_mediator && handlers.is_none() && graph.declared_as.contains_key(message) {
+                mediated += 1;
+            }
+            let Some(handlers) = handlers else { continue };
+            if through_a_mediator {
                 mediated += 1;
             } else if CARRIES_MESSAGES.iter().any(|word| receiver.contains(word)) {
                 bussed += 1;
@@ -320,6 +328,37 @@ pub fn derive(sources: &Sources) -> Derived {
     let commands = messages.iter().filter(|message| message.kind == "command").count() as u32;
     let queries = messages.iter().filter(|message| message.kind == "query").count() as u32;
     let events = messages.iter().filter(|message| message.kind == "event").count() as u32;
+    let mut handled_by_name: [u32; 3] = [0; 3];
+    for node in nodes.iter().filter(|node| node.kind.is_type() && !tested(node.file)) {
+        if !HANDLES_A_MESSAGE.iter().any(|ending| node.name.ends_with(ending)) {
+            continue;
+        }
+        let Some(method) = handling_method(node.id.as_str()) else { continue };
+        let message = nodes[method]
+            .signature
+            .as_ref()
+            .and_then(|signature| signature.parameters.first())
+            .and_then(|parameter| parameter.type_annotation.as_deref())
+            .map(plain);
+        if !message.is_some_and(|held| graph.declared_as.contains_key(held)) {
+            continue;
+        }
+        match kind_of(message.unwrap_or_default(), &node.name) {
+            "command" => handled_by_name[0] += 1,
+            "query" => handled_by_name[1] += 1,
+            "event" => handled_by_name[2] += 1,
+            _ => {}
+        }
+    }
+    if handled_by_name[0] > 0 {
+        found_here.push(found("command handlers", "messaging", "commands handled by their own handlers", handled_by_name[0]));
+    }
+    if handled_by_name[1] > 0 {
+        found_here.push(found("query handlers", "messaging", "queries handled by their own handlers", handled_by_name[1]));
+    }
+    if handled_by_name[2] > 0 && events == 0 {
+        found_here.push(found("event handlers", "messaging", "events handled by their own handlers", handled_by_name[2]));
+    }
     if mediated > 0 {
         found_here.push(found("mediator", "messaging", "requests sent through a mediator to their one handler", mediated));
     }
@@ -349,13 +388,18 @@ pub fn derive(sources: &Sources) -> Derived {
     }
     let mut hands_on: HashSet<usize> = HashSet::default();
     let mut served: HashSet<usize> = HashSet::default();
+    let playing = |wanted: &'static str| -> HashSet<&str> {
+        sources.roles.roles.iter().filter(|role| role.role == wanted).map(|role| role.node.as_str()).collect()
+    };
+    let controllers_here = playing("controller");
+    let services_here = playing("service");
     for at in (0..nodes.len()).filter(|at| nodes[*at].kind.is_type() && !graph.tested[*at]) {
-        if graph.role_of[at] != Some("controller") {
+        if !controllers_here.contains(nodes[at].id.as_str()) {
             continue;
         }
         for member in graph.members[at].iter().filter(|member| nodes[**member].kind == NodeKind::Property) {
             let Some(held) = nodes[*member].type_annotation.as_deref().and_then(|typed| graph.declared_as.get(plain(typed))) else { continue };
-            if graph.role_of[*held] == Some("service") {
+            if services_here.contains(nodes[*held].id.as_str()) {
                 hands_on.insert(at);
                 served.insert(*held);
             }
@@ -397,6 +441,7 @@ pub fn derive(sources: &Sources) -> Derived {
     }
 
     lap("topics and found");
+    found_here.extend(crate::layers::layered(graph, sources.edges, sources.roles));
     found_here.extend(crate::design_patterns::derive(graph, sources.edges, sources.metrics, sources.calls));
     lap("design");
     found_here.extend(crate::practices::derive(&crate::practices::Sources {
@@ -441,6 +486,13 @@ pub fn derive(sources: &Sources) -> Derived {
     Derived { patterns: Patterns { found: found_here, messages, topics, conformance }, dispatched }
 }
 
+fn sampled(mut followers: Vec<String>) -> Vec<String> {
+    followers.sort();
+    followers.dedup();
+    followers.truncate(FOLLOWERS_SHOWN);
+    followers
+}
+
 fn conforming(sources: &Sources, position: &rustc_hash::FxHashMap<&str, usize>, repositories: &HashSet<&str>) -> Vec<Conformance> {
     let nodes = sources.nodes;
     let tested = |file: u32| sources.paths.get(file as usize).is_some_and(|path| crate::paths::is_test(path));
@@ -455,42 +507,58 @@ fn conforming(sources: &Sources, position: &rustc_hash::FxHashMap<&str, usize>, 
     };
     let mut conformance = Vec::new();
 
-    let mut by_project: BTreeMap<Option<String>, (u32, u32, Vec<String>)> = BTreeMap::new();
+    let mut by_project: BTreeMap<Option<String>, (u32, Vec<String>, Vec<String>)> = BTreeMap::new();
     for exit in sources.exit_points.iter().filter(|exit| exit.kind == "database" && !tested(exit.file)) {
         let project = position.get(exit.source.as_str()).and_then(|at| nodes[*at].project.clone());
         let held = by_project.entry(project).or_default();
         held.0 += 1;
         if kept_behind(&exit.source) {
-            held.1 += 1;
+            held.1.push(exit.source.clone());
         } else if held.2.len() < DEPARTING_SHOWN {
             held.2.push(exit.source.clone());
         }
     }
-    for (project, (population, following, departing)) in by_project {
+    for (project, (population, followers, departing)) in by_project {
+        let following = followers.len() as u32;
         if following == 0 || (following as f64) < (population as f64) * CONVENTION_FLOOR {
             continue;
         }
-        conformance.push(Conformance { paradigm: "data kept behind repositories", project, population, following, departing });
+        conformance.push(Conformance {
+            paradigm: "data kept behind repositories",
+            project,
+            population,
+            following,
+            following_at: sampled(followers),
+            departing,
+        });
     }
 
-    let mut by_project: BTreeMap<Option<String>, (u32, u32, Vec<String>)> = BTreeMap::new();
+    let mut by_project: BTreeMap<Option<String>, (u32, Vec<String>, Vec<String>)> = BTreeMap::new();
     for entry in sources.entry_points.iter().filter(|entry| entry.kind == "http" && !tested(entry.file)) {
         let project = position.get(entry.handler.as_str()).and_then(|at| nodes[*at].project.clone());
         let held = by_project.entry(project).or_default();
         held.0 += 1;
         let open = entry.guards.iter().any(|guard| guard.kind == "open");
         if !entry.guards.is_empty() && !open {
-            held.1 += 1;
+            held.1.push(entry.handler.clone());
         } else if entry.guards.is_empty() && held.2.len() < DEPARTING_SHOWN {
             let named = format!("{} {}", entry.method.as_deref().unwrap_or(""), entry.path.as_deref().unwrap_or(&entry.name));
             held.2.push(named.trim().to_string());
         }
     }
-    for (project, (population, following, departing)) in by_project {
+    for (project, (population, followers, departing)) in by_project {
+        let following = followers.len() as u32;
         if following == 0 || (following as f64) < (population as f64) * CONVENTION_FLOOR {
             continue;
         }
-        conformance.push(Conformance { paradigm: "requests pass a guard", project, population, following, departing });
+        conformance.push(Conformance {
+            paradigm: "requests pass a guard",
+            project,
+            population,
+            following,
+            following_at: sampled(followers),
+            departing,
+        });
     }
     conformance
 }

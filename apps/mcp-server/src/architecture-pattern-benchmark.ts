@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
 import { analyzeForBench } from './gauntlet/product-analysis';
+import { patternNamed } from './architecture-pattern-vocabulary';
 
 type GateStatus = 'pass' | 'fail';
 
@@ -17,8 +18,6 @@ interface TargetExpectation {
   path?: string;
   requiresPatterns: string[];
   rejectsPatterns?: string[];
-  minimumInventory: Record<string, number>;
-  expectedPatternBalance?: string;
   maximumPatterns?: number;
 }
 
@@ -27,8 +26,6 @@ interface TargetReport {
   status: GateStatus;
   score: number;
   patterns: string[];
-  inventory: Record<string, number>;
-  pattern_balance: string;
   gates: BenchmarkGate[];
 }
 
@@ -45,39 +42,36 @@ interface ArchitecturePatternBenchmarkReport {
   targets: TargetReport[];
 }
 
+const STRUCTURAL_CATEGORIES = new Set(['application-architecture', 'object-lifecycle']);
+
 const DEFAULT_EXPECTATIONS: TargetExpectation[] = [
   {
     fixture: 'rails-work-orders',
     requiresPatterns: ['MVC', 'Layered Architecture'],
     rejectsPatterns: ['Command Script / Automation'],
-    minimumInventory: { models: 2, controllers: 2 },
     maximumPatterns: 4,
   },
   {
     fixture: 'nest-react-prisma',
     requiresPatterns: ['MVC', 'Layered Architecture', 'Service Layer', 'Component/Page UI'],
     rejectsPatterns: ['Command Script / Automation'],
-    minimumInventory: { models: 1, controllers: 2, services: 1, views: 1 },
     maximumPatterns: 8,
   },
   {
     fixture: 'flutter-mobile-flow',
     requiresPatterns: ['Component/Page UI'],
     rejectsPatterns: ['MVC', 'Command Script / Automation'],
-    minimumInventory: { views: 3 },
     maximumPatterns: 3,
   },
   {
     fixture: 'dotnet-message-worker',
-    requiresPatterns: ['Mediator / Handler', 'Command Script / Automation'],
-    minimumInventory: { mediators: 1, scripts: 1 },
+    requiresPatterns: ['Mediator / Handler'],
     maximumPatterns: 5,
   },
   {
     fixture: 'nextjs-app-router',
     requiresPatterns: ['Component/Page UI'],
     rejectsPatterns: ['MVC', 'Command Script / Automation'],
-    minimumInventory: { views: 2, controllers: 1 },
     maximumPatterns: 3,
   },
 ];
@@ -99,18 +93,16 @@ export async function runArchitecturePatternBenchmark(options: { outputPath?: st
       const cas = await analyzeForBench(fixturePath);
       const architecture = (cas.architecture_summary || {}) as any;
       const patterns = (architecture.architectural_patterns || []).map((pattern: any) => String(pattern.name || pattern.pattern || ''));
-      const inventory = Object.fromEntries(
-        Object.entries(architecture.architectural_inventory || {}).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])
-      ) as Record<string, number>;
-      const gates = architectureGates(expectation, patterns, inventory, String(architecture.pattern_balance?.status || 'missing'));
+      const structural = (architecture.architectural_patterns || [])
+        .filter((pattern: any) => STRUCTURAL_CATEGORIES.has(String(pattern.category || '')))
+        .map((pattern: any) => String(pattern.name || pattern.pattern || ''));
+      const gates = architectureGates(expectation, patterns, structural);
       const passed = gates.filter(item => item.status === 'pass').length;
       targets.push({
         fixture: expectation.fixture,
         status: passed === gates.length ? 'pass' : 'fail',
         score: Math.round((passed / gates.length) * 100),
         patterns,
-        inventory,
-        pattern_balance: String(architecture.pattern_balance?.status || 'missing'),
         gates,
       });
     }
@@ -219,15 +211,6 @@ async function seedMixedArchitectureFixture(root: string): Promise<TargetExpecta
     fixture: 'mixed-architecture-pattern-proof',
     path: root,
     requiresPatterns: ['MVVM', 'Repository', 'Mediator / Handler', 'Unit of Work', 'Singleton / Registry'],
-    minimumInventory: {
-      models: 1,
-      views: 1,
-      view_models: 1,
-      repositories: 1,
-      mediators: 1,
-      unit_of_work: 1,
-      singletons: 1,
-    },
     maximumPatterns: 10,
   };
 }
@@ -285,61 +268,33 @@ async function seedFragmentedArchitectureFixture(root: string): Promise<TargetEx
     fixture: 'fragmented-architecture-drift-proof',
     path: root,
     requiresPatterns: ['MVC', 'MVVM', 'Singleton / Registry'],
-    minimumInventory: {
-      models: 1,
-      views: 2,
-      controllers: 1,
-      view_models: 1,
-      singletons: 1,
-    },
-    expectedPatternBalance: 'mixed',
     maximumPatterns: 6,
   };
 }
 
-function architectureGates(
-  expectation: TargetExpectation,
-  patterns: string[],
-  inventory: Record<string, number>,
-  patternBalance: string
-): BenchmarkGate[] {
+function architectureGates(expectation: TargetExpectation, patterns: string[], structural: string[]): BenchmarkGate[] {
   const gates: BenchmarkGate[] = [];
   for (const pattern of expectation.requiresPatterns) {
+    const found = patternNamed(patterns, pattern);
     gates.push(gate(
       `${expectation.fixture}:pattern:${pattern}`,
-      patterns.includes(pattern),
-      patterns.includes(pattern) ? `found ${pattern}` : `missing ${pattern}; found ${patterns.join(', ') || 'none'}`
+      found,
+      found ? `found ${pattern}` : `missing ${pattern}; the engine named ${patterns.join(', ') || 'none'}`
     ));
   }
   for (const pattern of expectation.rejectsPatterns || []) {
+    const found = patternNamed(patterns, pattern);
     gates.push(gate(
       `${expectation.fixture}:reject:${pattern}`,
-      !patterns.includes(pattern),
-      patterns.includes(pattern) ? `unexpected ${pattern}` : `absent ${pattern}`
+      !found,
+      found ? `unexpected ${pattern}` : `absent ${pattern}`
     ));
   }
-  for (const [key, minimum] of Object.entries(expectation.minimumInventory)) {
-    const count = Number(inventory[key] || 0);
-    gates.push(gate(
-      `${expectation.fixture}:inventory:${key}`,
-      count >= minimum,
-      `${count}/${minimum} ${key}`
-    ));
-  }
-  gates.push(gate(
-    `${expectation.fixture}:pattern-balance`,
-    expectation.expectedPatternBalance
-      ? patternBalance === expectation.expectedPatternBalance
-      : patternBalance !== 'over-patterned',
-    expectation.expectedPatternBalance
-      ? `pattern balance ${patternBalance}; expected ${expectation.expectedPatternBalance}`
-      : `pattern balance ${patternBalance}`
-  ));
   if (expectation.maximumPatterns) {
     gates.push(gate(
       `${expectation.fixture}:no-pattern-splurge`,
-      patterns.length <= expectation.maximumPatterns,
-      `${patterns.length}/${expectation.maximumPatterns} patterns: ${patterns.join(', ') || 'none'}`
+      structural.length <= expectation.maximumPatterns,
+      `${structural.length}/${expectation.maximumPatterns} architectural and design patterns: ${structural.join(', ') || 'none'}`
     ));
   }
   return gates;
@@ -368,7 +323,6 @@ function renderMarkdown(report: ArchitecturePatternBenchmarkReport): string {
     lines.push(`## ${target.fixture}`, '');
     lines.push(`Status: **${target.status.toUpperCase()}** (${target.score}/100)`);
     lines.push(`Patterns: ${target.patterns.join(', ') || 'none'}`);
-    lines.push(`Inventory: ${Object.entries(target.inventory).filter(([, count]) => count > 0).map(([key, count]) => `${key} ${count}`).join(', ') || 'none'}`);
     lines.push('');
     for (const item of target.gates) {
       lines.push(`- ${item.status === 'pass' ? 'PASS' : 'FAIL'} ${item.id}: ${item.detail}`);

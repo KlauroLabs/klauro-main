@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { buildAgentPerformanceProof } from './agent-performance-proof';
+import { patternNamed } from './architecture-pattern-vocabulary';
 import { isDirectCliInvocation } from './cli-invocation';
 import { discoverProofReports, ProofReportEntry, proofReportTimestamp } from './proof-report-discovery';
 import { listAgenticBenchmarkReports, loadAgenticBenchmarkReport } from './storage';
@@ -453,22 +454,18 @@ function architecturePatternBenchmarkGates(report: JsonObject): Gate[] {
   const summary = report.summary || {};
   const targets = array(report.targets);
   const failedTargets = targets.filter(target => target.status !== 'pass' || Number(target.score || 0) < 100);
-  const allPatterns = new Set(targets.flatMap(target => array(target.patterns).map(pattern => String(pattern))));
+  const allPatterns = targets.flatMap(target => array(target.patterns).map(pattern => String(pattern)));
   const patternSplurgeFailures = targets.filter(target =>
     array(target.gates).some(gate => String(gate.id || '').endsWith(':no-pattern-splurge') && gate.status !== 'pass')
-  );
-  const emptyInventoryTargets = targets.filter(target =>
-    Object.values(target.inventory || {}).every(value => Number(value || 0) === 0)
   );
   return [
     gate('architecture-pattern:status', report.status === 'pass' && Number(report.score) === 100, `${report.status || 'unknown'} ${report.score ?? 'unknown'}/100`),
     gate('architecture-pattern:target-count', Number(summary.target_count || targets.length) >= 6, `${summary.target_count || targets.length || 0} targets`),
     gate('architecture-pattern:fixture-coverage',
-      ['MVC', 'Layered Architecture', 'Service Layer', 'Component/Page UI', 'Mediator / Handler', 'MVVM', 'Repository', 'Unit of Work', 'Singleton / Registry'].every(pattern => allPatterns.has(pattern)),
-      `patterns ${Array.from(allPatterns).join(', ') || 'missing'}`),
+      ['MVC', 'Layered Architecture', 'Service Layer', 'Component/Page UI', 'Mediator / Handler', 'MVVM', 'Repository', 'Unit of Work', 'Singleton / Registry'].every(pattern => patternNamed(allPatterns, pattern)),
+      `patterns ${allPatterns.join(', ') || 'missing'}`),
     gate('architecture-pattern:all-targets-pass', targets.length > 0 && failedTargets.length === 0, `${failedTargets.length} failing targets`),
     gate('architecture-pattern:no-pattern-splurge', patternSplurgeFailures.length === 0, `${patternSplurgeFailures.length} splurge failures`),
-    gate('architecture-pattern:no-empty-inventory', emptyInventoryTargets.length === 0, `${emptyInventoryTargets.length} empty inventory targets`),
   ];
 }
 

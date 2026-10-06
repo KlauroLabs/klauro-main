@@ -46,16 +46,19 @@ static ANNOTATIONS: &[(&str, &str)] = &[
 ];
 
 static SUFFIXES: &[(&str, &str)] = &[
+    ("Component", "component"),
     ("Controller", "controller"),
     ("Document", "model"),
     ("Entity", "model"),
     ("Handler", "handler"),
     ("Middleware", "middleware"),
     ("Model", "model"),
+    ("Record", "model"),
     ("Repository", "repository"),
     ("Schema", "model"),
     ("Service", "service"),
     ("Store", "repository"),
+    ("Widget", "component"),
 ];
 
 fn module_role(path: &str) -> Option<&'static str> {

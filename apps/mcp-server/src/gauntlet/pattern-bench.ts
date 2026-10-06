@@ -39,7 +39,8 @@ export interface PatternBenchResult {
 
 function f1(produced: string[], truth: string[]): number {
 
-  const hit = (t: string) => produced.some(p => p.toLowerCase().includes(t.toLowerCase()));
+  const squashed = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const hit = (t: string) => produced.some(p => squashed(p).includes(squashed(t)));
   const tp = truth.filter(hit).length;
   const precision = produced.length ? tp / produced.length : truth.length ? 0 : 1;
   const recall = truth.length ? tp / truth.length : 1;

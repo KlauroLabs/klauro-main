@@ -186,6 +186,10 @@ fn plain(annotation: &str) -> &str {
     crate::names::leaf(annotation.trim())
 }
 
+fn alternatives(annotation: &str) -> impl Iterator<Item = &str> {
+    annotation.split('|').map(plain)
+}
+
 fn element_of(annotation: &str) -> Option<&str> {
     let outer = plain(annotation);
     if annotation.trim().ends_with("[]") {
@@ -339,7 +343,7 @@ pub fn derive(graph: &crate::shared::Graph, edges: &[IndexEdge], metrics: &[Unit
             tally.note("builder", "assembles its product step by step, then builds it", owner);
         }
 
-        let holds_itself_statically = fields.iter().any(|(at, typed)| nodes[*at].modifiers.is_static && plain(typed) == named);
+        let holds_itself_statically = fields.iter().any(|(at, typed)| nodes[*at].modifiers.is_static && alternatives(typed).any(|held| held == named));
         let hands_out_one = methods.iter().any(|at| {
             nodes[*at].modifiers.is_static && shape.called(*at, INSTANCE_ACCESSORS)
         });
@@ -466,6 +470,12 @@ pub fn derive(graph: &crate::shared::Graph, edges: &[IndexEdge], metrics: &[Unit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nullable_union_still_names_the_type_it_holds() {
+        assert_eq!(alternatives("ServiceRegistry | undefined").collect::<Vec<_>>(), vec!["ServiceRegistry", "undefined"]);
+        assert_eq!(alternatives("Registry").collect::<Vec<_>>(), vec!["Registry"]);
+    }
 
     #[test]
     fn a_collection_names_what_it_holds() {

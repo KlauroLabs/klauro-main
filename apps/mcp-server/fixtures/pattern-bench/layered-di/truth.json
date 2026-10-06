@@ -1,1 +1,1 @@
-{ "task": "pattern-facts", "expected_patterns": ["Repository", "Service Layer", "Controller"] }
+{"task": "pattern-facts", "expected_patterns": ["Repository", "ServiceLayer", "Controller", "LayeredArchitecture"]}
