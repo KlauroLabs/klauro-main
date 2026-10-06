@@ -8,6 +8,9 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { getAnalysis } from './analyzer';
+import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 import { AccountWorkspaceAnalysisScheduler, compactWorkspaceMemberCas, isCasComprehensionSettled, WORKSPACE_MEMBER_FIELDS, WORKSPACE_MEMBER_SECTIONS, workspaceInputSignature } from './account-workspace-analysis';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
@@ -582,6 +585,9 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
       analysis_id: analyzed.analysis_id,
     }, token);
     assert.equal(projectRes.statusCode, 201);
+    const attachedAnalysisId = JSON.parse(projectRes.body).project.analysis_id as string;
+    const memberWorkspace = path.join(remoteData, 'workspaces', attachedAnalysisId);
+    await saveAnalysis(memberWorkspace, acceptedComprehensionFixture(await getAnalysis(memberWorkspace)));
 
     // The refresh surface: 202 immediately, never blocking on the rebuild.
     const reanalyzeRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/reanalyze`, {}, token);

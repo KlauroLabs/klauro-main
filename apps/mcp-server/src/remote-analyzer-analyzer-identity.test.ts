@@ -176,8 +176,6 @@ test('a degraded comprehension layer never reports a clean ready status', async 
     const workspace = soleWorkspace(remoteData);
     const stored = await loadAnalysis(workspace, { track: 'main' });
     assert.ok(stored);
-    (stored as any).interpreted_by = 'error';
-    (stored as any).interpretation_error = 'provider request failed';
     (stored as any).layers_ready = {
       ...(stored as any).layers_ready,
       complete: false,
@@ -192,7 +190,7 @@ test('a degraded comprehension layer never reports a clean ready status', async 
     const degraded = JSON.parse(degradedRes.body);
     assert.equal(degraded.status, 'degraded', 'a failed comprehension layer must not read as a clean ready');
     assert.equal(degraded.comprehension?.degraded, true);
-    assert.ok(degraded.interpretation_error, 'the underlying reason stays queryable');
+    assert.equal(degraded.comprehension_error, 'AI comprehension pass failed', 'the underlying reason stays queryable');
 
     // The lighter index-backed status route must agree — a client polling
     // either surface gets the same verdict.

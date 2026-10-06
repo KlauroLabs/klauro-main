@@ -52,15 +52,23 @@ function answer(response: http.ServerResponse, status: number, body: Record<stri
   response.end(JSON.stringify(body));
 }
 
-async function asked(request: http.IncomingMessage): Promise<Buffer | null> {
-  const parts: Buffer[] = [];
-  let size = 0;
-  for await (const part of request) {
-    size += (part as Buffer).length;
-    if (size > MOST_ASKED_BYTES) return null;
-    parts.push(part as Buffer);
-  }
-  return Buffer.concat(parts);
+function asked(request: http.IncomingMessage): Promise<Buffer | null> {
+  return new Promise(resolve => {
+    const parts: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    request.on('data', (part: Buffer) => {
+      size += part.length;
+      if (size > MOST_ASKED_BYTES) {
+        tooLarge = true;
+        parts.length = 0;
+      } else if (!tooLarge) {
+        parts.push(part);
+      }
+    });
+    request.on('end', () => resolve(tooLarge ? null : Buffer.concat(parts)));
+    request.on('error', () => resolve(null));
+  });
 }
 
 export async function relayAuthorAsk(

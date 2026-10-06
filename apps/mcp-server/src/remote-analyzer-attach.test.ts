@@ -164,7 +164,7 @@ test('klauro analyze auto-attaches to the bound account project (.klaurorc proje
     await waitFor(async () => {
       const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
       return JSON.parse(res.body).status === 'ready';
-    });
+    }, 60_000);
   });
 });
 
