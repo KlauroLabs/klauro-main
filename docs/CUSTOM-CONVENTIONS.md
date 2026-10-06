@@ -196,7 +196,7 @@ its own Input/Logic/Side-effects/Output/Constraints contract.
 
 A separate, parallel effort (coverage-intel) builds a codebase-type
 classifier and self-discovered coverage-gap reporting
-(`analyzer/core/coverage-gaps.ts`, `codebase-type.ts`) — it tells you *that*
+(`analyzer/core/coverage-gaps.ts`) — it tells you *that*
 something in the repo isn't understood (an unrecognized dependency, a
 zero-entry-point root, tree-sitter node types no analyzer handles). Custom
 conventions are the resolution mechanism for those gaps: once a gap is

@@ -281,7 +281,6 @@ export interface LayeredAnalysisResult {
 export async function analyzeProjectLayered(
   projectPath: string,
   displayName?: string,
-  onProgress?: (event: AnalysisProgressEvent) => void,
 
 
 
@@ -686,13 +685,6 @@ function getAnalysisWatchdogMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_WATCHDOG_MS;
 }
 
-const DEFAULT_ANALYSIS_STALL_MS = 10 * 60_000;
-
-function getAnalysisStallMs(): number {
-  const raw = process.env.KLAURO_ANALYSIS_STALL_MS;
-  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_STALL_MS;
-}
 
 
 
@@ -707,7 +699,7 @@ function getAnalysisStallMs(): number {
 
 function isDoomedRebuildReason(reason: string | undefined): boolean {
   if (!reason) return false;
-  return /worker-oom|analysis-stalled|reached heap limit|javascript heap out of memory|fatal error|killed by signal|exhausting its heap/i.test(reason);
+  return /worker-oom|reached heap limit|javascript heap out of memory|fatal error|killed by signal|exhausting its heap/i.test(reason);
 }
 
 async function guardAgainstDoomedVersionRebuild(
@@ -726,11 +718,11 @@ async function guardAgainstDoomedVersionRebuild(
       `loop-breaker: refusing to auto-retrigger the version-rebuild for ${projectPath}`,
       `(stored_version=${versionInfo.stored_version} -> current_version=${versionInfo.current_version}).`,
       `The previous attempt (finished ${previousAttempt.finished_at ?? previousAttempt.started_at}) already FAILED`,
-      `with a worker-OOM/progress-stall reason: ${previousAttempt.reason}.`,
+      `with a worker-OOM reason: ${previousAttempt.reason}.`,
       `Auto-retriggering an identical rebuild would repeat the same crash indefinitely`,
       `(the 2026-07-18 infinite-crash-loop incident). Leaving the failed attempt record in place;`,
       `a human or agent must explicitly re-trigger (e.g. a force_full reanalyze) after addressing`,
-      `the cause (raise KLAURO_ANALYSIS_HEAP_MB, repair the stalled phase, or fix the hang).`,
+      `the cause (raise KLAURO_ANALYSIS_HEAP_MB, or fix the hang).`,
     ].join(' ');
     console.error(`[Klauro] ${message}`);
     throw new AnalysisLoopBreakerError(message);
@@ -1026,16 +1018,6 @@ export interface LayeredJobPhaseEvent {
   error?: string;
 }
 
-interface AnalysisProgressEvent {
-  sequence: number;
-  phase: string;
-  completedAt: string;
-}
-
-interface WorkerProgressMessage extends AnalysisProgressEvent {
-  type: 'progress';
-  id: number;
-}
 
 
 
@@ -1146,7 +1128,7 @@ interface WorkerPhaseMessage extends LayeredJobPhaseEvent {
   id: number;
 }
 
-type WorkerResponse = WorkerResultMessage | WorkerErrorMessage | WorkerPhaseMessage | WorkerProgressMessage;
+type WorkerResponse = WorkerResultMessage | WorkerErrorMessage | WorkerPhaseMessage;
 
 interface PendingWorkerJob<T = AnalysisRunSummary> {
   projectPath: string;
@@ -1155,10 +1137,6 @@ interface PendingWorkerJob<T = AnalysisRunSummary> {
   reject: (error: Error) => void;
 
   onPhase?: (event: LayeredJobPhaseEvent) => void;
-  lastProgressAtMs?: number;
-  lastProgressSequence?: number;
-  lastProgressPhase?: string;
-  stallTimer?: NodeJS.Timeout;
 }
 
 interface WorkerHandle {
@@ -1242,25 +1220,14 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   child.on('message', (message: WorkerResponse) => {
     const job = handle.pending.get(message.id);
     if (!job) return;
-    if (message.type === 'progress') {
-      if ((message.sequence ?? 0) > (job.lastProgressSequence ?? 0)) {
-        job.lastProgressSequence = message.sequence;
-        job.lastProgressAtMs = Date.now();
-        job.lastProgressPhase = message.phase;
-      }
-      return;
-    }
     if (message.type === 'phase') {
 
 
 
-      job.lastProgressAtMs = Date.now();
-      job.lastProgressPhase = message.phase;
       job.onPhase?.({ phase: message.phase, status: message.status, error: message.error });
       return;
     }
     handle.pending.delete(message.id);
-    if (job.stallTimer) clearInterval(job.stallTimer);
     if (message.type === 'result') {
       job.resolve(message.summary);
     } else {
@@ -1322,7 +1289,6 @@ function failPendingWorkerJobs(
 ): void {
   for (const [id, job] of handle.pending) {
     handle.pending.delete(id);
-    if (job.stallTimer) clearInterval(job.stallTimer);
     const message = buildWorkerCrashMessage(handle, job, code, signal, detail);
     try {
       finalizeWorkerRunFailure(job.projectPath, job.startedAtMs, message);
@@ -1494,34 +1460,7 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
       resolve,
       reject,
       onPhase: options.onPhase,
-      lastProgressAtMs: startedAtMs,
-      lastProgressSequence: 0,
-      lastProgressPhase: 'dispatched',
     };
-    const stallMs = getAnalysisStallMs();
-    job.stallTimer = setInterval(() => {
-      const active = handle.pending.get(id);
-      if (!active) return;
-      const idleMs = Date.now() - (active.lastProgressAtMs ?? active.startedAtMs);
-      if (idleMs < stallMs) return;
-
-      handle.pending.delete(id);
-      if (active.stallTimer) clearInterval(active.stallTimer);
-      const message =
-        `analysis-stalled: worker for ${projectPath} made no monotonic progress for ${idleMs}ms ` +
-        `(last phase: ${active.lastProgressPhase ?? 'unknown'}, sequence: ${active.lastProgressSequence ?? 0}). ` +
-        `Elapsed time alone is not failure; this retryable failure is based on a stopped progress counter. ` +
-        `The last durable analysis checkpoint remains authoritative.`;
-      try {
-        finalizeWorkerRunFailure(projectPath, active.startedAtMs, message);
-      } catch {
-
-      }
-      active.reject(new Error(message));
-      if (workerHandle === handle) workerHandle = null;
-      handle.child.kill('SIGKILL');
-    }, Math.max(100, Math.min(30_000, Math.floor(stallMs / 4))));
-    job.stallTimer.unref();
     handle.pending.set(id, job);
     const envSnapshot = collectKlauroEnvSnapshot();
     if (options.forceAiRefresh) envSnapshot.KLAURO_FORCE_AI_REFRESH = '1';
@@ -1646,7 +1585,7 @@ export async function runLayeredAnalysis(
     try {
       const { withAnalysisFocus } = await import('./analysis-focus.js');
       return await withAnalysisFocus(options.analysisFocus, async () => {
-      const layered = await analyzeProjectLayered(projectPath, options.displayName, undefined, options.forceFullRebuild);
+      const layered = await analyzeProjectLayered(projectPath, options.displayName, options.forceFullRebuild);
       try {
         await layered.l0;
         options.onPhase?.({ phase: 'l0', status: 'succeeded' });

@@ -83,9 +83,6 @@ function sendPhase(id: number, phase: LayeredJobPhaseEvent['phase'], status: Lay
   process.send!({ type: 'phase', id, phase, status, error });
 }
 
-function sendProgress(id: number, event: { sequence: number; phase: string; completedAt: string }): void {
-  process.send!({ type: 'progress', id, ...event });
-}
 
 
 
@@ -105,9 +102,6 @@ function sendProgress(id: number, event: { sequence: number; phase: string; comp
 
 
 async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<LayeredRunSummary> {
-  if (process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL === 'before-start') {
-    await new Promise<void>(() => undefined);
-  }
 
 
 
@@ -123,7 +117,6 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
   const layered = await analyzeProjectLayered(
     request.projectPath,
     request.displayName,
-    event => sendProgress(request.id, event),
     request.forceFullRebuild,
   );
 

@@ -15,7 +15,6 @@ const typescript = require('typescript');
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cachePath = path.join(packageRoot, 'node_modules', '.cache', 'klauro-test-suite-plan.json');
 const artifactTestFiles = new Set([
-  'src/gauntlet/grammar-packaging.test.ts',
   'src/installed-client-boundary.test.ts',
 
 
@@ -245,7 +244,7 @@ async function main() {
     const parallel = remaining.filter(item => !item.exclusiveExternalDaemon);
     if (exclusive.length > 0) {
       for (const item of exclusive) {
-        await runBuildPrerequisite(item.file === 'src/gauntlet/grammar-packaging.test.ts');
+        await runBuildPrerequisite();
         await record(item);
       }
     }
@@ -288,9 +287,9 @@ async function main() {
   process.exitCode = exitCode;
 }
 
-async function runBuildPrerequisite(hosted) {
-  process.stderr.write(`[Klauro test suite] building ${hosted ? 'hosted' : 'installed'} artifacts for packaging boundary tests\n`);
-  const child = spawn(process.execPath, [path.join(packageRoot, 'scripts', 'build-bundle.mjs'), ...(hosted ? ['--hosted'] : [])], {
+async function runBuildPrerequisite() {
+  process.stderr.write(`[Klauro test suite] building installed artifacts for packaging boundary tests\n`);
+  const child = spawn(process.execPath, [path.join(packageRoot, 'scripts', 'build-bundle.mjs')], {
     cwd: packageRoot,
     env: process.env,
     stdio: 'inherit',

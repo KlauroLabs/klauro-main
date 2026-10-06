@@ -4531,39 +4531,6 @@ export interface CASFlowLayer {
 
 
 
-export const INCREMENTAL_STATE_VERSION = '1.0.0';
-export const FULL_REBUILD_THRESHOLD = 0.50;
-
-export interface IncrementalState {
-  version: string;
-  projectPath: string;
-  lastFullAnalysis: string;
-  lastAnalysisTimestamp: number;
-  gitCommitHash?: string;
-  files: Record<string, FileAnalysisRecord>;
-  analyzerVersions: Record<string, string>;
-  analyzerRegistryFingerprint?: string;
-  config?: {
-    rebuildThreshold?: number;
-    watchDebounceMs?: number;
-    maxPropagationDepth?: number;
-  };
-}
-
-export interface FileAnalysisRecord {
-  filePath: string;
-  contentHash: string;
-  mtimeMs: number;
-  lastAnalyzed: string;
-  analyzerId: string;
-  nodeIds: string[];
-  edgeIds: string[];
-  entryPointIds: string[];
-  exitPointIds: string[];
-  importedFiles: string[];
-  exportedSymbols: string[];
-}
-
 export interface FileAnalysisResult {
   filePath: string;
   contentHash: string;
@@ -4574,17 +4541,6 @@ export interface FileAnalysisResult {
   exitPoints: CASExitPoint[];
   imports: string[];
   exports: string[];
-}
-
-export interface ChangeSet {
-  added: string[];
-  modified: string[];
-  deleted: string[];
-  affectedFiles: string[];
-  affectedNodeIds: Set<string>;
-  requiresFullRebuild: boolean;
-  reason?: string;
-  detectionMethod: 'mtime' | 'git' | 'hash' | 'hybrid';
 }
 
 export interface ChangeHistoryEntry {

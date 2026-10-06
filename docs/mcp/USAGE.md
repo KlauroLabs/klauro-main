@@ -827,12 +827,9 @@ From `apps/mcp-server/`:
 
 ```
 npm run incremental-benchmark
-npm run incremental-locality-benchmark
 ```
 
-The first command copies discovered repositories into isolated workspaces, runs an initial analysis, reruns analysis with no source changes, edits one source file safely, reruns incremental analysis, and then generates an agent context from the edited CAS. With `--verify-full`, it also runs a fresh full analysis after the edit and verifies exact node, edge, entry-point, and exit-point identity.
-
-The locality command separately proves single-symbol, file, package, deployable, and cross-repository edit scopes. It records analyzed and reused files, canonical package and deployable boundaries, changed and reused member analyses, and exact cold-analysis parity for every scope.
+The command copies discovered repositories into isolated workspaces, runs an initial analysis, reruns analysis with no source changes, edits one source file safely, reruns incremental analysis, and then generates an agent context from the edited CAS. With `--verify-full`, it also runs a fresh full analysis after the edit and verifies exact node, edge, entry-point, and exit-point identity.
 
 The report shows whether iterative analysis stayed incremental, how much faster it was than a full rebuild, whether the edit produced a change summary, how many files are tracked in incremental state, how many file-cache entries exist, and whether an agent can immediately get a focused post-edit agent context instead of rediscovering the repo.
 

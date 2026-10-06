@@ -244,9 +244,9 @@ function renderMarkdown(results: RepoResult[]): string {
   return `# Coverage Intelligence Report
 
 Generated ${new Date().toISOString()}. Empirical sweep of ${results.length} real ~/dev repos
-(${ok.length} analyzed successfully, ${crashed.length} crashed) using the codebase-TYPE
-classifier + coverage-gap self-discovery layer (see
-\`packages/analyzer-core/src/analyzer/core/codebase-type.ts\` and \`coverage-gaps.ts\`).
+(${ok.length} analyzed successfully, ${crashed.length} crashed) using the engine's codebase-TYPE
+classification + coverage-gap self-discovery layer (see
+\`packages/analyzer-core/src/analyzer/core/coverage-gaps.ts\`).
 
 This is the empirical backlog: which unknown deps/frameworks recur most, which
 types have zero-entry-point repos, which tree-sitter node types are most

@@ -71,8 +71,6 @@ before(() => {
   delete process.env.KLAURO_ANALYSIS_IN_PROCESS;
   delete process.env.KLAURO_ANALYSIS_HEAP_MB;
   delete process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH;
-  delete process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL;
-  delete process.env.KLAURO_ANALYSIS_STALL_MS;
 });
 
 after(() => {
@@ -164,28 +162,6 @@ test('a child crash after L1-4 lands is a clean, phase-attributed failure — no
 
   // The worker respawns a fresh child for the NEXT job — a crash never
   // wedges the shared worker permanently.
-  const recovered = await runLayeredAnalysis(projectDir);
-  assert.ok(recovered.nodes > 0);
-});
-
-test('a live worker with a stopped progress counter is recycled and the next job recovers', async () => {
-  const projectDir = writeFixtureProject(workspaceRoot, 'fixture-project-stall');
-  process.env.KLAURO_ANALYSIS_STALL_MS = '100';
-  process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL = 'before-start';
-  try {
-    await assert.rejects(
-      () => runLayeredAnalysis(projectDir),
-      (error: Error) => {
-        assert.match(error.message, /analysis-stalled/);
-        assert.match(error.message, /stopped progress counter/);
-        return true;
-      },
-    );
-  } finally {
-    delete process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL;
-    delete process.env.KLAURO_ANALYSIS_STALL_MS;
-  }
-
   const recovered = await runLayeredAnalysis(projectDir);
   assert.ok(recovered.nodes > 0);
 });

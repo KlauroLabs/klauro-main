@@ -615,14 +615,6 @@
       "name": "PROJECT_SCOPE_TRIGGER_FILES"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/codebase-type.ts",
-      "name": "DEP_TYPE_HINTS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/codebase-type.ts",
-      "name": "DIR_HINTS"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/communication-seams.ts",
       "name": "<inline:1cfif001toz3>"
     },
