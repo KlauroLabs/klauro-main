@@ -184,7 +184,7 @@ pub struct Capability {
     pub evidence: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Product {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -521,51 +521,21 @@ fn describe_product(
     }
     named.sort();
     let mut parts = described;
-
-    let mut by_depth: BTreeMap<std::cmp::Reverse<usize>, Vec<&str>> = BTreeMap::new();
-    for project in named.iter() {
-        by_depth
-            .entry(std::cmp::Reverse(within_of(project).matches('/').count()))
-            .or_default()
-            .push(project);
-    }
-    for (_, alongside) in by_depth {
-        let recomposed: Vec<Product> = alongside
-            .par_iter()
-            .filter_map(|project| {
-                let under: Vec<Option<&str>> = named
-                    .iter()
-                    .filter(|held| held_within(held, project))
-                    .map(|held| Some(*held))
-                    .collect();
-                if under.is_empty() {
-                    return None;
-                }
-                let beneath: Vec<&Product> = parts
-                    .iter()
-                    .filter(|part| {
-                        part.project
-                            .as_deref()
-                            .is_some_and(|held| held_within(held, project))
-                    })
-                    .collect();
-                describe_whole(
-                    &under,
-                    &beneath,
-                    capabilities,
-                    entities,
-                    flows,
-                    spoken,
-                    told,
-                    Some(project),
-                )
-            })
-            .collect();
-        for held in recomposed {
-            match parts.iter_mut().find(|part| part.project == held.project) {
-                Some(there) => *there = held,
-                None => parts.push(held),
-            }
+    let roots: Vec<&str> = named
+        .iter()
+        .copied()
+        .filter(|held| !named.iter().any(|other| held_within(held, other)))
+        .collect();
+    let settled: Vec<Product> = roots
+        .par_iter()
+        .flat_map(|root| {
+            describe_below(root, &named, &parts, capabilities, entities, flows, spoken, told)
+        })
+        .collect();
+    for held in settled {
+        match parts.iter_mut().find(|part| part.project == held.project) {
+            Some(there) => *there = held,
+            None => parts.push(held),
         }
     }
 
@@ -589,6 +559,45 @@ fn describe_product(
     written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
     written
+}
+
+fn describe_below(
+    project: &str,
+    named: &[&str],
+    base: &[Product],
+    capabilities: &[Capability],
+    entities: &[Entity],
+    flows: &[Flow],
+    spoken: &str,
+    told: &Telling<'_>,
+) -> Vec<Product> {
+    let below: Vec<&str> = named.iter().copied().filter(|held| held_within(held, project)).collect();
+    if below.is_empty() {
+        return Vec::new();
+    }
+    let nearest: Vec<&str> = below
+        .iter()
+        .copied()
+        .filter(|held| !below.iter().any(|other| held_within(held, other)))
+        .collect();
+    let mut settled: Vec<Product> = nearest
+        .par_iter()
+        .flat_map(|held| describe_below(held, named, base, capabilities, entities, flows, spoken, told))
+        .collect();
+    let mut parts: Vec<Product> = base.to_vec();
+    for held in settled.iter().cloned() {
+        match parts.iter_mut().find(|part| part.project == held.project) {
+            Some(there) => *there = held,
+            None => parts.push(held),
+        }
+    }
+    let under: Vec<Option<&str>> = below.iter().map(|held| Some(*held)).collect();
+    let beneath: Vec<&Product> = parts
+        .iter()
+        .filter(|part| part.project.as_deref().is_some_and(|held| held_within(held, project)))
+        .collect();
+    settled.extend(describe_whole(&under, &beneath, capabilities, entities, flows, spoken, told, Some(project)));
+    settled
 }
 
 fn within_of(project: &str) -> &str {
@@ -1512,6 +1521,7 @@ pub fn author(
             (entity.declared_as.clone(), named.join(", "))
         })
         .collect();
+    crate::author::began();
     let paths = crate::told_paths::Paths::new(&spoken);
     let started = std::time::Instant::now();
     let reaching = rayon::ThreadPoolBuilder::new()
@@ -1519,206 +1529,233 @@ pub fn author(
         .build()
         .ok();
     let work = || {
-        rayon::join(
-            || {
-                let mut parts: Vec<Option<String>> =
-                    held.flows.iter().map(|flow| flow.project.clone()).collect();
-                parts.sort();
-                parts.dedup();
-                let several = parts.iter().filter(|part| part.is_some()).count() > 1;
-                let read: Vec<(Vec<Capability>, Option<Product>)> = parts
-                    .par_iter()
-                    .map(|part| {
-                        let flows: Vec<&Flow> = held
-                            .flows
-                            .iter()
-                            .filter(|flow| &flow.project == part)
-                            .collect();
-                        let said = spoken_within(&spoken, part.as_deref());
-                        let remembered_as =
-                            format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
-                        let mut found =
-                            crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
-                        test_capabilities(
-                            &mut found,
-                            &said,
-                            if part.is_some() {
-                                "this part of the system"
-                            } else {
-                                "this system"
-                            },
-                            &excerpt,
-                        );
-                        let (places, same) = rayon::join(
-                            || what_each_is_for(&found, &said),
-                            || crate::capabilities::which_are_the_same(&found, &said),
-                        );
-                        set_places(&mut found, places);
-                        crate::capabilities::merge_the_same(&mut found, same);
-                        paths.tell_what_delivers(&found, &held.flows);
-                        let described = match (several, part.as_deref()) {
-                            (true, Some(named)) if !found.is_empty() => {
-                                describe_one(&found, &held.entities, &spoken, told, Some(named))
-                            }
-                            _ => None,
-                        };
-                        (found, described)
-                    })
-                    .collect();
-                let ((), formed_whole) = rayon::join(
-                    || paths.tell_the_busiest(&held.flows),
-                    || {
-                        let mut described: Vec<Product> = Vec::new();
-                        let mut capabilities: Vec<Capability> = Vec::new();
-                        for (found, product) in read {
-                            capabilities.extend(found);
-                            described.extend(product);
-                        }
-                        if parts_of(&capabilities).len() < 2 {
-                            described.clear();
-                        }
-                        described.sort_by(|left, right| left.project.cmp(&right.project));
-                        capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-                        let offered_only: std::collections::BTreeSet<&str> = held
-                            .flows
-                            .iter()
-                            .filter(|flow| flow.kind == "export")
-                            .map(|flow| flow.id.as_str())
-                            .collect();
-                        let served: Vec<Capability> = capabilities
-                            .iter()
-                            .filter(|capability| {
-                                capability
-                                    .flows
-                                    .iter()
-                                    .any(|flow| !offered_only.contains(flow.as_str()))
-                            })
-                            .cloned()
-                            .collect();
-                        let judged_in_a_part: HashSet<&str> = served
-                            .iter()
-                            .filter(|capability| capability.grounding.is_some())
-                            .map(|capability| capability.id.as_str())
-                            .collect();
-                        let derived = told.composition.and_then(|composition| {
-                            crate::parent::derive(
-                                composition,
-                                &served,
-                                &held.flows,
-                                &spoken,
-                                told.scope,
-                            )
-                        });
-                        let (mut whole, listed_parts, reasons) = match derived {
-                            Some((listed, derivation)) => {
-                                let mut whole = derivation.capabilities;
-                                test_capabilities(
-                                    &mut whole,
-                                    &spoken,
-                                    "this system as a whole",
-                                    &excerpt,
-                                );
-                                (whole, Some(listed), derivation.reasons)
-                            }
-                            None => {
-                                let (carried, mut whole): (Vec<Capability>, Vec<Capability>) =
-                                    crate::capabilities::of_the_whole(
-                                        &served,
-                                        &spoken,
-                                        told.scope,
-                                        &held.flows,
-                                    )
-                                    .into_iter()
-                                    .partition(|capability| {
-                                        judged_in_a_part.contains(capability.id.as_str())
-                                            && capability.also_in.len() <= 1
-                                    });
-                                test_capabilities(
-                                    &mut whole,
-                                    &spoken,
-                                    "this system as a whole",
-                                    &excerpt,
-                                );
-                                whole.extend(carried);
-                                (whole, None, std::collections::BTreeMap::new())
-                            }
-                        };
-                        whole.sort_by(|left, right| left.id.cmp(&right.id));
-                        eprintln!(
-                            "  author read {} capabilities across the parts into {} for the whole",
-                            capabilities.len(),
-                            whole.len()
-                        );
-                        let mut together = capabilities.clone();
-                        together.extend(whole.iter().cloned());
-                        together.sort_by(|left, right| left.id.cmp(&right.id));
-                        let formed = started.elapsed();
-                        let ((places, same), products) = rayon::join(
-                            || {
-                                rayon::join(
-                                    || what_each_is_for(&whole, &spoken),
-                                    || crate::capabilities::which_are_the_same(&whole, &spoken),
-                                )
-                            },
-                            || {
-                                describe_product(
-                                    &together,
-                                    &held.entities,
-                                    &held.flows,
-                                    &spoken,
-                                    told,
-                                    described,
-                                )
-                            },
-                        );
-                        set_places(&mut whole, places);
-                        crate::capabilities::merge_the_same(&mut whole, same);
-                        crate::capabilities::keep_levels_apart(&mut capabilities, &mut whole);
-                        let summary = match (told.composition, listed_parts) {
-                            (Some(composition), Some(_)) => {
-                                crate::parent::mark_parent_originated(&mut whole);
-                                let every_part =
-                                    crate::parent::parts_within(composition, &capabilities);
-                                Some(crate::parent::summarise(
-                                    &whole,
-                                    &every_part,
-                                    &reasons,
-                                    composition,
-                                    &offered_only,
-                                ))
-                            }
-                            _ => None,
-                        };
-                        capabilities.extend(whole);
-                        capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-                        eprintln!(
-                            "  author form {formed:?} across {} parts | describe {:?} | asks {} at {:.1} average, {} peak in flight | backend writes {} bytes/s | asked again {} | went unanswered {}",
-                            parts.len(),
-                            started.elapsed() - formed,
-                            crate::reach::asked(),
-                            crate::reach::concurrency().0,
-                            crate::reach::concurrency().1,
-                            crate::author::writing_rate(),
-                            crate::author::asked_again(),
-                            crate::author::went_unanswered() + crate::jev::went_unanswered()
-                        );
-                        (capabilities, products, summary)
-                    },
-                );
-                formed_whole
-            },
-            || {
-                let written =
-                    crate::author::name_them("records this system keeps", &spoken, &evidence);
+        let named_slot: std::sync::Mutex<Option<(
+            std::collections::BTreeMap<String, crate::author::Written>,
+            std::collections::BTreeMap<String, crate::author::Grounding>,
+        )>> = std::sync::Mutex::new(None);
+        let mut formed_whole = None;
+        let mut parts: Vec<Option<String>> =
+            held.flows.iter().map(|flow| flow.project.clone()).collect();
+        parts.sort();
+        parts.dedup();
+        let several = parts.iter().filter(|part| part.is_some()).count() > 1;
+        let (describing, described_rx) = std::sync::mpsc::channel::<Option<Product>>();
+        let described_rx = std::sync::Mutex::new(described_rx);
+        let expected = std::sync::atomic::AtomicUsize::new(0);
+        let (paths_ref, flows_ref, entities_ref, spoken_ref) = (&paths, &held.flows, &held.entities, &spoken);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let written = crate::author::name_them("records this system keeps", &spoken, &evidence);
                 let named = started.elapsed();
                 let grounded = crate::author::ground(&written, &evidence);
                 eprintln!(
                     "  author name {named:?} | ground {:?}",
                     started.elapsed() - named
                 );
-                (written, grounded)
-            },
-        )
+                if let Ok(mut slot) = named_slot.lock() {
+                    *slot = Some((written, grounded));
+                }
+            });
+            scope.spawn(|| paths.tell_the_busiest(&held.flows));
+            let read: Vec<Vec<Capability>> = parts
+                .par_iter()
+                .map_with(describing, |describing, part| {
+                    let flows: Vec<&Flow> = held
+                        .flows
+                        .iter()
+                        .filter(|flow| &flow.project == part)
+                        .collect();
+                    crate::author::weighing(flows.len() as u32, || {
+                    let said = spoken_within(&spoken, part.as_deref());
+                    let remembered_as =
+                        format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
+                    let label = part.as_deref().unwrap_or("root").to_string();
+                    let mut found =
+                        crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
+                    crate::author::mark(&format!("{label} placed"));
+                    test_capabilities(
+                        &mut found,
+                        &said,
+                        if part.is_some() {
+                            "this part of the system"
+                        } else {
+                            "this system"
+                        },
+                        &excerpt,
+                    );
+                    crate::author::mark(&format!("{label} tested"));
+                    let (places, same) = rayon::join(
+                        || what_each_is_for(&found, &said),
+                        || crate::capabilities::which_are_the_same(&found, &said),
+                    );
+                    set_places(&mut found, places);
+                    crate::capabilities::merge_the_same(&mut found, same);
+                    crate::author::mark(&format!("{label} merged"));
+                    let delivering = found.clone();
+                    scope.spawn(move || paths_ref.tell_what_delivers(&delivering, flows_ref));
+                    if let (true, Some(named)) = (several, part.as_deref())
+                        && !found.is_empty()
+                    {
+                        expected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let describing = describing.clone();
+                        let describable = found.clone();
+                        scope.spawn(move || {
+                            let product =
+                                describe_one(&describable, entities_ref, spoken_ref, told, Some(named));
+                            let _ = describing.send(product);
+                        });
+                    }
+                    found
+                    })
+                })
+                .collect();
+            formed_whole = Some({
+                {
+                let mut capabilities: Vec<Capability> = read.into_iter().flatten().collect();
+                let describes_parts = parts_of(&capabilities).len() >= 2;
+                capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+                crate::author::mark("parts merged");
+                let offered_only: std::collections::BTreeSet<&str> = held
+                    .flows
+                    .iter()
+                    .filter(|flow| flow.kind == "export")
+                    .map(|flow| flow.id.as_str())
+                    .collect();
+                let served: Vec<Capability> = capabilities
+                    .iter()
+                    .filter(|capability| {
+                        capability
+                            .flows
+                            .iter()
+                            .any(|flow| !offered_only.contains(flow.as_str()))
+                    })
+                    .cloned()
+                    .collect();
+                let judged_in_a_part: HashSet<&str> = served
+                    .iter()
+                    .filter(|capability| capability.grounding.is_some())
+                    .map(|capability| capability.id.as_str())
+                    .collect();
+                let derived = told.composition.and_then(|composition| {
+                    crate::parent::derive(
+                        composition,
+                        &served,
+                        &held.flows,
+                        &spoken,
+                        told.scope,
+                    )
+                });
+                let (mut whole, listed_parts, reasons) = match derived {
+                    Some((listed, derivation)) => {
+                        let mut whole = derivation.capabilities;
+                        test_capabilities(
+                            &mut whole,
+                            &spoken,
+                            "this system as a whole",
+                            &excerpt,
+                        );
+                        (whole, Some(listed), derivation.reasons)
+                    }
+                    None => {
+                        let (carried, mut whole): (Vec<Capability>, Vec<Capability>) =
+                            crate::capabilities::of_the_whole(
+                                &served,
+                                &spoken,
+                                told.scope,
+                                &held.flows,
+                            )
+                            .into_iter()
+                            .partition(|capability| {
+                                judged_in_a_part.contains(capability.id.as_str())
+                                    && capability.also_in.len() <= 1
+                            });
+                        test_capabilities(
+                            &mut whole,
+                            &spoken,
+                            "this system as a whole",
+                            &excerpt,
+                        );
+                        whole.extend(carried);
+                        (whole, None, std::collections::BTreeMap::new())
+                    }
+                };
+                whole.sort_by(|left, right| left.id.cmp(&right.id));
+                eprintln!(
+                    "  author read {} capabilities across the parts into {} for the whole",
+                    capabilities.len(),
+                    whole.len()
+                );
+                let mut together = capabilities.clone();
+                together.extend(whole.iter().cloned());
+                together.sort_by(|left, right| left.id.cmp(&right.id));
+                let formed = started.elapsed();
+                let ((places, same), products) = rayon::join(
+                    || {
+                        rayon::join(
+                            || what_each_is_for(&whole, &spoken),
+                            || crate::capabilities::which_are_the_same(&whole, &spoken),
+                        )
+                    },
+                    || {
+                        {
+                            let mut described: Vec<Product> = (0..expected
+                                .load(std::sync::atomic::Ordering::Relaxed))
+                                .filter_map(|_| described_rx.lock().ok()?.recv().ok().flatten())
+                                .collect();
+                            if !describes_parts {
+                                described.clear();
+                            }
+                            described.sort_by(|left, right| left.project.cmp(&right.project));
+                            describe_product(
+                                &together,
+                                &held.entities,
+                                &held.flows,
+                                &spoken,
+                                told,
+                                described,
+                            )
+                        }
+                    },
+                );
+                set_places(&mut whole, places);
+                crate::capabilities::merge_the_same(&mut whole, same);
+                crate::capabilities::keep_levels_apart(&mut capabilities, &mut whole);
+                let delivering = whole.clone();
+                scope.spawn(move || paths_ref.tell_what_delivers(&delivering, flows_ref));
+                let summary = match (told.composition, listed_parts) {
+                    (Some(composition), Some(_)) => {
+                        crate::parent::mark_parent_originated(&mut whole);
+                        let every_part =
+                            crate::parent::parts_within(composition, &capabilities);
+                        Some(crate::parent::summarise(
+                            &whole,
+                            &every_part,
+                            &reasons,
+                            composition,
+                            &offered_only,
+                        ))
+                    }
+                    _ => None,
+                };
+                capabilities.extend(whole);
+                capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+                eprintln!(
+                    "  author form {formed:?} across {} parts | describe {:?} | asks {} at {:.1} average, {} peak in flight | backend writes {} bytes/s | asked again {} | went unanswered {}",
+                    parts.len(),
+                    started.elapsed() - formed,
+                    crate::reach::asked(),
+                    crate::reach::concurrency().0,
+                    crate::reach::concurrency().1,
+                    crate::author::writing_rate(),
+                    crate::author::asked_again(),
+                    crate::author::went_unanswered() + crate::jev::went_unanswered()
+                );
+                    (capabilities, products, summary)
+                }
+            });
+        });
+        let named = named_slot.into_inner().ok().flatten().unwrap_or_default();
+        (formed_whole.unwrap_or_default(), named)
     };
     let ((capabilities, products, summary), (written, grounded)) = match &reaching {
         Some(pool) => pool.install(work),

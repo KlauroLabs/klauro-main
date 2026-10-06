@@ -10,21 +10,23 @@ const FAMILIES_PER_PROPOSAL: usize = 20;
 const READINGS: usize = 3;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
-    let orders: Vec<Vec<(String, String)>> = (0..READINGS)
-        .map(|at| {
-            let mut ordered = listed.to_vec();
-            match at {
-                0 => {}
-                1 => ordered.reverse(),
-                _ => ordered.rotate_left(listed.len() / 2),
-            }
-            ordered
-        })
-        .collect();
+    let mut orders: Vec<Vec<(String, String)>> = Vec::new();
+    for at in 0..READINGS {
+        let mut ordered = listed.to_vec();
+        match at {
+            0 => {}
+            1 => ordered.reverse(),
+            _ => ordered.rotate_left(listed.len() / 2),
+        }
+        if !orders.contains(&ordered) {
+            orders.push(ordered);
+        }
+    }
+    let weight = crate::author::weight();
     let readings: Vec<Proposal> = crate::author::asking(|| {
         orders
             .par_iter()
-            .map(|ordered| crate::author::propose_capabilities(said, ordered))
+            .map(|ordered| crate::author::weighing(weight, || crate::author::propose_capabilities(said, ordered)))
             .collect()
     });
     let settled = |reading: &Proposal| {
@@ -550,10 +552,11 @@ fn place(
     }
     let standing: Vec<(String, String)> =
         held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
+    let weight = crate::author::weight();
     let answers: Vec<Placed> = crate::author::asking(|| {
         unplaced
             .par_chunks(FAMILIES_PER_PROPOSAL)
-            .flat_map(|chunk| crate::author::place_families(said, &standing, chunk))
+            .flat_map(|chunk| crate::author::weighing(weight, || crate::author::place_families(said, &standing, chunk)))
             .collect()
     });
     let answered = !answers.is_empty();
@@ -664,17 +667,36 @@ fn split_the_broad(
     if broad.is_empty() {
         return kept;
     }
+    let weight = crate::author::weight();
+    let proposals: Vec<(usize, Proposal)> = crate::author::asking(|| {
+        broad
+            .par_iter()
+            .map(|wide| crate::author::weighing(weight, || {
+                let listed: Vec<(String, String)> = wide
+                    .families
+                    .iter()
+                    .filter_map(|id| {
+                        told.get(id).map(|evidence| {
+                            (id.clone(), evidence.lines().take(SPLIT_LINES_PER_OUTCOME).collect::<Vec<_>>().join("\n"))
+                        })
+                    })
+                    .take(SPLIT_OUTCOMES_SHOWN)
+                    .collect();
+                let proposal = crate::author::split_purpose(
+                    said,
+                    &wide.name,
+                    &wide.description,
+                    &listed,
+                    listed.len().div_ceil(OUTCOMES_PER_SPLIT).max(2),
+                );
+                (listed.len(), proposal)
+            }))
+            .collect()
+    });
     let mut split_any = false;
-    for wide in broad {
-        let listed: Vec<(String, String)> = wide
-            .families
-            .iter()
-            .filter_map(|id| told.get(id).map(|evidence| (id.clone(), evidence.lines().take(SPLIT_LINES_PER_OUTCOME).collect::<Vec<_>>().join("\n"))))
-            .take(SPLIT_OUTCOMES_SHOWN)
-            .collect();
-        let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed, listed.len().div_ceil(OUTCOMES_PER_SPLIT).max(2));
+    for (wide, (outcomes, proposal)) in broad.into_iter().zip(proposals) {
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-            eprintln!("  split {} over {} outcomes into {} capabilities", wide.name, listed.len(), proposal.capabilities.len());
+            eprintln!("  split {} over {} outcomes into {} capabilities", wide.name, outcomes, proposal.capabilities.len());
         }
         if proposal.capabilities.len() < 2 {
             kept.push(wide);
@@ -765,9 +787,10 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             let proposals: Vec<Proposal> = match listed.len() <= FAMILIES_PER_PROPOSAL {
                 true => vec![most_detailed_reading(said, &listed)],
                 false => crate::author::asking(|| {
+                    let weight = crate::author::weight();
                     listed
                         .par_chunks(FAMILIES_PER_PROPOSAL)
-                        .map(|chunk| most_detailed_reading(said, chunk))
+                        .map(|chunk| crate::author::weighing(weight, || most_detailed_reading(said, chunk)))
                         .collect()
                 }),
             };
@@ -1533,18 +1556,19 @@ pub(crate) fn the_same_among(
         }
     }
     let shown: Vec<usize> = (0..listed.len()).filter(|at| found(&mut leader, *at) == *at).collect();
+    let weight = crate::author::weight();
     let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = crate::author::asking(|| {
         asked_together(&shown)
             .into_par_iter()
             .filter(|chunk| chunk.len() > 1)
-            .map(|chunk| {
+            .map(|chunk| crate::author::weighing(weight, || {
                 let offered: BTreeMap<String, String> = chunk
                     .iter()
                     .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
                     .collect();
                 let said = ask(&offered);
                 (chunk, said)
-            })
+            }))
             .collect()
     });
     let mut named: Vec<(Vec<usize>, String, String, String)> = Vec::new();
@@ -1702,16 +1726,23 @@ fn groups_of_the_same(
             (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
         })
         .collect();
-    let mut groups = the_same_among(&listed, &ask);
     let near = near_duplicates(capabilities);
-    if near.len() > 1 {
-        let narrowed: Vec<(String, String)> = near.iter().map(|at| listed[*at].clone()).collect();
-        let again = the_same_among(&narrowed, &ask).into_iter().map(|joined| Joined {
-            members: joined.members.into_iter().map(|at| near[at]).collect(),
-            ..joined
-        });
-        groups = united(groups.into_iter().chain(again).collect());
-    }
+    let narrowed: Vec<(String, String)> = near.iter().map(|at| listed[*at].clone()).collect();
+    let (groups, again) = rayon::join(
+        || the_same_among(&listed, &ask),
+        || match near.len() > 1 {
+            true => the_same_among(&narrowed, &ask),
+            false => Vec::new(),
+        },
+    );
+    let again = again.into_iter().map(|joined| Joined {
+        members: joined.members.into_iter().map(|at| near[at]).collect(),
+        ..joined
+    });
+    let groups = match near.len() > 1 {
+        true => united(groups.into_iter().chain(again).collect()),
+        false => groups,
+    };
     groups
 }
 

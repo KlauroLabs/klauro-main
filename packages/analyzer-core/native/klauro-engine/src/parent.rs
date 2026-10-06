@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::comprehend::{Capability, Flow};
@@ -495,16 +496,23 @@ pub fn derive(
     }
     let links = links_of(composition, &parts);
     let mut answer = Answer::default();
-    for (at, prompt) in prompts_of(spoken, composition, &parts, flows, &links).iter().enumerate() {
-        let key = format!("{scope}\u{1}{PARENT_CONTRACT_VERSION}\u{1}{at}");
-        let held = crate::memory::unless_changed("parent", &key, &crate::jev::named(prompt), || {
-            crate::author::derive_parent(prompt)
-        });
-        if let Some(value) = held {
-            let more = answer_from(&value);
-            answer.derived.extend(more.derived);
-            answer.left.extend(more.left);
-        }
+    let prompts = prompts_of(spoken, composition, &parts, flows, &links);
+    let derived: Vec<Option<serde_json::Value>> = crate::author::asking(|| {
+        prompts
+            .par_iter()
+            .enumerate()
+            .map(|(at, prompt)| {
+                let key = format!("{scope}\u{1}{PARENT_CONTRACT_VERSION}\u{1}{at}");
+                crate::memory::unless_changed("parent", &key, &crate::jev::named(prompt), || {
+                    crate::author::derive_parent(prompt)
+                })
+            })
+            .collect()
+    });
+    for value in derived.into_iter().flatten() {
+        let more = answer_from(&value);
+        answer.derived.extend(more.derived);
+        answer.left.extend(more.left);
     }
     let mut derivation = assemble(&parts, composition, &links, &answer);
     if derivation.capabilities.is_empty() {

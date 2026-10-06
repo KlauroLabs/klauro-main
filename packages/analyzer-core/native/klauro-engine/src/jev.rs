@@ -107,6 +107,10 @@ pub fn asked() -> bool {
 }
 
 pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {
+    decide_at(state, questions, crate::author::JOINING)
+}
+
+pub fn decide_at(state: &str, questions: BTreeMap<String, Question>, urgency: u8) -> BTreeMap<String, Decision> {
     let mut answers = BTreeMap::new();
     if !asked() {
         return answers;
@@ -127,10 +131,11 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
     if !held.is_empty() {
         batches_of.push(held);
     }
+    let weight = crate::author::weight();
     let batches: Vec<BTreeMap<String, Decision>> = crate::author::asking(|| {
         batches_of
             .par_iter()
-            .map(|batch| {
+            .map(|batch| crate::author::weighing(weight, || {
                 let batch = batch.as_slice();
                 let body = serde_json::json!({
                     "model": MODEL,
@@ -148,7 +153,7 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
                 let longest_wait = crate::reach::longest_wait();
                 let mut missed = 0u32;
                 while waited < longest_wait {
-                    match ask(&request) {
+                    match ask(&request, crate::author::priority(urgency)) {
                         Reply::Answered(answered) => {
                             held = Some(answered);
                             break;
@@ -174,7 +179,7 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
                         BTreeMap::new()
                     }
                 }
-            })
+            }))
             .collect()
     });
     for batch in batches {
@@ -189,7 +194,7 @@ enum Reply {
     Refused,
 }
 
-fn ask(request: &str) -> Reply {
+fn ask(request: &str, urgency: u64) -> Reply {
     if let Some(held) = remembered(request)
         && let Ok(answered) = serde_json::from_str(&held)
     {
@@ -197,7 +202,7 @@ fn ask(request: &str) -> Reply {
     }
     let Ok(key) = std::env::var("TYPESAFE_API_KEY") else { return Reply::Refused };
     let started = std::time::Instant::now();
-    let text = match crate::reach::asking(ENDPOINT, &key, request) {
+    let text = match crate::reach::asking(ENDPOINT, &key, request, urgency) {
         crate::reach::Answer::Held(text) => text,
         crate::reach::Answer::Refused => return Reply::Refused,
         crate::reach::Answer::Missed => return Reply::Missed,

@@ -19,35 +19,32 @@ const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
+pub const DEFERRED: u8 = 0;
+pub const DESCRIBING_ASK: u8 = 5;
+pub const WEIGHING: u8 = 6;
+pub const JOINING: u8 = 7;
+pub const TIGHTENING: u8 = 7;
+pub const PROPOSING: u8 = 8;
+pub const DERIVING: u8 = 9;
+
 pub fn reaching_at_once(over_a_network: usize) -> usize {
     match spoken_to().is_some() {
-        true => crate::budget::ai_concurrency(),
+        true => crate::budget::ai_concurrency() * THREADS_PER_PLACE,
         false => over_a_network,
     }
 }
 
+const THREADS_PER_PLACE: usize = 16;
+
 static ASKING: std::sync::LazyLock<rayon::ThreadPool> = std::sync::LazyLock::new(|| {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(crate::budget::ai_concurrency())
+        .num_threads(crate::budget::ai_concurrency() * THREADS_PER_PLACE)
         .build()
         .expect("a pool of threads to ask on")
 });
 
 pub fn asking<R: Send>(work: impl FnOnce() -> R + Send) -> R {
     ASKING.install(work)
-}
-
-const ASKING_BESIDE: usize = 6;
-
-static ASKING_BESIDE_THE_REST: std::sync::LazyLock<rayon::ThreadPool> = std::sync::LazyLock::new(|| {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(ASKING_BESIDE)
-        .build()
-        .expect("a pool of threads to ask on")
-});
-
-pub fn asking_beside_the_rest<R: Send>(work: impl FnOnce() -> R + Send) -> R {
-    ASKING_BESIDE_THE_REST.install(work)
 }
 
 static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
@@ -61,6 +58,35 @@ pub fn went_unanswered() -> u64 {
 }
 
 static BEGAN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+
+thread_local! {
+    static WEIGHT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+pub fn weight() -> u32 {
+    WEIGHT.with(|held| held.get())
+}
+
+pub fn weighing<R>(weight: u32, work: impl FnOnce() -> R) -> R {
+    let before = WEIGHT.with(|held| held.replace(weight));
+    let done = work();
+    WEIGHT.with(|held| held.set(before));
+    done
+}
+
+pub fn priority(urgency: u8) -> u64 {
+    (u64::from(weight()) << 8) | u64::from(urgency)
+}
+
+pub fn began() {
+    std::sync::LazyLock::force(&BEGAN);
+}
+
+pub fn mark(label: &str) {
+    if std::env::var("KLAURO_ASK_GRAPH").is_ok() {
+        eprintln!("MARK {} {label}", BEGAN.elapsed().as_millis());
+    }
+}
 
 pub fn asked_again() -> u64 {
     ASKED_AGAIN.load(Ordering::Relaxed)
@@ -230,7 +256,7 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String], again: bool) ->
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items", most_of(listed.len())) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items", most_of(listed.len()), DEFERRED) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -272,7 +298,7 @@ pub fn ground(
             questions.insert(format!("w{at}-{named}"), question);
         }
     }
-    let answers = crate::jev::decide("Each question carries its own facts.", questions);
+    let answers = crate::jev::decide_at("Each question carries its own facts.", questions, DEFERRED);
     asking
         .iter()
         .enumerate()
@@ -353,11 +379,14 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
     }
     let listed: Vec<(&String, &String)> = listed.iter().collect();
     let per_call = per_call_for(listed.len());
+    let weight = weight();
     asking(|| {
         listed
             .par_chunks(per_call.max(1))
             .map(|chunk| {
-                place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
+                weighing(weight, || {
+                    place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
+                })
             })
             .reduce(BTreeMap::new, |mut into, held| {
                 into.extend(held);
@@ -378,7 +407,7 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
     }
-    asking_beside_the_rest(|| {
+    asking(|| {
         listed
             .par_chunks(PATHS_PER_CALL)
             .map(|chunk| tell_a_batch(spoken_for, chunk, true))
@@ -406,7 +435,7 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> B
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let mut held = BTreeMap::new();
-    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", most_of(listed.len())) else {
+    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", most_of(listed.len()), DEFERRED) else {
         return held;
     };
     for item in answer["items"].as_array().into_iter().flatten() {
@@ -451,7 +480,7 @@ fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMa
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let Some(answer) =
-        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", listed.len())
+        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", listed.len(), WEIGHING)
     else {
         return held;
     };
@@ -554,7 +583,7 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
          The capabilities:\n{}",
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 4000, &asking_of_models(model()), "groups", 1)
+    let Some(held) = answered::<serde_json::Value>(&prompt, 4000, &asking_of_models(model()), "groups", 1, JOINING)
     else {
         return Vec::new();
     };
@@ -571,7 +600,7 @@ pub fn derive_parent(prompt: &str) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
-    answered::<serde_json::Value>(prompt, 3000, &asking_of_models(model()), "derived", 1)
+    answered::<serde_json::Value>(prompt, 3000, &asking_of_models(model()), "derived", 1, DERIVING)
 }
 
 pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
@@ -597,7 +626,7 @@ pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> V
          The capabilities:\n{}",
         listed.iter().map(|(id, told)| format!("- {id}: {told}")).collect::<Vec<_>>().join("\n")
     );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "groups", 0)
+    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "groups", 0, JOINING)
     else {
         return Vec::new();
     };
@@ -727,7 +756,7 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
         outcome_names = OUTCOME_NAMES
     );
     let Some(held) =
-        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
+        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0, PROPOSING)
     else {
         return Proposal::default();
     };
@@ -753,7 +782,7 @@ pub fn name_a_part(facts: &str) -> Option<PartNamed> {
          technology the facts do not name.\n\n\
          Return JSON only: {{\"name\":\"...\",\"summary\":\"...\"}}"
     );
-    let named: PartNamed = answered(&prompt, 400, &proposing(), "summary", 1)?;
+    let named: PartNamed = answered(&prompt, 400, &proposing(), "summary", 1, DESCRIBING_ASK)?;
     let (name, summary) = (named.name.trim().to_string(), named.summary.trim().to_string());
     (!name.is_empty() && !summary.is_empty()).then_some(PartNamed { name, summary })
 }
@@ -790,7 +819,7 @@ pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: 
         users_words = IN_THE_USERS_WORDS,
         outcome_names = OUTCOME_NAMES
     );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0) else {
+    let Some(held) = answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0, PROPOSING) else {
         return Proposal::default();
     };
     proposal_of(&held, families.len())
@@ -840,7 +869,7 @@ pub fn place_families(
         standing.iter().map(|(name, told)| format!("- {name}: {told}")).collect::<Vec<_>>().join("\n"),
         unplaced.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "assigned", 1)
+    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "assigned", 1, PROPOSING)
     else {
         return Vec::new();
     };
@@ -886,7 +915,7 @@ pub fn describe_system(facts: &str) -> Option<String> {
          {DESCRIBING}\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
-    let told: Told = answered(&prompt, 1200, &proposing(), "description", 1)?;
+    let told: Told = answered(&prompt, 1200, &proposing(), "description", 1, DESCRIBING_ASK)?;
     let described = told.description.trim().to_string();
     (!described.is_empty()).then_some(described)
 }
@@ -1061,9 +1090,10 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
     if !asked() || held.is_empty() {
         return Vec::new();
     }
+    let weight = weight();
     asking(|| {
         held.par_chunks(CLAIMS_PER_ASK)
-            .flat_map(|chunk| {
+            .flat_map(|chunk| weighing(weight, || {
                 let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
                 let prompt = format!(
                     "A software system describes itself like this:\n{spoken}\n\n\
@@ -1099,7 +1129,7 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                     users_words = IN_THE_USERS_WORDS,
                     outcome_names = OUTCOME_NAMES
                 );
-                answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1)
+                answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1, TIGHTENING)
                     .map(|held| {
                         held["items"]
                             .as_array()
@@ -1110,7 +1140,7 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default()
-            })
+            }))
             .collect()
     })
 }
@@ -1397,7 +1427,9 @@ fn answered<T: serde::de::DeserializeOwned>(
     models: &[String],
     of: &str,
     at_least: usize,
+    urgency: u8,
 ) -> Option<T> {
+    let began = std::time::Instant::now();
     let spoken_to = spoken_to();
     let carries = |held: &str| -> bool {
         if of.is_empty() {
@@ -1438,7 +1470,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                     crate::reach::Answer::Missed,
                     crate::reach::Answer::Held,
                 ),
-                None => ask(&request, of, most),
+                None => ask(&request, of, most, priority(urgency)),
             };
             match answered {
                 crate::reach::Answer::Held(text) => {
@@ -1469,6 +1501,15 @@ fn answered<T: serde::de::DeserializeOwned>(
         let answer = held.as_ref().map(|(_, text, _)| text.as_str()).unwrap_or("");
         let _ = std::fs::write(format!("{folder}/{of}-{named}.txt"), format!("{prompt}\n\n=====\n\n{answer}"));
     }
+    if std::env::var("KLAURO_ASK_GRAPH").is_ok() {
+        eprintln!(
+            "ASK {} {} {of} {} {}",
+            (began - *BEGAN).as_millis(),
+            (std::time::Instant::now() - *BEGAN).as_millis(),
+            prompt.len(),
+            crate::jev::named(prompt)
+        );
+    }
     let Some((value, text, request)) = held else {
         WENT_UNANSWERED.fetch_add(1, Ordering::Relaxed);
         eprintln!("  author no answer to a prompt of {} bytes", prompt.len());
@@ -1496,11 +1537,11 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
     String::from_utf8(answered.stdout).ok()
 }
 
-fn ask(request: &str, of: &str, most: u32) -> crate::reach::Answer {
+fn ask(request: &str, of: &str, most: u32, urgency: u64) -> crate::reach::Answer {
     let started = std::time::Instant::now();
     let answer = match (key(), addressed()) {
-        (Some(key), _) => crate::reach::asking(&endpoint(), &key, request),
-        (None, Some(endpoint)) => crate::reach::asking(&endpoint, "", request),
+        (Some(key), _) => crate::reach::asking(&endpoint(), &key, request, urgency),
+        (None, Some(endpoint)) => crate::reach::asking(&endpoint, "", request, urgency),
         (None, None) => crate::reach::Answer::Refused,
     };
     if let crate::reach::Answer::Held(held) = &answer {
@@ -1572,7 +1613,7 @@ pub fn look_for_missed(path: &str, source: &str, recorded: &str) -> Vec<Missed> 
          sentence, no product words\",\"line\":0,\"expect\":{{\"at\":\"exit_points\",\"has\":\
          {{\"kind\":\"database\",\"target\":\"a_table\"}}}},\"smallest\":\"...\"}}]}}"
     );
-    answered::<Missing>(&prompt, 2000, &proposing(), "", 0)
+    answered::<Missing>(&prompt, 2000, &proposing(), "", 0, DESCRIBING_ASK)
         .map(|held| held.missed)
         .unwrap_or_default()
 }
