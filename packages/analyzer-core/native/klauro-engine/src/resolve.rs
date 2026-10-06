@@ -1763,7 +1763,17 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     .or_else(|| symbols.file_scope.get(&(*target, wanted)))
                     .copied()
             });
-            if let Some(found) = declared.or_else(|| reached.iter().find_map(|target| declared_through(*target, wanted))) {
+            let drawn_by_its_file = || {
+                reached
+                    .iter()
+                    .find(|target| matches!(index.languages[**target as usize], "vue" | "svelte"))
+                    .and_then(|target| symbols.position.get(index.files[*target as usize].as_str()).copied())
+                    .filter(|_| name.default_import)
+            };
+            if let Some(found) = declared
+                .or_else(|| reached.iter().find_map(|target| declared_through(*target, wanted)))
+                .or_else(drawn_by_its_file)
+            {
                 bindings.imported.insert((fact.file, name.local.as_str()), found);
             }
         }
@@ -2316,6 +2326,19 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             _ => {}
         }
 
+        if fact.renders
+            && receiver.is_none()
+            && let Some(found) = resolver
+                .bindings
+                .imported
+                .get(&(fact.file, callee.as_str()))
+                .copied()
+                .or_else(|| symbols.in_scope(fact.file, callee.as_str()))
+            && matches!(symbols.nodes[found as usize].kind, NodeKind::Variable | NodeKind::Module)
+        {
+            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
+        }
+
         if index.languages.get(fact.file as usize) == Some(&"ruby")
             && let Some(receiver) = receiver.as_deref()
             && receiver.starts_with(char::is_uppercase)
@@ -2649,8 +2672,16 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 *unresolved_names.entry(member).or_insert(0) += 1;
                 unresolved_calls += 1;
             }
-            Resolved::Edge(target, kind) => edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target, kind }),
+            Resolved::Edge(target, kind) => {
+                if fact.renders && target != caller {
+                    edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target: target.clone(), kind: EdgeKind::Renders });
+                }
+                edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target, kind });
+            }
             Resolved::Guessed(target, kind) => {
+                if fact.renders && target != caller {
+                    edges.push(IndexEdge { via: Via::Name, source: caller.to_string(), target: target.clone(), kind: EdgeKind::Renders });
+                }
                 edges.push(IndexEdge { via: Via::Name, source: caller.to_string(), target, kind });
             }
             Resolved::Implemented(targets, kind) => {

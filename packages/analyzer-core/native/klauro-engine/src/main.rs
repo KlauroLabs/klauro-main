@@ -11,10 +11,11 @@ mod comprehend;
 mod composition;
 mod confidence;
 mod parent;
+mod conflicts;
 mod conform;
 mod constants;
-mod crossings;
 mod brokers;
+mod crossings;
 mod convention;
 mod coverage;
 mod bundler;
@@ -33,6 +34,7 @@ mod elements;
 mod entities;
 mod entry_exit;
 mod generated;
+mod graphql;
 mod fixes;
 mod file_routes;
 mod history;
@@ -52,14 +54,16 @@ mod names;
 mod namespaced;
 mod paths;
 mod reach;
+mod render_tree;
 mod published;
+mod requests;
 mod resolve;
 mod roles;
 mod rules;
-mod requests;
 mod route;
 mod rust_use;
 mod layers;
+mod libraries;
 mod memory;
 mod design_patterns;
 mod patterns;
@@ -71,6 +75,7 @@ mod screens;
 mod sdk;
 mod shared;
 mod service_catalog;
+mod shapes;
 mod services;
 mod tables;
 mod told_paths;
@@ -145,6 +150,14 @@ struct Index {
     dependencies: Option<dependencies::Dependencies>,
     services: Vec<services::Service>,
     layering: Vec<layers::Layering>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    architectural_conflicts: Vec<conflicts::Conflict>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    layering_violations: Vec<conflicts::Violation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    type_shapes: Vec<shapes::Shape>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    libraries: Vec<libraries::Library>,
     #[serde(skip_serializing_if = "Option::is_none")]
     patterns: Option<patterns::Patterns>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,13 +285,18 @@ fn read(
     if let Some(mut parser) = typescript::parser_for(path)
         .or_else(|| typescript::parser_for_language(language_id?))
     {
-        if language_id.is_some_and(typescript::wraps_script) {
+        let markup = language_id.filter(|id| typescript::wraps_script(id)).map(|_| source.clone());
+        if markup.is_some() {
             source_rewrite::component_script(source);
         }
         source_rewrite::grammar_limitations(source);
         let tree = parser.parse(&source, None)?;
         report_first_error(path, source, &tree);
         let mut facts = typescript::Extractor::new(source, file, path).run(&tree, path, lines(source));
+        if let Some(markup) = markup {
+            let rendered = render_tree::template_renders(&markup, file, path, &facts.imports);
+            facts.calls.extend(rendered);
+        }
         facts.tables.extend(tables::declared(source, path, file));
         facts.models.extend(entities::orm::declared(source, path, file));
         if bundler::is_config(path) {
@@ -513,6 +531,10 @@ fn read_it() {
         dependencies: None,
         services: Vec::new(),
         layering: Vec::new(),
+        architectural_conflicts: Vec::new(),
+        layering_violations: Vec::new(),
+        type_shapes: Vec::new(),
+        libraries: Vec::new(),
         patterns: None,
         principles: None,
         roles: None,
@@ -602,6 +624,7 @@ fn read_it() {
         parse_errors
     );
 
+    let lifted = graphql::lift(&root, &index.files, &mut index.nodes, &mut index.edges, &mut index.calls);
     let resolve_started = Instant::now();
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
     let languages: Vec<&str> = index.files.iter().map(|file| file.language.unwrap_or("")).collect();
@@ -639,6 +662,25 @@ fn read_it() {
     }
 
     close_graph(&mut index);
+    render_tree::drawn(&root, &paths, &index.nodes, &mut index.edges, &index.type_references);
+    let wired = graphql::wire(
+        &lifted,
+        &graphql::Context {
+            files: &paths,
+            languages: &languages,
+            nodes: &index.nodes,
+            type_references: &index.type_references,
+            calls: &index.calls,
+            imports: &index.imports,
+            locals: &index.locals,
+            local: &resolution.local,
+            imported: &resolution.imported,
+            root: &root,
+        },
+    );
+    index.nodes.extend(wired.nodes);
+    index.edges.extend(wired.edges);
+    let wired_entries = wired.entry_points;
 
     eprintln!(
         "resolve {:?} | edges {} | imported files {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
@@ -675,6 +717,9 @@ fn read_it() {
         .entry_points
         .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &index.imports, &index.locals, &paths, &resolution));
     derived.entry_points.extend(file_routes::drawn(&root, &paths, &index.nodes));
+    let wired_handlers: rustc_hash::FxHashSet<&str> = wired_entries.iter().map(|entry| entry.handler.as_str()).collect();
+    derived.entry_points.retain(|entry| entry.kind != "graphql" || !wired_handlers.contains(entry.handler.as_str()));
+    derived.entry_points.extend(wired_entries.iter().cloned());
     derived.entry_points.retain(|entry| {
         paths.get(entry.file as usize).is_none_or(|path| !path.split('/').any(|segment| segment.starts_with('.') && segment.len() > 1 && segment != ".well-known"))
     });
@@ -976,6 +1021,7 @@ fn read_it() {
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
     addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
+    requests::fold(&mut index.exit_points, &index.calls);
     let asked_before = index.exit_points.len();
     let constants = constants::Constants::new(&index.locals);
     addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths, &constants);
@@ -1021,7 +1067,6 @@ fn read_it() {
         "patterns {:?} | found {} | messages {} | dispatched {} | topics {}",
         patterns_started.elapsed(),
         derived.patterns.found.len(),
-    requests::fold(&mut index.exit_points, &index.calls);
         derived.patterns.messages.len(),
         derived.dispatched.len(),
         derived.patterns.topics.len()
@@ -1116,6 +1161,16 @@ fn read_it() {
         &index.exit_points,
     );
     eprintln!("layers {:?} | projects {}", layers_started.elapsed(), layering.len());
+    let consistency = conflicts::derive(
+        &layering,
+        &index.nodes,
+        &paths,
+        index.patterns.as_ref().map(|found| found.conformance.as_slice()).unwrap_or(&[]),
+    );
+    index.architectural_conflicts = consistency.conflicts;
+    index.layering_violations = consistency.violations;
+    index.type_shapes = shapes::derive(&index.nodes, &paths);
+    index.libraries = libraries::derive(index.dependencies.as_ref(), &index.imports, &paths);
     index.layering = layering;
     index.injections = injection::derive(&pattern_graph, &index.calls);
     drop(pattern_graph);
@@ -1214,6 +1269,7 @@ fn read_it() {
     index.history = history;
     let crossings_started = Instant::now();
     index.crossings = crossings::derive(
+        &root,
         &paths,
         &index.nodes,
         &index.calls,
@@ -1269,7 +1325,6 @@ fn read_it() {
     eprintln!(
         "health {:?} | projects {} | noted {}",
         health_started.elapsed(),
-        &root,
         health.projects.len(),
         health.noted
     );
