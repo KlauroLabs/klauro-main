@@ -26,11 +26,12 @@ fn category_of(index: &serde_json::Value, root: &str) -> String {
 }
 
 #[test]
-fn a_program_is_runnable_and_the_library_beside_it_is_not() {
+fn an_executable_build_target_ships_and_the_library_beside_it_does_not() {
     let index = index();
-    assert_eq!(category_of(&index, "src/tool"), "runnable");
+    assert_eq!(category_of(&index, "src/tool"), "shipped");
     assert_eq!(category_of(&index, "lib"), "library");
-    assert!(shipped(&index).is_empty(), "nothing here declares how it ships");
+    let roots: Vec<&str> = shipped(&index).iter().map(|unit| unit["root"].as_str().unwrap()).collect();
+    assert_eq!(roots, vec!["src/tool"], "only the executable target is built to ship");
 }
 
 #[test]
