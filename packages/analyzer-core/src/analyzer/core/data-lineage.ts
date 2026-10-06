@@ -179,24 +179,24 @@ function buildLineageIndex(input: DataLineageInput): LineageIndex {
 
   const entryPointFlowsByEntityKey = new Map<string, CASEntryPointFlow[]>();
   const entryPointFlowsByEntityId = new Map<string, CASEntryPointFlow[]>();
-  const linkEntryPointFlow = (map: Map<string, CASEntryPointFlow[]>, key: string, journey: CASEntryPointFlow) => {
+  const linkEntryPointFlow = (map: Map<string, CASEntryPointFlow[]>, key: string, entryPointFlow: CASEntryPointFlow) => {
     const list = map.get(key) || [];
-    if (!list.includes(journey)) {
-      list.push(journey);
+    if (!list.includes(entryPointFlow)) {
+      list.push(entryPointFlow);
       map.set(key, list);
     }
   };
-  for (const journey of input.entryPointFlows) {
-    for (const terminal of journey.terminal_entities || []) {
-      if (terminal.entity_id) linkEntryPointFlow(entryPointFlowsByEntityId, terminal.entity_id, journey);
-      for (const key of entityNameKeys(terminal.name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, journey);
+  for (const entryPointFlow of input.entryPointFlows) {
+    for (const terminal of entryPointFlow.terminal_entities || []) {
+      if (terminal.entity_id) linkEntryPointFlow(entryPointFlowsByEntityId, terminal.entity_id, entryPointFlow);
+      for (const key of entityNameKeys(terminal.name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, entryPointFlow);
     }
     const effectNames = [
-      ...(journey.terminal_effects?.entities_written || []),
-      ...(journey.terminal_effects?.entities_read || []),
+      ...(entryPointFlow.terminal_effects?.entities_written || []),
+      ...(entryPointFlow.terminal_effects?.entities_read || []),
     ];
     for (const name of effectNames) {
-      for (const key of entityNameKeys(name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, journey);
+      for (const key of entityNameKeys(name)) linkEntryPointFlow(entryPointFlowsByEntityKey, key, entryPointFlow);
     }
   }
 
@@ -259,7 +259,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     }
   }
 
-  const journeys = collectEntryPointFlows(entity, index);
+  const entryPointFlows = collectEntryPointFlows(entity, index);
 
   const recipients = new Map<string, CASEntityLineageExternalRecipient>();
   const unresolvedExitPointIds = new Set<string>();
@@ -291,8 +291,8 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   for (const nodeId of accessorScope) {
     for (const exitPoint of index.externalExitsBySource.get(nodeId) || []) recordRecipient(exitPoint);
   }
-  for (const journey of journeys) {
-    for (const exitPointId of journey.exit_point_ids || []) {
+  for (const entryPointFlow of entryPointFlows) {
+    for (const exitPointId of entryPointFlow.exit_point_ids || []) {
       const exitPoint = index.exitPointsById.get(exitPointId);
       if (exitPoint) recordRecipient(exitPoint);
     }
@@ -302,15 +302,15 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   const boundaryKindsByLabel = new Map<string, Set<CASGuardKind>>();
   let unguardedPaths = 0;
   let nonAuthGuardedPaths = 0;
-  for (const journey of journeys) {
-    const entryPointFlowBoundaries = journey.security_boundaries || [];
+  for (const entryPointFlow of entryPointFlows) {
+    const entryPointFlowBoundaries = entryPointFlow.security_boundaries || [];
     const kinds = entryPointFlowBoundaries.map(boundaryGuardKind);
     const guarded = kinds.some(isAuthProtectionKind);
     if (!guarded) {
       unguardedPaths += 1;
       if (entryPointFlowBoundaries.length > 0) nonAuthGuardedPaths += 1;
     }
-    const label = boundaryLabel(journey);
+    const label = boundaryLabel(entryPointFlow);
     const existing = boundaries.get(label);
     if (!existing) {
       boundaries.set(label, { boundary: label, guarded });
@@ -336,7 +336,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     external_recipients: [...recipients.values()].sort((a, b) => a.exit_point_id.localeCompare(b.exit_point_id)),
     ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
     boundaries_crossed: [...boundaries.values()].sort((a, b) => a.boundary.localeCompare(b.boundary)),
-    entry_point_flows_carrying: journeys.map(journey => journey.id).sort(),
+    entry_point_flows_carrying: entryPointFlows.map(entryPointFlow => entryPointFlow.id).sort(),
     exposure: {
       unguarded_paths: unguardedPaths,
       non_auth_guarded_paths: nonAuthGuardedPaths,
@@ -348,11 +348,11 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
 }
 
 function collectEntryPointFlows(entity: CASDataEntity, index: LineageIndex): CASEntryPointFlow[] {
-  const journeys = new Set<CASEntryPointFlow>(index.entryPointFlowsByEntityId.get(entity.id) || []);
+  const entryPointFlows = new Set<CASEntryPointFlow>(index.entryPointFlowsByEntityId.get(entity.id) || []);
   for (const key of entityNameKeys(entity.name)) {
-    for (const journey of index.entryPointFlowsByEntityKey.get(key) || []) journeys.add(journey);
+    for (const entryPointFlow of index.entryPointFlowsByEntityKey.get(key) || []) entryPointFlows.add(entryPointFlow);
   }
-  return [...journeys].sort((a, b) => a.id.localeCompare(b.id));
+  return [...entryPointFlows].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function boundaryGuardKind(boundary: { kind?: CASGuardKind; name: string }): CASGuardKind {
@@ -363,12 +363,12 @@ function isAuthProtectionKind(kind: CASGuardKind): boolean {
   return kind === 'authentication' || kind === 'authorization';
 }
 
-function boundaryLabel(journey: CASEntryPointFlow): string {
-  const method = journey.entry?.method?.toUpperCase();
-  const pathOrTrigger = journey.entry?.path_or_trigger;
+function boundaryLabel(entryPointFlow: CASEntryPointFlow): string {
+  const method = entryPointFlow.entry?.method?.toUpperCase();
+  const pathOrTrigger = entryPointFlow.entry?.path_or_trigger;
   if (method && pathOrTrigger) return `${method} ${pathOrTrigger}`;
   if (pathOrTrigger) return pathOrTrigger;
-  return journey.entry?.name || journey.name;
+  return entryPointFlow.entry?.name || entryPointFlow.name;
 }
 
 function entityNameKeys(name: string): string[] {

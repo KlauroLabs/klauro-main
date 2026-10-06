@@ -50,7 +50,7 @@ function flowEvidence(flow: FlowConcept, entryFiles: Map<string, string | undefi
 }
 
 export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
-  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
+  const entryPointFlows = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   const summary = buildSummary(cas);
   const readiness = evaluateAgentReadiness(cas, projectPath);
   const answerPack = runAnswerPack(cas, projectPath);
@@ -63,7 +63,7 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
   const terminalFlows = namedTerminality(terminality.flows, flowNames, member => member.terminal);
   const proximalFlows = namedTerminality(terminality.flows, flowNames, member => member.proximal_terminal);
   const reviewedFlowIds = new Set([...terminalFlows, ...proximalFlows].map(member => member.id));
-  const terminalSignal = buildTerminalSignal({ journeys, systemCapabilities: cas.capabilities || [] });
+  const terminalSignal = buildTerminalSignal({ entryPointFlows, systemCapabilities: cas.capabilities || [] });
   const fieldsByParent = new Map<string, typeof cas.nodes>();
   for (const node of cas.nodes) {
     if (!node.parent || !['field', 'property', 'attribute'].includes(node.type)) continue;
@@ -88,7 +88,7 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       edges: cas.edges.length,
       entry_points: cas.entry_points?.length || 0,
       flows: cas.flows?.length || 0,
-      journeys: journeys.length,
+      entryPointFlows: entryPointFlows.length,
       diagnostics: cas.analysis_errors || [],
     },
     comprehension: readiness.comprehension,
@@ -124,18 +124,18 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       flow_evidence: [...reviewedFlowIds].map(id => flowById.get(id)).filter(Boolean).map(flow => flowEvidence(flow!, entryFiles)),
       terminal_signal: terminalSignal,
     },
-    journey_evidence: [...journeys]
+    journey_evidence: [...entryPointFlows]
       .sort((left, right) => Number(right.flow_kind === 'user-facing') - Number(left.flow_kind === 'user-facing'))
       .slice(0, 16)
-      .map(journey => ({
-        id: journey.id,
-        name: journey.name,
-        kind: journey.flow_kind,
-        entry: journey.entry,
-        steps: journey.steps,
-        terminal_effects: journey.terminal_effects,
-        terminal_entities: journey.terminal_entities,
-        security_boundaries: journey.security_boundaries,
+      .map(entryPointFlow => ({
+        id: entryPointFlow.id,
+        name: entryPointFlow.name,
+        kind: entryPointFlow.flow_kind,
+        entry: entryPointFlow.entry,
+        steps: entryPointFlow.steps,
+        terminal_effects: entryPointFlow.terminal_effects,
+        terminal_entities: entryPointFlow.terminal_entities,
+        security_boundaries: entryPointFlow.security_boundaries,
       })),
   };
 }

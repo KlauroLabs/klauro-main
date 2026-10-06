@@ -2804,7 +2804,7 @@ test('an atomic entity-free lifecycle abstains when its only identity is generic
   const candidate = catalogCapability({
     id: 'cap_auth_management', name: 'Authentication', structural_label: 'Authentication',
     evidence_kind: 'behavior-surface', evidence_role: 'product-outcome', related_entities: [],
-    evidence_role_reasons: ['user-facing-terminal-journey'],
+    evidence_role_reasons: ['user-facing-terminal-entry-point-flow'],
     operations: [
       { entry_point_id: 'login', entry_point_type: 'http', action: 'authenticate', trigger: { method: 'POST', path: '/api/v1/auth/login' }, path_or_command: '/api/v1/auth/login' },
       { entry_point_id: 'refresh', entry_point_type: 'http', action: 'authenticate', trigger: { method: 'POST', path: '/api/v1/auth/refresh' }, path_or_command: '/api/v1/auth/refresh' },
@@ -2823,7 +2823,7 @@ test('uses an exact controller namespace when a shared route subject is also an 
   const candidate = catalogCapability({
     id: 'cap_import_upload_management', name: 'Import Upload', structural_label: 'Import Upload Management',
     evidence_kind: 'behavior-surface', evidence_role: 'product-outcome', related_entities: [],
-    related_domains: ['import-upload'], evidence_role_reasons: ['user-facing-terminal-journey'],
+    related_domains: ['import-upload'], evidence_role_reasons: ['user-facing-terminal-entry-point-flow'],
     operations: [
       { entry_point_id: 'upload-view', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/upload' }, path_or_command: '/upload' },
       { entry_point_id: 'upload-update', entry_point_type: 'http', action: 'update', trigger: { method: 'PATCH', path: '/upload' }, path_or_command: '/upload' },
@@ -2924,7 +2924,7 @@ test('grounds a compound product noun from an exact route action without mixing 
   const signingSecret = catalogCapability({
     id: 'operation-obligation:user-service:webhook-secret', name: 'read secret and signing and user and webhook',
     structural_label: 'read secret and signing and user and webhook', evidence_kind: 'entity', evidence_role: 'product-outcome',
-    evidence_role_reasons: ['user-facing-terminal-journey'], related_entities: [],
+    evidence_role_reasons: ['user-facing-terminal-entry-point-flow'], related_entities: [],
     operations: [{ entry_point_id: 'webhook-secret', entry_point_type: 'http', action: 'read', trigger: { method: 'POST', path: '/memos.api.v1.UserService/GetUserWebhookSigningSecret' }, path_or_command: '/memos.api.v1.UserService/GetUserWebhookSigningSecret' }],
   });
   const signingSecretClosure = validatedDeterministicAtomicClosures({
@@ -2996,10 +2996,10 @@ test('grounds a compound product noun from an exact route action without mixing 
   ).map(capability => capability.name), [
     'Manage linked identities', 'View linked identity service', 'View reports',
   ]);
-  const decline = catalogCapability({ id: 'operation-obligation:space:decline', name: 'decline decline and invitation and space', structural_label: 'decline decline and invitation and space', evidence_kind: 'entity', evidence_role: 'product-outcome', evidence_role_reasons: ['user-facing-terminal-journey'], operations: [{ entry_point_id: 'decline', entry_point_type: 'http', action: 'decline', trigger: { method: 'POST', path: '/memos.api.v1.SpaceService/DeclineSpaceInvitation' }, path_or_command: '/memos.api.v1.SpaceService/DeclineSpaceInvitation' }] });
+  const decline = catalogCapability({ id: 'operation-obligation:space:decline', name: 'decline decline and invitation and space', structural_label: 'decline decline and invitation and space', evidence_kind: 'entity', evidence_role: 'product-outcome', evidence_role_reasons: ['user-facing-terminal-entry-point-flow'], operations: [{ entry_point_id: 'decline', entry_point_type: 'http', action: 'decline', trigger: { method: 'POST', path: '/memos.api.v1.SpaceService/DeclineSpaceInvitation' }, path_or_command: '/memos.api.v1.SpaceService/DeclineSpaceInvitation' }] });
   const declineClosure = validatedDeterministicAtomicClosures({ candidateIds: [decline.id], evidenceCandidates: [decline], audienceFor: () => undefined, entityLabelsFor: () => [], operationCoverageContext: { entryPoints: [], nodes: [], edges: [], exitPoints: [] }, validate: () => true })[0];
   assert.equal(declineClosure?.name, 'Decline space invitations');
-  const stats = catalogCapability({ id: 'operation-obligation:user:stats', name: 'read all and stat and user', structural_label: 'read all and stat and user', evidence_kind: 'entity', evidence_role: 'product-outcome', evidence_role_reasons: ['user-facing-terminal-journey'], operations: [{ entry_point_id: 'stats', entry_point_type: 'http', action: 'read', trigger: { method: 'POST', path: '/memos.api.v1.UserService/ListAllUserStats' }, path_or_command: '/memos.api.v1.UserService/ListAllUserStats' }] });
+  const stats = catalogCapability({ id: 'operation-obligation:user:stats', name: 'read all and stat and user', structural_label: 'read all and stat and user', evidence_kind: 'entity', evidence_role: 'product-outcome', evidence_role_reasons: ['user-facing-terminal-entry-point-flow'], operations: [{ entry_point_id: 'stats', entry_point_type: 'http', action: 'read', trigger: { method: 'POST', path: '/memos.api.v1.UserService/ListAllUserStats' }, path_or_command: '/memos.api.v1.UserService/ListAllUserStats' }] });
   const statsClosure = validatedDeterministicAtomicClosures({ candidateIds: [stats.id], evidenceCandidates: [stats], audienceFor: () => undefined, entityLabelsFor: () => [], operationCoverageContext: { entryPoints: [], nodes: [], edges: [], exitPoints: [] }, validate: () => true })[0];
   assert.equal(statsClosure?.name, 'View user stats');
   assert.ok(statsClosure?.criticality_factors.includes('catalog-deterministic-route-lineage'));

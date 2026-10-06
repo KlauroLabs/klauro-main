@@ -274,7 +274,7 @@ function cbmBehavioralDiff(
   const impacted = (changes.json.impacted_symbols || []).length;
   const detail =
     `detect_changes: ${changedCount} changed files, ${impacted} impacted symbols (git file churn, no behavioral semantics); ` +
-    `index_status: ${status.json.nodes ?? '?'} nodes / ${status.json.edges ?? '?'} edges (single-snapshot static index — no auth/journey/capability/boundary delta)`;
+    `index_status: ${status.json.nodes ?? '?'} nodes / ${status.json.edges ?? '?'} edges (single-snapshot static index — no auth/entry-point flow/capability/boundary delta)`;
 
   return { kinds: [], detail, bytes: changes.bytes };
 }

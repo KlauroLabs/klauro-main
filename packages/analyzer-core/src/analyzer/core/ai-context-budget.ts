@@ -78,11 +78,11 @@ function compactCandidate(value: unknown, required: boolean): Record<string, unk
 }
 
 function compactEntryPointFlow(value: unknown): Record<string, unknown> {
-  const journey = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const entryPointFlow = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
-    name: boundedText(journey.name, 240),
-    writes: boundedTextArray(journey.writes, 3, 160),
-    terminal: boundedTextArray(journey.terminal, 3, 160),
+    name: boundedText(entryPointFlow.name, 240),
+    writes: boundedTextArray(entryPointFlow.writes, 3, 160),
+    terminal: boundedTextArray(entryPointFlow.terminal, 3, 160),
   };
 }
 

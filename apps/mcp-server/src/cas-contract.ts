@@ -215,7 +215,7 @@ export function buildCASGoldenSnapshot(cas: CASOutput): CASGoldenSnapshot {
       facts: facts.length,
       entities: cas.entities?.length || 0,
       behavioral_invariants: cas.behavioral_invariants?.length || 0,
-      journeys: cas.flows?.length || 0,
+      entryPointFlows: cas.flows?.length || 0,
       capabilities: cas.capabilities?.length || 0,
       libraries: cas.libraries?.length || 0,
     },

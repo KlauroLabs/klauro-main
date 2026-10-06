@@ -1392,7 +1392,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const comprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, allNodes, projectPath);
     const terminalSignal = buildTerminalSignal({
-      journeys: comprehensionEntryPointFlows,
+      entryPointFlows: comprehensionEntryPointFlows,
       systemCapabilities,
     });
     await yieldToEventLoop();
@@ -2710,7 +2710,7 @@ export class AnalyzerOrchestrator {
       incrProjectTextSignal,
       nodes,
       projectPath,
-      buildTerminalSignal({ journeys: incrComprehensionEntryPointFlows, systemCapabilities }),
+      buildTerminalSignal({ entryPointFlows: incrComprehensionEntryPointFlows, systemCapabilities }),
       exitPoints
     );
     const incrementalCapabilityCandidates = systemCapabilities.map(capability => ({
@@ -6495,22 +6495,22 @@ export class AnalyzerOrchestrator {
   }
 
   private filterPrimaryProductEntryPointFlows(
-    journeys: CASEntryPointFlow[],
+    entryPointFlows: CASEntryPointFlow[],
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
     projectPath: string
   ): CASEntryPointFlow[] {
-    if (journeys.length === 0) return journeys;
+    if (entryPointFlows.length === 0) return entryPointFlows;
     const entryPointById = new Map(entryPoints.map(entryPoint => [entryPoint.id, entryPoint]));
     const productEntryPointIds = new Set(
       this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath).map(entryPoint => entryPoint.id)
     );
     const nodeById = this.getNodeLookup(nodes);
-    return journeys.filter(journey => {
-      if (journey.entry_point_id && entryPointById.has(journey.entry_point_id)) {
-        return productEntryPointIds.has(journey.entry_point_id);
+    return entryPointFlows.filter(entryPointFlow => {
+      if (entryPointFlow.entry_point_id && entryPointById.has(entryPointFlow.entry_point_id)) {
+        return productEntryPointIds.has(entryPointFlow.entry_point_id);
       }
-      const handlerNode = journey.entry?.handler_node_id ? nodeById.get(journey.entry.handler_node_id) : undefined;
+      const handlerNode = entryPointFlow.entry?.handler_node_id ? nodeById.get(entryPointFlow.entry.handler_node_id) : undefined;
       if (handlerNode) return this.isPrimaryProductNodeForProject(handlerNode, projectPath);
       return true;
     });
@@ -7879,25 +7879,25 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
-  private synthesizeBehaviorsFromEntryPointFlows(journeys: CASEntryPointFlow[]): CASBehavior[] {
-    return journeys.slice(0, 100).map(journey => {
-      const steps = (journey.steps || []).slice(0, 24);
+  private synthesizeBehaviorsFromEntryPointFlows(entryPointFlows: CASEntryPointFlow[]): CASBehavior[] {
+    return entryPointFlows.slice(0, 100).map(entryPointFlow => {
+      const steps = (entryPointFlow.steps || []).slice(0, 24);
       const flow = steps.slice(0, -1).map((step, i) => ({
         from: step.node_id,
         to: steps[i + 1].node_id,
         action: steps[i + 1].name || 'calls',
       }));
-      const writes = journey.terminal_effects?.entities_written || [];
+      const writes = entryPointFlow.terminal_effects?.entities_written || [];
       return {
-        id: `behavior_${journey.id}`,
-        name: journey.name,
-        description: `${journey.flow_kind} behavior from ${journey.entry?.name || 'entry'}${writes.length ? ` writing ${writes.slice(0, 3).join(', ')}` : ''}.`,
+        id: `behavior_${entryPointFlow.id}`,
+        name: entryPointFlow.name,
+        description: `${entryPointFlow.flow_kind} behavior from ${entryPointFlow.entry?.name || 'entry'}${writes.length ? ` writing ${writes.slice(0, 3).join(', ')}` : ''}.`,
         nodes: steps.map(step => step.node_id),
         flow,
         metadata: {
-          flow_kind: journey.flow_kind,
-          criticality: journey.criticality,
-          entry_point_id: journey.entry_point_id,
+          flow_kind: entryPointFlow.flow_kind,
+          criticality: entryPointFlow.criticality,
+          entry_point_id: entryPointFlow.entry_point_id,
           derived_from: 'entry_point_flow',
         },
       };
@@ -8186,7 +8186,7 @@ export class AnalyzerOrchestrator {
         if (token.length > 2 && !this.isGenericCapabilityToken(token)) entryPointFlowTokens.add(this.stemTerminologyToken(token));
       }
     };
-    for (const journey of entryPointFlows) addFromText(journey.name || '');
+    for (const entryPointFlow of entryPointFlows) addFromText(entryPointFlow.name || '');
     if (projectTextSignal) {
       for (const concept of projectTextSignal.concepts || []) addFromText(concept);
       addFromText(projectTextSignal.summary || '');
@@ -8375,15 +8375,15 @@ export class AnalyzerOrchestrator {
       ...(input.candidateCapabilities || []),
       ...(input.behaviorSurfaces || []),
     ].flatMap(candidate => candidate.related_entities || []));
-    const journeys = (input.entryPointFlows || [])
-      .filter(journey => !targetedRepair || targetedEntryPointIds.has(journey.entry_point_id))
-      .filter(journey => journey.flow_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
-      .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
+    const entryPointFlows = (input.entryPointFlows || [])
+      .filter(entryPointFlow => !targetedRepair || targetedEntryPointIds.has(entryPointFlow.entry_point_id))
+      .filter(entryPointFlow => entryPointFlow.flow_kind === 'user-facing' || entryPointFlow.criticality === 'critical' || entryPointFlow.criticality === 'high')
+      .filter(entryPointFlow => !/^run\s+(?:main|application|server)\b/i.test(entryPointFlow.name))
       .slice(0, 12)
-      .map(journey => ({
-        name: journey.name.replace(/\s*->\s*calls?\s+.*$/i, '').trim(),
-        writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
-        terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
+      .map(entryPointFlow => ({
+        name: entryPointFlow.name.replace(/\s*->\s*calls?\s+.*$/i, '').trim(),
+        writes: (entryPointFlow.terminal_effects?.entities_written || []).slice(0, 3),
+        terminal: (entryPointFlow.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
     const artifactType = String(purpose.artifact_type || 'app');
     const candidatePoolForRanking = this.catalogEvidenceCandidates(
@@ -8485,7 +8485,7 @@ export class AnalyzerOrchestrator {
         },
       };
       const budgetedContexts = fitCapabilityCatalogContexts(additionalContextWithoutFacts, {
-        entry_point_flows: journeys, entities,
+        entry_point_flows: entryPointFlows, entities,
         candidate_route_areas: input.targetedRepairFacts?.map(fact => ({ ...fact, declared_contracts: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.declared_contracts, observed_operations: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.observed_operations })) || candidateAreaFacts,
         required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
@@ -8565,7 +8565,7 @@ export class AnalyzerOrchestrator {
     }
     const catalogEvidenceDigest = {
       systemName: input.systemName,
-      journeys: journeys.length,
+      entryPointFlows: entryPointFlows.length,
       entities: entities.length,
       candidatesConsidered: rankedCandidateAreas.length,
       candidateAreas: candidateAreas.length,
@@ -8623,7 +8623,7 @@ export class AnalyzerOrchestrator {
       ...candidateAreas,
       ...validationCandidates.flatMap(capabilityOperationEvidenceTexts),
       ...input.dataEntities.map(entity => entity.name),
-      ...(input.entryPointFlows || []).map(journey => journey.name),
+      ...(input.entryPointFlows || []).map(entryPointFlow => entryPointFlow.name),
       String(purpose.primary_domain || ''),
       ...(purpose.core_concepts || []),
       String(topDownSignals.product_title || ''),
@@ -8658,7 +8658,7 @@ export class AnalyzerOrchestrator {
       description: string;
       category: SystemCapability['category'];
       relatedEntities: string[];
-      journeys: unknown;
+      entryPointFlows: unknown;
       candidateIds: string[]; candidates: SystemCapability[]; requirementId?: string; deterministicSource: boolean;
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
@@ -9009,7 +9009,7 @@ export class AnalyzerOrchestrator {
         description,
         category,
         relatedEntities,
-        journeys: item.journeys,
+        entryPointFlows: item.entryPointFlows,
         candidateIds: narrowedCandidateIds, candidates: citedCandidates, requirementId: boundRequirementId, deterministicSource: evidenceGroundedDeterministicRecovery,
       });
     }
@@ -9101,7 +9101,7 @@ export class AnalyzerOrchestrator {
         depends_on: candidateDependencies,
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: Array.from(new Set([
-          deterministicSource ? 'deterministic-evidence-family-recovery' : 'ai-extracted-from-journeys-and-entities',
+          deterministicSource ? 'deterministic-evidence-family-recovery' : 'ai-extracted-from-entry-point-flows-and-entities',
           ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
           ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
           ...dedupedOps.map(operation => `catalog-operation-entry:${operation.entry_point_id}`),
@@ -9697,7 +9697,7 @@ export class AnalyzerOrchestrator {
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
-          entryPointFlows: targetedRepair ? args.entryPointFlows.filter(journey => batchEntryPointIds.has(journey.entry_point_id)) : args.entryPointFlows, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
+          entryPointFlows: targetedRepair ? args.entryPointFlows.filter(entryPointFlow => batchEntryPointIds.has(entryPointFlow.entry_point_id)) : args.entryPointFlows, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
           candidateCapabilities: targetedRepair ? evidenceCandidates.filter(candidate => batchIds.has(candidate.id)) : evidenceCandidates.filter(candidate => !candidate.id.startsWith('operation-obligation:') && !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view')),
           behaviorSurfaces: evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface' && (!targetedRepair || batchIds.has(candidate.id))),
           externalServices: targetedRepair ? [] : args.externalServices,
@@ -11701,7 +11701,7 @@ export class AnalyzerOrchestrator {
   ): DescriptionTarget {
     const relations = context?.relationsByName?.get(entity.name.toLowerCase()) || [];
     const servingCapabilities = context?.capabilitiesByEntityId?.get(entity.id) || [];
-    const journeys = context?.entryPointFlowsByEntityName?.get(entity.name.toLowerCase()) || [];
+    const entryPointFlows = context?.entryPointFlowsByEntityName?.get(entity.name.toLowerCase()) || [];
     const creates = entity.lifecycle.created_by.length;
     const reads = entity.lifecycle.read_by.length;
     const updates = entity.lifecycle.updated_by.length;
@@ -11717,13 +11717,13 @@ export class AnalyzerOrchestrator {
       evidenceSummary: [
         ...relations.slice(0, 8).map(rel => `relates to ${rel.targetName} (${rel.relationType}${rel.field ? ` via ${rel.field}` : ''})`),
         ...servingCapabilities.slice(0, 6).map(name => `serves capability: ${name}`),
-        ...journeys.slice(0, 6).map(name => `appears in journey: ${name}`),
+        ...entryPointFlows.slice(0, 6).map(name => `appears in entry-point flow: ${name}`),
       ],
       relatedEntities: relations.map(rel => rel.targetName),
       relatedDomains: servingCapabilities,
       priorityScore:
         servingCapabilities.length * 4 +
-        journeys.length * 3 +
+        entryPointFlows.length * 3 +
         relations.length * 2 +
         (creates + updates) * 1 +
         Math.min(reads, 5) * 0.5,
@@ -11773,7 +11773,7 @@ export class AnalyzerOrchestrator {
     return byEntityId;
   }
 
-  private buildEntryPointFlowsByEntityName(journeys: CASEntryPointFlow[]): Map<string, string[]> {
+  private buildEntryPointFlowsByEntityName(entryPointFlows: CASEntryPointFlow[]): Map<string, string[]> {
     const byEntityName = new Map<string, string[]>();
     const add = (entityName: string | undefined, entryPointFlowName: string) => {
       const key = String(entityName || '').toLowerCase().trim();
@@ -11782,10 +11782,10 @@ export class AnalyzerOrchestrator {
       if (list) { if (!list.includes(entryPointFlowName)) list.push(entryPointFlowName); }
       else byEntityName.set(key, [entryPointFlowName]);
     };
-    for (const journey of journeys) {
-      for (const name of journey.terminal_effects?.entities_written || []) add(name, journey.name);
-      for (const name of journey.terminal_effects?.entities_read || []) add(name, journey.name);
-      for (const terminal of journey.terminal_entities || []) add(terminal.name, journey.name);
+    for (const entryPointFlow of entryPointFlows) {
+      for (const name of entryPointFlow.terminal_effects?.entities_written || []) add(name, entryPointFlow.name);
+      for (const name of entryPointFlow.terminal_effects?.entities_read || []) add(name, entryPointFlow.name);
+      for (const terminal of entryPointFlow.terminal_entities || []) add(terminal.name, entryPointFlow.name);
     }
     return byEntityName;
   }
@@ -13392,12 +13392,12 @@ export class AnalyzerOrchestrator {
       ? {
         ...(rankedTerminalOutputs.length > 0 ? {
           terminalOutputs: rankedTerminalOutputs.slice(0, 8).map(entity =>
-            `${entity.name} (${entity.write_entry_point_flows > 0 ? 'written' : 'read'} by ${entity.entry_point_flow_count} journeys)`),
+            `${entity.name} (${entity.write_entry_point_flows > 0 ? 'written' : 'read'} by ${entity.entry_point_flow_count} entry-point flows)`),
         } : {}),
         nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 6).map(stage => stage.name),
         terminalCapabilities: this.activeTerminalSignal.ranked_capabilities.slice(0, 6).map(cap => cap.name),
         terminalDomainSeed: this.activeTerminalSignal.domain_seed_text.slice(0, 600),
-        terminalSignalInstruction: 'terminalOutputs, terminalCapabilities and terminalDomainSeed are the strongest domain evidence: they are what the product\'s journeys ultimately produce/manage (the terminal segment), which reveals what the product IS. Anchor the domain and description on these, not on generic mid-chain CRUD like Portfolio/Strategy/User/UsageStats.',
+        terminalSignalInstruction: 'terminalOutputs, terminalCapabilities and terminalDomainSeed are the strongest domain evidence: they are what the product\'s entry-point flows ultimately produce/manage (the terminal segment), which reveals what the product IS. Anchor the domain and description on these, not on generic mid-chain CRUD like Portfolio/Strategy/User/UsageStats.',
       }
       : {};
     const artifactNarrativeByType: Record<string, string> = {
@@ -13422,10 +13422,10 @@ export class AnalyzerOrchestrator {
       }
       : {};
     const productBehaviorPaths = (entryPointFlows || [])
-      .filter(journey => journey.flow_kind === 'user-facing' || (journey.terminal_entities?.length || 0) > 0)
-      .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
-      .map(journey => {
-        const businessSteps = (journey.steps || [])
+      .filter(entryPointFlow => entryPointFlow.flow_kind === 'user-facing' || (entryPointFlow.terminal_entities?.length || 0) > 0)
+      .filter(entryPointFlow => !/^run\s+(?:main|application|server)\b/i.test(entryPointFlow.name))
+      .map(entryPointFlow => {
+        const businessSteps = (entryPointFlow.steps || [])
           .filter(step => step.layer === 'business')
           .map(step => step.name)
           .filter(name => !/(?:handler|controller|service|repository|adapter|middleware)\b/i.test(name))
@@ -13434,13 +13434,13 @@ export class AnalyzerOrchestrator {
           .filter((name, index, names) => names.indexOf(name) === index)
           .slice(0, 5);
         return {
-          intent: journey.name.replace(/\s*->.*$/i, '').trim(),
+          intent: entryPointFlow.name.replace(/\s*->.*$/i, '').trim(),
           businessTransformations: businessSteps,
-          recordsRead: (journey.terminal_effects?.entities_read || []).slice(0, 5),
-          recordsWritten: (journey.terminal_effects?.entities_written || []).slice(0, 5),
-          messagesEmitted: (journey.terminal_effects?.messages_emitted || []).slice(0, 5),
-          integrationsReached: (journey.terminal_effects?.external_services || []).slice(0, 5),
-          testsCovering: (journey.tests_covering || []).slice(0, 5),
+          recordsRead: (entryPointFlow.terminal_effects?.entities_read || []).slice(0, 5),
+          recordsWritten: (entryPointFlow.terminal_effects?.entities_written || []).slice(0, 5),
+          messagesEmitted: (entryPointFlow.terminal_effects?.messages_emitted || []).slice(0, 5),
+          integrationsReached: (entryPointFlow.terminal_effects?.external_services || []).slice(0, 5),
+          testsCovering: (entryPointFlow.tests_covering || []).slice(0, 5),
         };
       })
       .filter(path => path.intent || path.businessTransformations.length > 0 ||
@@ -13475,7 +13475,7 @@ export class AnalyzerOrchestrator {
       ...(distinctiveEntities.length > 0 ? { distinctiveEntities } : {}),
       ...(productBehaviorPaths.length > 0 ? {
         productBehaviorPaths,
-        productBehaviorInstruction: 'productBehaviorPaths are compact, language-neutral traces derived from the CAS graph. Each path\'s "intent" field is a GENERATED internal label (a journey/capability name), not customer-facing text — translate what it MEANS into your own plain-language sentence about what the user does; never copy, name, or quote that intent label verbatim in the prose, and never use the word "intent" itself. Do the same for transformations and terminal effects: describe what happens in ordinary words, do not copy route syntax, code identifiers, or internal field/record-type names as a labeled list.',
+        productBehaviorInstruction: 'productBehaviorPaths are compact, language-neutral traces derived from the CAS graph. Each path\'s "intent" field is a GENERATED internal label (a entry-point flow/capability name), not customer-facing text — translate what it MEANS into your own plain-language sentence about what the user does; never copy, name, or quote that intent label verbatim in the prose, and never use the word "intent" itself. Do the same for transformations and terminal effects: describe what happens in ordinary words, do not copy route syntax, code identifiers, or internal field/record-type names as a labeled list.',
       } : {}),
     };
   }
@@ -13524,10 +13524,10 @@ export class AnalyzerOrchestrator {
         'artifactTypeInstruction when present — this is structural truth and constrains every sentence; infrastructure definitions are not business applications, libraries are not services, and templates are not deployed products',
         'readmeProductTitle and readmeProductOverview when present; the repo\'s own README title and opening statement of what it is are top-down product framing — authoritative for WHAT the product is built for',
         'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
-        'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route journeys over-emphasize',
+        'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route entry-point flows over-emphasize',
         'authoritativeProductFrame when present; it overrides examples, tests, docs, sample apps, and incidental code vocabulary',
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
-        'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
+        'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product entry-point flows; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
         'productBehaviorPaths — language-neutral traces tying a user intent to business transformations and terminal records/messages; use these to explain HOW the product works without copying code identifiers or route syntax',
 
         'libraries/dependencies — supporting evidence only; see dependencySignalInstruction',
@@ -23722,7 +23722,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
     externalServices: CASExternalService[],
-    journeys: CASEntryPointFlow[],
+    entryPointFlows: CASEntryPointFlow[],
     capabilities: SystemCapability[],
     runtimeLinks: CASRuntimeStaticLink[],
     repositoryLinks: CASCrossRepositoryLink[],
@@ -23816,25 +23816,25 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    for (const journey of journeys) {
-      const evidence = journey.entry_point_id
+    for (const entryPointFlow of entryPointFlows) {
+      const evidence = entryPointFlow.entry_point_id
         ? [{
           kind: 'graph' as const,
-          source: journey.entry_point_id,
+          source: entryPointFlow.entry_point_id,
           confidence: 0.75
         }]
         : [{
           kind: 'graph' as const,
-          source: journey.id,
+          source: entryPointFlow.id,
           confidence: 0.6
         }];
 
       facts.push({
-        id: `fact_entry_point_flow_${journey.id}`,
+        id: `fact_entry_point_flow_${entryPointFlow.id}`,
         subject_type: 'entry_point_flow',
-        subject_id: journey.id,
+        subject_id: entryPointFlow.id,
         fact_type: 'entry_point_flow',
-        claim: `${journey.name} is a ${journey.criticality}-criticality ${journey.flow_kind} entry-point flow`,
+        claim: `${entryPointFlow.name} is a ${entryPointFlow.criticality}-criticality ${entryPointFlow.flow_kind} entry-point flow`,
         confidence: 0.75,
         produced_by: analyzerName,
         evidence

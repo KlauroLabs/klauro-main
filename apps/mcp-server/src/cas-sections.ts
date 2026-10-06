@@ -195,7 +195,7 @@ export function casSectionForField(field: string): CasSectionName {
   if (explicit) return explicit;
   if (/test|coverage|mock|fixture/i.test(field)) return 'tests';
   if (/runtime|telemetry|communication|consistency|deploy|distribution|infrastructure|cicd|pipeline/i.test(field)) return 'runtime';
-  if (/capabil|flow|step|entit|journey|intent|domain|purpose|product|behavior_surface|semantic|terminality/i.test(field)) return 'comprehension';
+  if (/capabil|flow|step|entit|entryPointFlow|intent|domain|purpose|product|behavior_surface|semantic|terminality/i.test(field)) return 'comprehension';
   if (/risk|health|pattern|architecture|idiom|invariant|security|quality|error|conflict|principle|paradigm|stability/i.test(field)) return 'quality';
   return 'supplemental';
 }

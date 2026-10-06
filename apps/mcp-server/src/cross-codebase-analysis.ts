@@ -7119,29 +7119,29 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
     for (const entity of capability.entities_touched || []) addName(entity, score > 0 ? Math.max(3, score / 2) : score, `flow_capability_entity:${id}:${entity}`);
   }
 
-  for (const journey of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
-    const entryPointFlowWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.flow_kind === 'user-facing' ? 2 : 1;
+  for (const entryPointFlow of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
+    const entryPointFlowWeight = entryPointFlow.criticality === 'critical' ? 4 : entryPointFlow.criticality === 'high' ? 3 : entryPointFlow.flow_kind === 'user-facing' ? 2 : 1;
 
-    const externalCommandNames = entryPointFlowExternalCommandNames(journey);
+    const externalCommandNames = entryPointFlowExternalCommandNames(entryPointFlow);
     const isExternalCommand = (name: unknown) => matchesExternalCommandName(externalCommandNames, name);
-    for (const entity of journey.terminal_entities || []) {
+    for (const entity of entryPointFlow.terminal_entities || []) {
       if (isExternalCommand(entity.name)) continue;
       const writeWeight = entity.access === 'created' || entity.access === 'updated' || entity.access === 'deleted' ? 14 : 6;
-      addTerminalNameSeed(entity.name, writeWeight + entryPointFlowWeight, `terminal_entity:${journey.name || journey.id}:${entity.name}:${entity.access}`);
+      addTerminalNameSeed(entity.name, writeWeight + entryPointFlowWeight, `terminal_entity:${entryPointFlow.name || entryPointFlow.id}:${entity.name}:${entity.access}`);
     }
-    for (const entity of journey.terminal_effects?.entities_written || []) {
+    for (const entity of entryPointFlow.terminal_effects?.entities_written || []) {
       if (isExternalCommand(entity)) continue;
-      addTerminalNameSeed(entity, 14 + entryPointFlowWeight, `terminal_write:${journey.name || journey.id}:${entity}`);
+      addTerminalNameSeed(entity, 14 + entryPointFlowWeight, `terminal_write:${entryPointFlow.name || entryPointFlow.id}:${entity}`);
     }
-    for (const entity of journey.terminal_effects?.entities_read || []) {
+    for (const entity of entryPointFlow.terminal_effects?.entities_read || []) {
       if (isExternalCommand(entity)) continue;
-      addTerminalNameSeed(entity, 5 + entryPointFlowWeight, `terminal_read:${journey.name || journey.id}:${entity}`);
+      addTerminalNameSeed(entity, 5 + entryPointFlowWeight, `terminal_read:${entryPointFlow.name || entryPointFlow.id}:${entity}`);
     }
-    for (const message of journey.terminal_effects?.messages_emitted || []) addName(message, 8 + entryPointFlowWeight, `terminal_message:${journey.name || journey.id}:${message}`);
-    for (const service of journey.terminal_effects?.external_services || []) {
+    for (const message of entryPointFlow.terminal_effects?.messages_emitted || []) addName(message, 8 + entryPointFlowWeight, `terminal_message:${entryPointFlow.name || entryPointFlow.id}:${message}`);
+    for (const service of entryPointFlow.terminal_effects?.external_services || []) {
 
       if (isExternalCommandService(service)) continue;
-      addName(service, 4 + entryPointFlowWeight, `terminal_external:${journey.name || journey.id}:${service}`);
+      addName(service, 4 + entryPointFlowWeight, `terminal_external:${entryPointFlow.name || entryPointFlow.id}:${service}`);
     }
   }
 
@@ -7151,9 +7151,9 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
   return profile;
 }
 
-function entryPointFlowExternalCommandNames(journey: any): Set<string> {
+function entryPointFlowExternalCommandNames(entryPointFlow: any): Set<string> {
   const names = new Set<string>();
-  for (const service of journey?.terminal_effects?.external_services || []) {
+  for (const service of entryPointFlow?.terminal_effects?.external_services || []) {
     const match = String(service || '').match(/^\s*external command:\s*(.+)$/i);
     if (!match) continue;
     const normalized = normalizeAiItemName(match[1]);
@@ -7689,17 +7689,17 @@ function buildWorkspaceWorkflows(
     const appByProjectId = new Map(apps.map(app => [app.id, app]));
     const lookupIndex = lookupIndexes.get(repository.cas)!;
 
-    for (const journey of projectEntryPointFlowsFromCas(repository.cas).entryPointFlows) {
+    for (const entryPointFlow of projectEntryPointFlowsFromCas(repository.cas).entryPointFlows) {
       const workflow = {
-        id: journey.id,
-        name: journey.name,
-        classification: (journey.flow_kind === 'user-facing' ? 'primary' : 'supporting') as 'primary' | 'supporting' | 'internal',
-        criticality: journey.criticality,
-        entry_points: journey.entry_point_id ? [journey.entry_point_id] : [],
-        exit_points: journey.exit_point_ids || [],
+        id: entryPointFlow.id,
+        name: entryPointFlow.name,
+        classification: (entryPointFlow.flow_kind === 'user-facing' ? 'primary' : 'supporting') as 'primary' | 'supporting' | 'internal',
+        criticality: entryPointFlow.criticality,
+        entry_points: entryPointFlow.entry_point_id ? [entryPointFlow.entry_point_id] : [],
+        exit_points: entryPointFlow.exit_point_ids || [],
         entities_touched: [
-          ...(journey.terminal_effects?.entities_written || []),
-          ...(journey.terminal_effects?.entities_read || []),
+          ...(entryPointFlow.terminal_effects?.entities_written || []),
+          ...(entryPointFlow.terminal_effects?.entities_read || []),
         ],
       };
       if (isRuntimeEndpointSemanticName(workflow.name || workflow.id || '')) continue;

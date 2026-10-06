@@ -85,7 +85,7 @@ export function buildOrientationExecutionBrief(task: OrientationTask, fileReadPl
       final_response_words: 160,
       fallback: 'Expand into source only when product maps, concepts, entry-point flows, journeys, or answer packs identify a concrete evidence gap.',
     },
-    stop_rule: 'Stop after the product, architecture, and major flows and journeys are explained with CAS evidence. Do not propose edits or tests unless requested.',
+    stop_rule: 'Stop after the product, architecture, and major entry-point flows and journeys are explained with CAS evidence. Do not propose edits or tests unless requested.',
   };
 }
 
@@ -114,7 +114,7 @@ export function orientationAnchorNodes(
       entryPointFlowKindRank(left.flow_kind) - entryPointFlowKindRank(right.flow_kind) ||
       (CRITICALITY_RANK[left.criticality] ?? 4) - (CRITICALITY_RANK[right.criticality] ?? 4)
     )
-    .flatMap(journey => [journey.entry?.handler_node_id, ...(journey.steps || []).map(step => step.node_id)])
+    .flatMap(entryPointFlow => [entryPointFlow.entry?.handler_node_id, ...(entryPointFlow.steps || []).map(step => step.node_id)])
     .filter((id): id is string => Boolean(id));
   const entryPointFlowNodes = entryPointFlowNodeIds
     .map(id => nodeIndex.get(id))
@@ -133,10 +133,10 @@ export function rankOrientationEntryPoints(
   isExcludedEntry: (entry: CASEntryPoint) => boolean,
 ): CASEntryPoint[] {
   const entryPointFlowRank = new Map<string, number>();
-  for (const journey of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
-    const score = entryPointFlowKindRank(journey.flow_kind) * 100 + (CRITICALITY_RANK[journey.criticality] ?? 4) * 10;
-    const current = entryPointFlowRank.get(journey.entry_point_id);
-    if (current === undefined || score < current) entryPointFlowRank.set(journey.entry_point_id, score);
+  for (const entryPointFlow of projectEntryPointFlowsFromCas(cas).entryPointFlows) {
+    const score = entryPointFlowKindRank(entryPointFlow.flow_kind) * 100 + (CRITICALITY_RANK[entryPointFlow.criticality] ?? 4) * 10;
+    const current = entryPointFlowRank.get(entryPointFlow.entry_point_id);
+    if (current === undefined || score < current) entryPointFlowRank.set(entryPointFlow.entry_point_id, score);
   }
   return entries
     .filter(entry => !isExcludedEntry(entry))

@@ -176,7 +176,7 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
 
   const listed: any = getUserJourneys(cas, { limit: 200 });
   void listed;
-  const journeys: any[] = projectEntryPointFlowsFromCas(cas).entryPointFlows;
+  const entryPointFlows: any[] = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   const nodeById = new Map<string, any>((cas.nodes || []).map((node: any) => [node.id, node]));
   const calleesByNode = new Map<string, string[]>();
   for (const edge of cas.edges || []) {
@@ -184,7 +184,7 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
     calleesByNode.set(edge.source, [...(calleesByNode.get(edge.source) || []), edge.target]);
   }
   const flows: string[] = [];
-  for (const j of journeys) {
+  for (const j of entryPointFlows) {
     const source = normEntry(j);
     const pending = j.entry.handler_node_id ? [j.entry.handler_node_id] : [];
     const reachable = new Set<string>();

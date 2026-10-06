@@ -119,15 +119,15 @@ export function buildSemanticChangeImpact(
     changedExitPoints: CASExitPoint[]
   ) {
     const affected_entry_point_flows = projectEntryPointFlowsFromCas(output).entryPointFlows
-      .filter(journey =>
-        affectedEntryPointIds.has(journey.entry_point_id) ||
-        journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
-        journey.steps.some(step => changedNodeIds.has(step.node_id)) ||
-        journey.terminal_entities.some(entity => !!entity.node_id && changedNodeIds.has(entity.node_id))
+      .filter(entryPointFlow =>
+        affectedEntryPointIds.has(entryPointFlow.entry_point_id) ||
+        entryPointFlow.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
+        entryPointFlow.steps.some(step => changedNodeIds.has(step.node_id)) ||
+        entryPointFlow.terminal_entities.some(entity => !!entity.node_id && changedNodeIds.has(entity.node_id))
       )
-      .map(journey => ({
-        id: journey.id,
-        name: journey.name,
+      .map(entryPointFlow => ({
+        id: entryPointFlow.id,
+        name: entryPointFlow.name,
         reason: 'Changed nodes or entry points participate in this entry-point flow'
       }));
 
@@ -211,14 +211,14 @@ export function buildScopedSemanticChangeImpact(
     changedExitPoints: CASExitPoint[]
   ): ChangeSemanticImpact {
     const affected_entry_point_flows = projectEntryPointFlowsFromCas(currentOutput).entryPointFlows
-      .filter(journey =>
-        journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
-        affectedEntryPointIds.has(journey.entry_point_id)
+      .filter(entryPointFlow =>
+        entryPointFlow.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
+        affectedEntryPointIds.has(entryPointFlow.entry_point_id)
       )
       .slice(0, 20)
-      .map(journey => ({
-        id: journey.id,
-        name: journey.name,
+      .map(entryPointFlow => ({
+        id: entryPointFlow.id,
+        name: entryPointFlow.name,
         reason: 'Entry-point flow is connected to a changed file or entry point'
       }));
     const affected_capabilities = (currentOutput.capabilities || [])

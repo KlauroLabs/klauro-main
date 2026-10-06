@@ -250,7 +250,7 @@ test('reused operation identities must still represent the same behavior', () =>
 test('canonical reuse retains original citations instead of substituting overlapping projections', () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
   const previous = capability('understand', 'Understand the behavior implemented by a system', 'inspect');
-  previous.criticality_factors = ['ai-extracted-from-journeys-and-entities', 'catalog-outcome-requirement:understand', 'catalog-candidate:original-surface'];
+  previous.criticality_factors = ['ai-extracted-from-entry-point-flows-and-entities', 'catalog-outcome-requirement:understand', 'catalog-candidate:original-surface'];
   const entry = { id: 'inspect', type: 'api', source_node: 'handler', trigger: { method: 'GET', path: '/inspect' } };
   for (const current of [[], candidates(previous.operations), [
     ...candidates(previous.operations),

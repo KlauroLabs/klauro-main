@@ -1723,29 +1723,29 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
 
 
 
-function entryPointFlowToWorkflowSummary(journey: CASEntryPointFlow) {
+function entryPointFlowToWorkflowSummary(entryPointFlow: CASEntryPointFlow) {
   return {
-    id: journey.id,
-    name: journey.name,
-    workflow_type: journey.flow_kind,
-    classification: journey.flow_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
-    criticality: journey.criticality,
-    entry_point_count: journey.entry_point_id ? 1 : 0,
-    chain_count: journey.call_chain_ids?.length || 0,
-    entity_count: journey.terminal_entities?.length || 0,
-    service_count: journey.terminal_effects?.external_services?.length || 0,
+    id: entryPointFlow.id,
+    name: entryPointFlow.name,
+    workflow_type: entryPointFlow.flow_kind,
+    classification: entryPointFlow.flow_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
+    criticality: entryPointFlow.criticality,
+    entry_point_count: entryPointFlow.entry_point_id ? 1 : 0,
+    chain_count: entryPointFlow.call_chain_ids?.length || 0,
+    entity_count: entryPointFlow.terminal_entities?.length || 0,
+    service_count: entryPointFlow.terminal_effects?.external_services?.length || 0,
   };
 }
 
 export function getWorkflows(cas: CASOutput, workflowId?: string) {
-  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows;
+  const entryPointFlows = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   if (workflowId) {
-    const journey = journeys.find(j => j.id === workflowId);
-    return { workflow: journey ? entryPointFlowToWorkflowSummary(journey) : null };
+    const entryPointFlow = entryPointFlows.find(j => j.id === workflowId);
+    return { workflow: entryPointFlow ? entryPointFlowToWorkflowSummary(entryPointFlow) : null };
   }
   return {
-    total: journeys.length,
-    workflows: journeys.map(entryPointFlowToWorkflowSummary),
+    total: entryPointFlows.length,
+    workflows: entryPointFlows.map(entryPointFlowToWorkflowSummary),
 
 
 
@@ -1777,26 +1777,26 @@ export function getEntryPointFlows(
     ? analysisVersionNotice(cas, 'entry-point flows')
     : undefined;
   const projection = projectEntryPointFlowsFromCas(cas);
-  const journeys = projection.entryPointFlows;
+  const entryPointFlows = projection.entryPointFlows;
   if (opts.flowId) {
-    const journey = journeys.find(item => item.id === opts.flowId) || null;
+    const entryPointFlow = entryPointFlows.find(item => item.id === opts.flowId) || null;
     if (opts.format === 'markdown') {
-      const markdown = journey ? entryPointFlowDetailMarkdown(journey) : `No entry-point flow with id '${opts.flowId}'.`;
+      const markdown = entryPointFlow ? entryPointFlowDetailMarkdown(entryPointFlow) : `No entry-point flow with id '${opts.flowId}'.`;
       return {
         markdown: flowsNotice ? `> ${flowsNotice}\n\n${markdown}` : markdown,
       };
     }
     return {
-      entry_point_flow: journey
-        ? { title: entryPointFlowTitle(journey), headline: entryPointFlowHeadline(journey), ...journey }
+      entry_point_flow: entryPointFlow
+        ? { title: entryPointFlowTitle(entryPointFlow), headline: entryPointFlowHeadline(entryPointFlow), ...entryPointFlow }
         : null,
       analysis_version_notice: flowsNotice,
     };
   }
 
-  let filtered = journeys;
+  let filtered = entryPointFlows;
   if (opts.kind) {
-    filtered = filtered.filter(journey => journey.flow_kind === opts.kind);
+    filtered = filtered.filter(entryPointFlow => entryPointFlow.flow_kind === opts.kind);
   }
 
   const limit = opts.limit || 25;
@@ -1830,23 +1830,23 @@ export function getEntryPointFlows(
     limit,
     analysis_version_notice: flowsNotice,
     summary: projection.summary,
-    entry_point_flows: page.map(journey => ({
-      id: journey.id,
-      title: entryPointFlowTitle(journey),
-      headline: entryPointFlowHeadline(journey),
-      name: journey.name,
-      flow_kind: journey.flow_kind,
-      derived_from_flow_id: journey.derived_from_flow_id,
-      exit_point_ids: journey.exit_point_ids,
-      criticality: journey.criticality,
-      risk: journey.risk,
-      entry: journey.entry,
-      terminal_entities: journey.terminal_entities,
-      entities_written: journey.terminal_effects?.entities_written || [],
-      external_services: journey.terminal_effects?.external_services || [],
-      step_count: journey.steps?.length || 0,
+    entry_point_flows: page.map(entryPointFlow => ({
+      id: entryPointFlow.id,
+      title: entryPointFlowTitle(entryPointFlow),
+      headline: entryPointFlowHeadline(entryPointFlow),
+      name: entryPointFlow.name,
+      flow_kind: entryPointFlow.flow_kind,
+      derived_from_flow_id: entryPointFlow.derived_from_flow_id,
+      exit_point_ids: entryPointFlow.exit_point_ids,
+      criticality: entryPointFlow.criticality,
+      risk: entryPointFlow.risk,
+      entry: entryPointFlow.entry,
+      terminal_entities: entryPointFlow.terminal_entities,
+      entities_written: entryPointFlow.terminal_effects?.entities_written || [],
+      external_services: entryPointFlow.terminal_effects?.external_services || [],
+      step_count: entryPointFlow.steps?.length || 0,
       steps: includeSteps
-        ? displayEntryPointFlowSteps(journey).map(step => ({
+        ? displayEntryPointFlowSteps(entryPointFlow).map(step => ({
             node_id: step.node_id,
             name: step.name,
             layer: step.layer,
@@ -1855,16 +1855,16 @@ export function getEntryPointFlows(
         : undefined,
 
 
-      path: entryPointFlowStepPhrase(journey) || undefined,
-      security_boundary_count: journey.security_boundaries?.length || 0,
-      test_count: journey.tests_covering?.length || 0,
+      path: entryPointFlowStepPhrase(entryPointFlow) || undefined,
+      security_boundary_count: entryPointFlow.security_boundaries?.length || 0,
+      test_count: entryPointFlow.tests_covering?.length || 0,
 
 
 
 
 
-      capability_ids: journey.capability_relationships?.length
-        ? journey.capability_relationships.map(rel => rel.capability_id)
+      capability_ids: entryPointFlow.capability_relationships?.length
+        ? entryPointFlow.capability_relationships.map(rel => rel.capability_id)
         : undefined,
     })),
   };
@@ -2217,7 +2217,7 @@ export function getProductMap(
   const mapPredatesStorage = cas.product_map?.entry_point_flows === undefined
     && compareCasVersions(cas.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
   const mapNotice = mapPredatesStorage
-    ? `This analysis (cas_version ${cas.cas_version || '0.0.0'}) predates the stored product map; the map below was computed on demand from older analysis data and may miss journeys, lineage, and conventions. Re-run analyze_codebase for the full product map.`
+    ? `This analysis (cas_version ${cas.cas_version || '0.0.0'}) predates the stored product map; the map below was computed on demand from older analysis data and may miss entry-point flows, lineage, and conventions. Re-run analyze_codebase for the full product map.`
     : undefined;
 
   if (opts.format === 'markdown') {
@@ -2277,7 +2277,7 @@ export function productMapToMarkdown(map: CASProductMap): string {
     lines.push(`- **${capability.name}** [${capability.criticality}, ${capability.category}] ${capability.description}`);
     const facts: string[] = [];
     if (capability.entry_point_flows.length > 0) {
-      facts.push(`entry-point flows: ${capability.entry_point_flows.map(journey => storedEntryPointFlowNameParts(journey.name).title || journey.name).join('; ')}`);
+      facts.push(`entry-point flows: ${capability.entry_point_flows.map(entryPointFlow => storedEntryPointFlowNameParts(entryPointFlow.name).title || entryPointFlow.name).join('; ')}`);
     }
     if (capability.entities.length > 0) {
       facts.push(`entities: ${capability.entities.join(', ')}`);
@@ -3975,12 +3975,12 @@ export function getInterfaceSignature(
   let purpose: string | undefined;
   const projectedEntryPointFlows = projectEntryPointFlowsFromCas(cas).entryPointFlows;
   if (projectedEntryPointFlows.length > 0) {
-    const signal = buildTerminalSignal({ journeys: projectedEntryPointFlows, systemCapabilities: cas.capabilities || [] });
+    const signal = buildTerminalSignal({ entryPointFlows: projectedEntryPointFlows, systemCapabilities: cas.capabilities || [] });
     const nameLower = targetNode.name.toLowerCase();
     const matchedEntity = signal.ranked_entities.find(e => e.name.toLowerCase() === nameLower || nameLower.includes(e.name.toLowerCase()));
     const matchedStage = signal.ranked_stages.find(s => s.name.toLowerCase() === nameLower || nameLower.includes(s.name.toLowerCase()));
     if (matchedEntity) {
-      purpose = `Near/at a terminal entity: "${matchedEntity.name}" (score ${matchedEntity.score.toFixed(1)}, ${matchedEntity.write_entry_point_flows} write / ${matchedEntity.read_entry_point_flows} read journeys) — this is evidence of why the entity exists, not an inferred label.`;
+      purpose = `Near/at a terminal entity: "${matchedEntity.name}" (score ${matchedEntity.score.toFixed(1)}, ${matchedEntity.write_entry_point_flows} write / ${matchedEntity.read_entry_point_flows} read entry-point flows) — this is evidence of why the entity exists, not an inferred label.`;
     } else if (matchedStage) {
       purpose = `Near-terminal stage: "${matchedStage.name}" (${matchedStage.min_distance_from_terminal} step(s) from a terminal, score ${matchedStage.score.toFixed(1)}).`;
     }

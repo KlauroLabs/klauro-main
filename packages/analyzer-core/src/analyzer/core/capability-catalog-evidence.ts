@@ -579,15 +579,15 @@ function capabilityHasPotentialUserSurface(capability: SystemCapability, entryPo
 
 function capabilityHasUserOutcomeEntryPointFlow(
   capability: SystemCapability,
-  journeys: CASEntryPointFlow[],
+  entryPointFlows: CASEntryPointFlow[],
 ): boolean {
   const operationIds = new Set((capability.operations || []).map(operation => operation.entry_point_id));
-  return journeys.some(journey => operationIds.has(journey.entry_point_id) &&
-    journey.flow_kind === 'user-facing' &&
-    ((journey.terminal_entities || []).some(entity => entity.terminal_kind === 'entity') ||
-      (journey.terminal_effects.entities_written || []).length > 0 ||
-      (journey.terminal_effects.entities_read || []).length > 0 ||
-      (journey.terminal_effects.messages_emitted || []).length > 0));
+  return entryPointFlows.some(entryPointFlow => operationIds.has(entryPointFlow.entry_point_id) &&
+    entryPointFlow.flow_kind === 'user-facing' &&
+    ((entryPointFlow.terminal_entities || []).some(entity => entity.terminal_kind === 'entity') ||
+      (entryPointFlow.terminal_effects.entities_written || []).length > 0 ||
+      (entryPointFlow.terminal_effects.entities_read || []).length > 0 ||
+      (entryPointFlow.terminal_effects.messages_emitted || []).length > 0));
 }
 
 function capabilityHasUserFacingLifecycleBreadth(
@@ -710,7 +710,7 @@ export function classifyCapabilityEvidence(
       if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence || reversibleActionOutcomeEvidence) {
         evidenceRole = 'product-outcome';
         if (firstPartyCoreOutcome) reasons.push('first-party-product-text');
-        if (terminalOutcomeEvidence) reasons.push('user-facing-terminal-journey');
+        if (terminalOutcomeEvidence) reasons.push('user-facing-terminal-entry-point-flow');
         if (externallyReachableOutcomeEvidence) reasons.push('external-reach-with-product-entity');
         if (lifecycleOutcomeEvidence) reasons.push('user-facing-lifecycle-breadth');
         if (reversibleActionOutcomeEvidence) reasons.push('reversible-user-action-lifecycle');

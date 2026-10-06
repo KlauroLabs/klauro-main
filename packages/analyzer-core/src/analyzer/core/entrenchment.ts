@@ -439,9 +439,9 @@ export function computeEntrenchment(
       }
     }
   } else {
-    for (const journey of output.entry_point_flows || []) {
-      joinFlow(journey.entry?.handler_node_id, journey.id);
-      for (const step of journey.steps || []) joinFlow(step.node_id, journey.id);
+    for (const entryPointFlow of output.entry_point_flows || []) {
+      joinFlow(entryPointFlow.entry?.handler_node_id, entryPointFlow.id);
+      for (const step of entryPointFlow.steps || []) joinFlow(step.node_id, entryPointFlow.id);
     }
   }
   const flowCount = new Map<string, number>();

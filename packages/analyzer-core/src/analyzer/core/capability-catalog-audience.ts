@@ -336,7 +336,7 @@ export function groundedCapabilityAudience(
     Boolean(entryPoint.source_node && entryPoint.handler?.node_id === entryPoint.source_node) &&
     String(entryPoint.metadata?.component || '') === String(entryPoint.handler?.method_name || ''));
   if (hasExactReactPage) return 'Users';
-  return entryPointFlows.some(journey => journey.flow_kind === 'user-facing' && operationEntryPoints.has(journey.entry_point_id))
+  return entryPointFlows.some(entryPointFlow => entryPointFlow.flow_kind === 'user-facing' && operationEntryPoints.has(entryPointFlow.entry_point_id))
     ? 'Users'
     : undefined;
 }

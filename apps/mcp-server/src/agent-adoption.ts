@@ -5470,7 +5470,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     callsLoaded ? coverageGate('call-chains', casCollectionTotal(cas, 'call_chains') ?? 0, minimumCallChainCount(cas, profile)) : { id: 'call-chains', ...projectedLayerEvidence(cas, 'L2', 'Call graph section is not loaded in this bounded projection') },
     callsLoaded ? relationshipDetailGate(cas, methodCalls, profile) : { id: 'relationship-detail', ...projectedLayerEvidence(cas, 'L2', 'Relationship detail is not loaded in this bounded projection') },
     gate('answer-pack', answerPackGaps.length === 0 ? 'pass' : 'warn', answerPackGaps.length === 0 ? 100 : 75, answerPackGaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPackGaps.join('; ')),
-    gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts${facts === 0 ? emptySectionReason(cas, 'no entry points, exit points, capabilities, or journeys were found to record as facts') : ''}`),
+    gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts${facts === 0 ? emptySectionReason(cas, 'no entry points, exit points, capabilities, or entry-point flows were found to record as facts') : ''}`),
     gate('codebase-idioms', idioms > 0 ? 'pass' : 'warn', idioms > 0 ? 100 : 72, `${idioms} repo-local idioms${idioms === 0 ? emptySectionReason(cas, 'no convention had enough comparable sites to measure') : ''}`),
     gate(
       'behavioral-invariants',

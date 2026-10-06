@@ -502,7 +502,7 @@ function hasBehaviorEvidence(capability: any): boolean {
   return (capability?.operations || []).length > 0 ||
     (capability?.related_entities || capability?.entities || []).length > 0 ||
     (capability?.related_domains || []).length > 0 ||
-    (capability?.related_flows || capability?.journeys || []).length > 0 ||
+    (capability?.related_flows || capability?.entryPointFlows || []).length > 0 ||
     (capability?.evidence_examples || []).length > 0 ||
     (capability?.criticality_factors || []).some((factor: unknown) =>
       /^catalog-(?:candidate|operation-obligation):/.test(String(factor)));

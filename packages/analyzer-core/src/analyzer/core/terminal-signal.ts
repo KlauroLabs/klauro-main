@@ -121,17 +121,17 @@ function isNoiseTerminalName(raw: string): boolean {
 }
 
 export function buildTerminalSignal(input: {
-  journeys: CASEntryPointFlow[];
+  entryPointFlows: CASEntryPointFlow[];
   systemCapabilities: SystemCapability[];
 }): TerminalSignal {
   const byEntity = new Map<string, RankedTerminalEntity>();
   const byStage = new Map<string, RankedTerminalStage>();
 
-  for (const journey of input.journeys || []) {
-    const kindMultiplier = journey.flow_kind === 'user-facing' ? USER_FACING_MULTIPLIER : 1;
+  for (const entryPointFlow of input.entryPointFlows || []) {
+    const kindMultiplier = entryPointFlow.flow_kind === 'user-facing' ? USER_FACING_MULTIPLIER : 1;
 
     const seenEntities = new Set<string>();
-    for (const terminal of journey.terminal_entities || []) {
+    for (const terminal of entryPointFlow.terminal_entities || []) {
       const name = normalizeName(terminal.name);
       if (!name || isNoiseTerminalName(name)) continue;
       const isWrite = WRITE_ACCESS.has(terminal.access);
@@ -151,14 +151,14 @@ export function buildTerminalSignal(input: {
         entry.entry_point_flow_count += 1;
         if (isWrite) entry.write_entry_point_flows += 1;
         else entry.read_entry_point_flows += 1;
-        if (journey.flow_kind === 'user-facing') entry.user_facing_entry_point_flows += 1;
+        if (entryPointFlow.flow_kind === 'user-facing') entry.user_facing_entry_point_flows += 1;
       }
       byEntity.set(name, entry);
     }
 
 
 
-    const stageSteps = (journey.steps || []).filter(step => STAGE_LAYERS.has(step.layer));
+    const stageSteps = (entryPointFlow.steps || []).filter(step => STAGE_LAYERS.has(step.layer));
     if (stageSteps.length === 0) continue;
     const maxDepth = Math.max(...stageSteps.map(step => step.depth));
     const seenStages = new Set<string>();

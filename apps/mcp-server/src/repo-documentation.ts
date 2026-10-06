@@ -185,17 +185,17 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
 
 
 
-  const journeys = projectEntryPointFlowsFromCas(cas).entryPointFlows
-    .filter(journey => journey.flow_kind === 'user-facing')
+  const entryPointFlows = projectEntryPointFlowsFromCas(cas).entryPointFlows
+    .filter(entryPointFlow => entryPointFlow.flow_kind === 'user-facing')
     .slice(0, 8);
-  if (journeys.length > 0) {
+  if (entryPointFlows.length > 0) {
     lines.push('Top entry-point flows:');
     lines.push('');
-    for (const journey of journeys) {
-      const trigger = journey.entry.method && journey.entry.path_or_trigger
-        ? `${journey.entry.method} ${journey.entry.path_or_trigger}`
-        : journey.entry.path_or_trigger || journey.entry.type;
-      lines.push(`- **${journey.name}** (${journey.entry.type}, ${journey.criticality}) — ${trigger}`);
+    for (const entryPointFlow of entryPointFlows) {
+      const trigger = entryPointFlow.entry.method && entryPointFlow.entry.path_or_trigger
+        ? `${entryPointFlow.entry.method} ${entryPointFlow.entry.path_or_trigger}`
+        : entryPointFlow.entry.path_or_trigger || entryPointFlow.entry.type;
+      lines.push(`- **${entryPointFlow.name}** (${entryPointFlow.entry.type}, ${entryPointFlow.criticality}) — ${trigger}`);
     }
     lines.push('');
   }
