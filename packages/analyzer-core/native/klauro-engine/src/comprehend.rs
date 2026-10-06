@@ -409,7 +409,7 @@ fn own_words_of_parts(
         if !name.to_ascii_lowercase().starts_with("readme") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        let Some(text) = crate::paths::read_inside(root, path) else { continue };
         let said: String = text.chars().take(PART_README_SHOWN).collect();
         let entry = own.entry(folder.to_string()).or_default();
         if entry.is_empty() {
@@ -454,7 +454,7 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
     for (at, path) in files.iter().enumerate() {
         let basename = crate::paths::basename(path).to_ascii_lowercase();
         if basename.starts_with("readme") && path.matches('/').count() == 0 {
-            if let Ok(text) = std::fs::read_to_string(root.join(path)) {
+            if let Some(text) = crate::paths::read_inside(root, path) {
                 said.push(text.chars().take(SAID_OF_ITSELF).collect::<String>());
             }
             let _ = at;
@@ -1506,7 +1506,7 @@ pub fn author(
         }
         let mut matched: Vec<String> = Vec::new();
         for path in &setting_files {
-            let Ok(text) = std::fs::read_to_string(root_path.join(path)) else {
+            let Some(text) = crate::paths::read_inside(root_path, path) else {
                 continue;
             };
             for (at, line) in text.lines().enumerate() {
@@ -1538,7 +1538,7 @@ pub fn author(
             .filter_map(|flow| flow_at.get(flow))
             .take(EXCERPTS_SHOWN)
             .filter_map(|(path, line, end)| {
-                let text = std::fs::read_to_string(root.join(path)).ok()?;
+                let text = crate::paths::read_inside(root, path)?;
                 let from = line.saturating_sub(1) as usize;
                 let to = (*end as usize).min(from + EXCERPT_LINES);
                 let shown: Vec<&str> = text

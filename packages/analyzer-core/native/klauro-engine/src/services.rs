@@ -196,7 +196,7 @@ fn settings_files<'p>(paths: &[&'p str]) -> Vec<(u32, &'p str)> {
 }
 
 fn settings_written_in(root: &Path, path: &str) -> Vec<(u32, String, String)> {
-    let absolute = root.join(path);
+    let absolute = crate::paths::kept_inside(root, Path::new(path)).unwrap_or_default();
     let small = std::fs::metadata(&absolute).is_ok_and(|held| held.len() <= SETTINGS_FILE_AT_MOST);
     let Some(text) = small.then(|| std::fs::read_to_string(&absolute).ok()).flatten() else {
         return Vec::new();

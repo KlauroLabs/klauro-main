@@ -187,7 +187,7 @@ pub fn look(
         Looked { asked: 0, offered: 0, written: 0, malformed: 0, graded: crate::jev::asked() };
     for file in worth_asking_about(files, nodes, entries, exits) {
         let Some(path) = files.get(file as usize).map(|held| held.path.as_str()) else { continue };
-        let Ok(source) = std::fs::read_to_string(Path::new(root).join(path)) else { continue };
+        let Some(source) = crate::paths::read_inside(Path::new(root), path) else { continue };
         let shown = numbered(&source);
         let recorded = recorded_for(file, entries, exits, nodes);
         looked.asked += 1;

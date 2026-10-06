@@ -1,3 +1,13 @@
+pub fn kept_inside(root: &std::path::Path, path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let held = root.join(path).canonicalize().ok()?;
+    held.starts_with(&root).then_some(held)
+}
+
+pub fn read_inside(root: &std::path::Path, path: impl AsRef<std::path::Path>) -> Option<String> {
+    std::fs::read_to_string(kept_inside(root, path.as_ref())?).ok()
+}
+
 pub fn directory_of(path: &str) -> &str {
     match path.rfind('/') {
         Some(at) => &path[..at],
@@ -200,6 +210,22 @@ pub fn is_continuous_integration(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_reached_through_a_link_leaving_the_root_is_unreadable() {
+        let base = std::env::temp_dir().join(format!("klauro-inside-{}", std::process::id()));
+        let root = base.join("repo");
+        let outside = base.join("server-secret.txt");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::write(root.join("own.md"), "mine").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("README.md")).unwrap();
+        std::os::unix::fs::symlink(&base, root.join("linked")).unwrap();
+        assert_eq!(read_inside(&root, "own.md").as_deref(), Some("mine"));
+        assert_eq!(read_inside(&root, "README.md"), None);
+        assert_eq!(read_inside(&root, "linked/server-secret.txt"), None);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn a_capitalised_tests_directory_holds_tests() {

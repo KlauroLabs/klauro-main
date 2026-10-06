@@ -120,7 +120,7 @@ fn declared_by_routes_files(root: &Path, files: &[String], nodes: &[IndexNode], 
     let mut found = Vec::new();
     for (at, path) in declaring {
         let Some(module) = module_of.get(&(at as u32)) else { continue };
-        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        let Some(text) = crate::paths::read_inside(root, path) else { continue };
         for (position, line) in text.lines().enumerate() {
             let mut words = line.split_whitespace();
             let (Some(verb), Some(written), Some(action)) = (words.next(), words.next(), words.next()) else { continue };
@@ -156,7 +156,7 @@ pub fn drawn(root: &Path, files: &[String], nodes: &[IndexNode]) -> Vec<EntryPoi
     }
     let mut found = declared_by_routes_files(root, files, nodes, &module_of);
     for manifest in files.iter().filter(|path| basename(path) == "package.json") {
-        let Ok(text) = std::fs::read_to_string(root.join(manifest)) else { continue };
+        let Some(text) = crate::paths::read_inside(root, manifest) else { continue };
         let declared = declared_packages(&text);
         let base = manifest.strip_suffix("package.json").unwrap_or_default();
         for router in ROUTERS.iter().filter(|router| declared.iter().any(|held| held == router.package)) {

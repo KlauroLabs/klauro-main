@@ -95,7 +95,7 @@ pub fn scan(root: &Path, files: &[String], wanted: &HashSet<&str>) -> Mentions {
         .par_iter()
         .enumerate()
         .fold(HashMap::default, |mut into, (file, path)| {
-            let absolute = root.join(*path);
+            let absolute = crate::paths::kept_inside(root, std::path::Path::new(path)).unwrap_or_default();
             let small = std::fs::metadata(&absolute).map(|meta| meta.len() <= LARGEST_FILE).unwrap_or(false);
             if small
                 && let Ok(text) = std::fs::read_to_string(&absolute)
