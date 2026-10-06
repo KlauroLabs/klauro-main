@@ -12,6 +12,7 @@ const FAMILIES_PER_PROPOSAL: usize = 20;
 const PLACING_ROUNDS: usize = 2;
 const PLACED_AT_ONCE: usize = 10;
 const READINGS: usize = 3;
+const SPLITTING_ROUNDS: usize = 2;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
     let mut orders: Vec<Vec<(String, String)>> = Vec::new();
@@ -210,8 +211,7 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
 
 const FUNCTIONS_TOLD: usize = 14;
 const SPLIT_FROM_FLOWS: usize = 30;
-const SPLIT_OUTCOMES_SHOWN: usize = 80;
-const SPLIT_LINES_PER_OUTCOME: usize = 4;
+const SPLIT_LINES_SHOWN: [&str; 5] = ["  outcome (", "  entered as:", "  reached through:", "  writes:", "  reads:"];
 
 fn is_only_a_trigger(family: &Family) -> bool {
     family.key.starts_with("trigger:")
@@ -642,11 +642,11 @@ fn split_the_broad(
     told: &BTreeMap<String, String>,
     lanes: &BTreeMap<&str, &Vec<&Flow>>,
     held: Vec<Held>,
-) -> Vec<Held> {
+) -> (Vec<Held>, bool) {
     let (broad, mut kept): (Vec<Held>, Vec<Held>) =
         held.into_iter().partition(|other| flows_held(other, lanes) > SPLIT_FROM_FLOWS);
     if broad.is_empty() {
-        return kept;
+        return (kept, false);
     }
     let weight = crate::author::weight();
     let proposals: Vec<(usize, Proposal)> = crate::author::asking(|| {
@@ -658,10 +658,13 @@ fn split_the_broad(
                     .iter()
                     .filter_map(|id| {
                         told.get(id).map(|evidence| {
-                            (id.clone(), evidence.lines().take(SPLIT_LINES_PER_OUTCOME).collect::<Vec<_>>().join("\n"))
+                            (id.clone(), evidence
+                                .lines()
+                                .filter(|line| SPLIT_LINES_SHOWN.iter().any(|shown| line.starts_with(shown)))
+                                .collect::<Vec<_>>()
+                                .join("\n"))
                         })
                     })
-                    .take(SPLIT_OUTCOMES_SHOWN)
                     .collect();
                 let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed);
                 (listed.len(), proposal)
@@ -684,7 +687,7 @@ fn split_the_broad(
     if split_any {
         place(said, told, &mut kept);
     }
-    kept
+    (kept, split_any)
 }
 
 pub(crate) const SETTLED: &str = "settled";
@@ -850,9 +853,37 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         }
     }
     merge_same_named(&mut held);
-    let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
-    held = split_the_broad(said, &told, &lane_flows, held);
-    merge_same_named(&mut held);
+    let related: BTreeSet<&str> = keyed.iter().flat_map(|(_, _, lane)| lane.iter().map(|flow| flow.id.as_str())).collect();
+    let supporting: Vec<supporting::Lane>;
+    let fallen: supporting::Fallen;
+    let mut lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
+        keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
+    supporting = supporting::relate(said, flows, &related, &lanes, &mut held, fields);
+    for lane in &supporting {
+        lanes.insert(lane.id.as_str(), (&lane.family, &lane.flows));
+    }
+    let mut told_all = told.clone();
+    told_all.extend(supporting.iter().map(|lane| (lane.id.clone(), lane.told.clone())));
+    for _ in 0..SPLITTING_ROUNDS {
+        let lane_flows: BTreeMap<&str, &Vec<&Flow>> = lanes.iter().map(|(id, (_, lane))| (*id, *lane)).collect();
+        let (settled, split_any) = split_the_broad(said, &told_all, &lane_flows, held);
+        held = settled;
+        merge_same_named(&mut held);
+        if !split_any {
+            break;
+        }
+    }
+    let seated_supporting: BTreeSet<String> =
+        held.iter().flat_map(|other| other.families.iter().cloned()).collect();
+    let left: Vec<&Flow> = supporting
+        .iter()
+        .filter(|lane| !seated_supporting.contains(&lane.id))
+        .flat_map(|lane| lane.flows.iter().copied())
+        .collect();
+    fallen = supporting::fall_back(&mut held, &lanes, left, fields);
+    for lane in &fallen.lanes {
+        lanes.insert(lane.id.as_str(), (&lane.family, &lane.flows));
+    }
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         let unseated = unseated(known.iter(), &held);
         eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unseated.len(), told.len());
@@ -872,7 +903,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                         name: other.name.clone(),
                         description: other.description.clone(),
                         audience: other.audience.clone(),
-                        families: other.families.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
+                        families: other.families.iter().filter_map(|id| key_of.get(id.as_str())).map(|key| key.to_string()).collect(),
                         roles: other
                             .roles
                             .iter()
@@ -885,13 +916,6 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             },
         );
     }
-    let mut lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
-        keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
-    let related: BTreeSet<&str> = lanes.values().flat_map(|(_, lane)| lane.iter().map(|flow| flow.id.as_str())).collect();
-    let supporting = supporting::relate(said, flows, &related, &lanes, &mut held, fields);
-    for lane in &supporting.lanes {
-        lanes.insert(lane.id.as_str(), (&lane.family, &lane.flows));
-    }
     let unanswered: BTreeSet<&str> = known
         .iter()
         .map(String::as_str)
@@ -901,11 +925,11 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .iter()
         .filter_map(|id| lanes.get(id))
         .flat_map(|(_, lane)| lane.iter().map(|flow| flow.id.clone()))
-        .chain(supporting.unplaced.iter().map(|flow| flow.id.clone()))
+        .chain(fallen.unplaced.iter().map(|flow| flow.id.clone()))
         .collect();
     let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
-    let unanswered_count = unanswered.len() + supporting.unplaced.len();
+    let unanswered_count = unanswered.len() + fallen.unplaced.len();
     let state = match (unanswered_count == 0, formed.is_empty()) {
         (true, false) => PartState { capabilities: SETTLED, reason: None },
         (true, true) => PartState {
@@ -918,7 +942,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 "the AI left {} of {} outcomes unanswered, and {} flows it was asked to relate to a capability",
                 unanswered.len(),
                 known.len(),
-                supporting.unplaced.len()
+                fallen.unplaced.len()
             )),
         },
     };

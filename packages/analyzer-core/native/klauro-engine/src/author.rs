@@ -801,9 +801,10 @@ pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: 
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
          One capability was read from it as \"{name}\", described as: {description}\n\
-         It holds {} of the outcomes below, which is many for one purpose in a product's own description, so it \
-         may be two or more things that were read as one: the reason someone comes for them differs, or the \
-         person who comes differs.\n\n{PURPOSE}\n\n\
+         It holds the {} outcomes below. Judge from what they change, keep and reach, the records they write \
+         and read, and who comes for them, whether they are one thing or two or more things that were read as \
+         one: the reason someone comes for them differs, or the person who comes differs. How many there are \
+         is no reason to split or to keep them together.\n\n{PURPOSE}\n\n\
          Read the outcomes carefully. If they really are one purpose, return it as a single capability holding \
          all of them. If they are several, split it into the purposes it contains, each one something the \
          product's description would list on its own. Split by what someone comes for and who comes, never by \
