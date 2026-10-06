@@ -387,8 +387,14 @@ const SAID_OF_ITSELF: usize = 8000;
 
 const MANIFESTS: &[&str] = &["package.json", "composer.json", "pyproject.toml", "Cargo.toml", "pubspec.yaml"];
 
-fn own_words_of_parts(nodes: &[IndexNode], files: &[String]) -> std::collections::BTreeMap<String, String> {
-    nodes
+const PART_README_SHOWN: usize = 1500;
+
+fn own_words_of_parts(
+    root: &std::path::Path,
+    nodes: &[IndexNode],
+    files: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    let mut own: std::collections::BTreeMap<String, String> = nodes
         .iter()
         .filter(|node| node.name == "description" && node.kind == NodeKind::Property)
         .filter_map(|node| {
@@ -397,7 +403,22 @@ fn own_words_of_parts(nodes: &[IndexNode], files: &[String]) -> std::collections
             let (folder, manifest) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
             (MANIFESTS.contains(&manifest) && !said.is_empty()).then(|| (folder.to_string(), said.to_string()))
         })
-        .collect()
+        .collect();
+    for path in files {
+        let Some((folder, name)) = path.rsplit_once('/') else { continue };
+        if !name.to_ascii_lowercase().starts_with("readme") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        let said: String = text.chars().take(PART_README_SHOWN).collect();
+        let entry = own.entry(folder.to_string()).or_default();
+        if entry.is_empty() {
+            *entry = said;
+        } else {
+            entry.push_str(&format!("\n{said}"));
+        }
+    }
+    own
 }
 
 fn spoken_of_part(
@@ -411,7 +432,7 @@ fn spoken_of_part(
         .and_then(|part| part.strip_prefix("subproject:"))
         .and_then(|folder| own_words.get(folder));
     if let Some(own) = own {
-        said.push_str(&format!("\nThat part describes itself as: {own}"));
+        said.push_str(&format!("\nThat part describes itself like this; this guides how its purposes are named, and the code decides what it delivers: {own}"));
     }
     let used: std::collections::BTreeSet<&str> = composition
         .into_iter()
@@ -1424,7 +1445,7 @@ pub fn author(
         held.entities.retain(|entity| chosen(&entity.project));
     }
     let spoken = spoken_for(root, nodes, files);
-    let own_words = own_words_of_parts(nodes, files);
+    let own_words = own_words_of_parts(root, nodes, files);
     let root_path = root;
     let node_at: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
