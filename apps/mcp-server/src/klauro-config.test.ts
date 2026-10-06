@@ -506,17 +506,7 @@ test('source snapshot carries plain (non-manifest-named) config YAML files frame
   });
 });
 
-test('source snapshot carries AndroidManifest.xml (platform manifest, by exact basename) but drops an unrelated generated .xml', async () => {
-  // Regression for a live hosted-analysis defect (2026-07-17): kotlin-analyzer's
-  // emitManifestEntryPoints globs **/AndroidManifest.xml and resolves its declared
-  // <service>/<receiver>/<provider>/<activity> to entry points, but the remote
-  // snapshot gate had no inclusion rule for .xml at all, so the file never
-  // reached the hosted analyzer — zero manifest entry points, zero warnings, on
-  // a real repo whose manifest declared a service+receiver+provider. Fixed by a
-  // named-basename allowlist (PLATFORM_MANIFEST_BASENAMES), not a blanket .xml
-  // inclusion — this test also asserts an unrelated generated .xml is still
-  // excluded, so a Java/Gradle monorepo's build-output XML doesn't flood the
-  // snapshot.
+test('source snapshot carries AndroidManifest.xml but drops an unrelated generated report', async () => {
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
     fs.mkdirSync(path.join(workspace.repo, 'app', 'src', 'main'), { recursive: true });
@@ -525,31 +515,26 @@ test('source snapshot carries AndroidManifest.xml (platform manifest, by exact b
       '<?xml version="1.0" encoding="utf-8"?>\n<manifest package="com.example.app">\n  <application>\n    <service android:name=".NodeForegroundService" />\n  </application>\n</manifest>\n'
     );
     fs.mkdirSync(path.join(workspace.repo, 'app', 'build', 'generated'), { recursive: true });
-    // 'build' is itself an EXCLUDED_DIRECTORIES entry, so use a non-excluded
-    // location for the generated-XML negative case.
     fs.mkdirSync(path.join(workspace.repo, 'reports'), { recursive: true });
-    fs.writeFileSync(path.join(workspace.repo, 'reports', 'checkstyle-result.xml'), '<checkstyle></checkstyle>\n');
+    fs.writeFileSync(path.join(workspace.repo, 'reports', 'coverage.lcov'), 'TN:\nend_of_record\n');
     spawnSync('git', ['add', '-A'], { cwd: workspace.repo, encoding: 'utf8' });
-    spawnSync('git', ['commit', '-m', 'add android manifest + generated xml'], { cwd: workspace.repo, encoding: 'utf8' });
+    spawnSync('git', ['commit', '-m', 'add android manifest + generated report'], { cwd: workspace.repo, encoding: 'utf8' });
 
-    // Committed-HEAD mode (clean tree matches HEAD).
     const headSnapshot = await buildSourceSnapshot(workspace.repo);
     const headPaths = headSnapshot.files.map(file => file.path);
     assert.ok(headPaths.includes('app/src/main/AndroidManifest.xml'), 'AndroidManifest.xml should be in the committed-HEAD snapshot');
-    assert.ok(!headPaths.includes('reports/checkstyle-result.xml'), 'an unrelated generated .xml should still be excluded');
+    assert.ok(!headPaths.includes('reports/coverage.lcov'), 'an unrelated generated report should still be excluded');
 
-    // Dirty working-tree mode (uncommitted edit forces the working-tree path).
     fs.appendFileSync(path.join(workspace.repo, 'app/main.py'), '\n# local edit\n');
     const workingTreeSnapshot = await buildSourceSnapshot(workspace.repo);
     const workingTreePaths = workingTreeSnapshot.files.map(file => file.path);
     assert.ok(workingTreePaths.includes('app/src/main/AndroidManifest.xml'), 'AndroidManifest.xml should be in the working-tree snapshot');
-    assert.ok(!workingTreePaths.includes('reports/checkstyle-result.xml'), 'an unrelated generated .xml should still be excluded in working-tree mode');
+    assert.ok(!workingTreePaths.includes('reports/coverage.lcov'), 'an unrelated generated report should still be excluded in working-tree mode');
 
-    // Upload manifest (what get_upload_manifest surfaces to the customer) lists it too.
     const manifest = await buildUploadManifest(workspace.repo);
     const includedPaths = manifest.included_files.map(file => file.path);
     assert.ok(includedPaths.includes('app/src/main/AndroidManifest.xml'), 'upload manifest should list AndroidManifest.xml as included');
-    assert.ok(!includedPaths.includes('reports/checkstyle-result.xml'), 'upload manifest should still exclude the unrelated generated .xml');
+    assert.ok(!includedPaths.includes('reports/coverage.lcov'), 'upload manifest should still exclude the unrelated generated report');
   });
 });
 
@@ -593,7 +578,8 @@ test('analyzer is one product (hosted) — no local/remote mode field at all', (
   const config = defaultKlauroConfig('/tmp/example-project');
   assert.equal((config.analyzer as Record<string, unknown>).mode, undefined);
   assert.equal(config.analyzer.serverUrl, 'https://mcp.klauro.com');
-  assert.deepEqual(Object.keys(config.source).sort(), ['exclude', 'followSymlinks', 'include', 'maxFileBytes', 'maxTotalBytes', 'roots'].sort());
+  assert.deepEqual(Object.keys(config.source).sort(), ['exclude', 'followSymlinks', 'include', 'maxFileBytes', 'maxTotalBytes', 'respectGitignore', 'roots'].sort());
+  assert.equal(config.source.respectGitignore, true);
   assert.equal(config.source.maxFileBytes, 0);
   assert.equal(config.source.maxTotalBytes, 512 * 1024 * 1024);
 });

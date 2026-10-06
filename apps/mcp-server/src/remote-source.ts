@@ -290,10 +290,6 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.rst',
 ]);
 
-const PLATFORM_MANIFEST_BASENAMES = new Set([
-  'AndroidManifest.xml',
-]);
-
 const IMPORTANT_EXTENSIONLESS = new Set([
   'Dockerfile',
   'Makefile',
@@ -990,7 +986,7 @@ async function shouldIncludeRelativePathVerbose(
     }
   }
 
-  if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base) || PLATFORM_MANIFEST_BASENAMES.has(base)) {
+  if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base)) {
     return { included: true };
   }
   const ext = base.slice(base.lastIndexOf('.'));
