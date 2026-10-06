@@ -100,6 +100,8 @@ pub fn reached(edges: &[IndexEdge], nodes: &[IndexNode], files: &[String], names
             awaited: false,
             addressed: None,
             service: Some(through.service),
+            method: None,
+            origin: None,
         });
     }
     found

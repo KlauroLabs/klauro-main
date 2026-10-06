@@ -58,6 +58,10 @@ pub struct ExitPoint {
     pub addressed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 static HTTP_METHODS: &[&str] = &[
@@ -901,7 +905,9 @@ static IO_MODULES: &[IoModule] = &[
     io("Directory", FILE),
     io("File", FILE),
     io("FileManager", FILE),
+    io("Flurl", API),
     io("HttpClient", API),
+    io("RestSharp", API),
     io("System.Data", DATABASE),
     io("System.Diagnostics", PROCESS),
     io("System.IO", FILE),
@@ -910,24 +916,30 @@ static IO_MODULES: &[IoModule] = &[
     io("aiohttp", API),
     io("axios", API),
     io("child_process", PROCESS),
+    io("cross-fetch", API),
     io("database/sql", DATABASE),
     io("diesel", DATABASE),
+    io("faraday", API),
     io("fs", FILE),
     io("fs/promises", FILE),
     io("got", API),
+    io("httparty", API),
     io("httpx", API),
     io("hyper", API),
     io("io/ioutil", FILE),
+    io("isomorphic-fetch", API),
     io("java.io", FILE),
     io("java.lang.ProcessBuilder", PROCESS),
     io("java.lang.Runtime", PROCESS),
     io("java.net.http", API),
     io("java.nio.file", FILE),
     io("java.sql", DATABASE),
+    io("ky", API),
     io("mongoose", DATABASE),
     io("mysql2", DATABASE),
     io("net/http", API),
     io("node-fetch", API),
+    io("ofetch", API),
     io("okhttp3", API),
     io("os", FILE_OR_PROCESS),
     io("os/exec", PROCESS),
@@ -937,6 +949,7 @@ static IO_MODULES: &[IoModule] = &[
     io("pymysql", DATABASE),
     io("requests", API),
     io("reqwest", API),
+    io("rest-client", API),
     io("retrofit2", API),
     io("shutil", FILE),
     io("sqlite3", DATABASE),
@@ -945,12 +958,16 @@ static IO_MODULES: &[IoModule] = &[
     io("std::net", API),
     io("std::process", PROCESS),
     io("subprocess", PROCESS),
+    io("superagent", API),
     io("tokio::fs", FILE),
     io("tokio::net", API),
     io("tokio::process", PROCESS),
+    io("typhoeus", API),
     io("undici", API),
     io("ureq", API),
     io("urllib", API),
+    io("urllib3", API),
+    io("wretch", API),
 ];
 
 fn module_kind(specifier: &str) -> Option<&'static [&'static str]> {
@@ -1132,6 +1149,8 @@ pub fn kept_by_a_model(
             awaited: call.context.awaited,
             addressed: addressed_at(call),
             service: None,
+            method: None,
+            origin: None,
         });
     }
     found
@@ -1317,6 +1336,8 @@ pub fn kept_by_a_store(
                     awaited: call.context.awaited,
                     addressed: addressed_at(call),
                     service: None,
+                    method: None,
+                    origin: None,
                 });
             }
             continue;
@@ -1339,6 +1360,8 @@ pub fn kept_by_a_store(
             awaited: call.context.awaited,
             addressed: addressed_at(call),
             service: None,
+            method: None,
+            origin: None,
         });
     }
     found
@@ -2386,6 +2409,8 @@ pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec
                 awaited: false,
                 addressed: None,
                 service: None,
+                method: None,
+                origin: None,
             }
         })
         .collect()
@@ -3165,6 +3190,8 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: None,
                 service: None,
+                method: None,
+                origin: None,
             });
         }
         if let Some(operation) = a_cookie_kept(call) {
@@ -3181,6 +3208,8 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: None,
                 service: None,
+                method: None,
+                origin: None,
             });
             return (found, reach);
         }
@@ -3199,6 +3228,8 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: Some(format!("{IPC_SCHEME}{channel}")),
                 service: None,
+                method: None,
+                origin: None,
             });
             return (found, reach);
         }
@@ -3216,6 +3247,8 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: addressed_at(call),
                 service: None,
+                method: None,
+                origin: None,
             });
             return (found, reach);
         }
@@ -3235,6 +3268,8 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: addressed_at(call),
                 service: None,
+                method: None,
+                origin: None,
             });
             return (found, reach);
         }
@@ -3264,6 +3299,8 @@ pub fn derive(
                 awaited: call.context.awaited,
             addressed: toucan_model(call).or_else(|| addressed_at(call)),
             service: None,
+            method: None,
+            origin: None,
             });
             return (found, reach);
         };
@@ -3288,6 +3325,8 @@ pub fn derive(
                 awaited: call.context.awaited,
             addressed: addressed_at(call).or_else(|| sqldelight_queries(receiver).map(str::to_string)),
             service: None,
+            method: None,
+            origin: None,
             });
             return (found, reach);
         }
@@ -3320,6 +3359,8 @@ pub fn derive(
                         awaited: call.context.awaited,
             addressed: addressed_at(call),
             service: None,
+            method: None,
+            origin: None,
                     });
                     return (found, reach);
                 }
@@ -3346,6 +3387,8 @@ pub fn derive(
             awaited: call.context.awaited,
             addressed: addressed_at(call),
             service: None,
+            method: None,
+            origin: None,
         });
             (found, reach)
     };

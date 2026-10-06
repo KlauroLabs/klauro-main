@@ -1,0 +1,70 @@
+list	-	-	-	asList,of,singletonList,listOf,setOf,arrayOf,mutableListOf,newArrayList,copyOf,vec,array,list,Array,String,string	-
+produce	Kafka	kafkajs	call	send,sendBatch	topic
+consume	Kafka	kafkajs	call	subscribe	topic,topics
+produce	Kafka	node-rdkafka,@confluentinc/kafka-javascript	call	produce	#0
+consume	Kafka	node-rdkafka,@confluentinc/kafka-javascript	call	subscribe	#0
+produce	Kafka	kafka-node	call	send	topic
+consume	Kafka	kafka-node	call	Consumer,ConsumerGroup	topic,topics
+produce	Kafka	kafka,aiokafka,confluent_kafka	call	send,send_and_wait,produce	#0,topic
+consume	Kafka	kafka,aiokafka	call	KafkaConsumer,AIOKafkaConsumer	#0
+consume	Kafka	kafka,aiokafka,confluent_kafka	call	subscribe	#0,topics
+produce	Kafka	Confluent.Kafka	call	Produce,ProduceAsync	#0,Topic
+consume	Kafka	Confluent.Kafka	call	Subscribe	#0
+produce	Kafka	github.com/segmentio/kafka-go	literal	Writer,WriterConfig	Topic
+consume	Kafka	github.com/segmentio/kafka-go	literal	ReaderConfig	Topic,GroupTopics
+produce	Kafka	github.com/IBM/sarama,github.com/Shopify/sarama	literal	ProducerMessage	Topic
+consume	Kafka	github.com/IBM/sarama,github.com/Shopify/sarama	call	ConsumePartition	#0
+consume	Kafka	github.com/IBM/sarama,github.com/Shopify/sarama	call	Consume	#1
+produce	Kafka	rdkafka	call	to	#0
+consume	Kafka	rdkafka	call	subscribe	#0
+produce	Kafka	org.springframework.kafka	call	send	#0
+produce	Kafka	org.apache.kafka	call	ProducerRecord	#0
+consume	Kafka	org.apache.kafka	call	subscribe	#0
+consume	Kafka	org.springframework.kafka	decorator	KafkaListener	topics,value,#0
+produce	Kafka	org.springframework.messaging	decorator	SendTo	#0
+produce	RabbitMQ	amqplib,amqp-connection-manager	call	sendToQueue,publish	#0
+consume	RabbitMQ	amqplib,amqp-connection-manager	call	consume	#0
+produce	RabbitMQ	pika,aio_pika	call	basic_publish	routing_key
+consume	RabbitMQ	pika,aio_pika	call	basic_consume	queue,#0
+produce	RabbitMQ	RabbitMQ.Client	call	BasicPublish,BasicPublishAsync	routingKey,#1
+consume	RabbitMQ	RabbitMQ.Client	call	BasicConsume,BasicConsumeAsync	queue,#0
+produce	RabbitMQ	github.com/rabbitmq/amqp091-go,github.com/streadway/amqp	call	Publish,PublishWithContext	#1
+consume	RabbitMQ	github.com/rabbitmq/amqp091-go,github.com/streadway/amqp	call	Consume	#0
+produce	RabbitMQ	org.springframework.amqp	call	convertAndSend,convertSendAndReceive	#0
+consume	RabbitMQ	org.springframework.amqp	decorator	RabbitListener	queues,queuesToDeclare,value,#0
+produce	RabbitMQ	bunny	call	publish	routing_key
+consume	RabbitMQ	bunny	call	queue	#0
+produce	NATS	nats,@nats-io/transport-node,@nats-io/nats-core,github.com/nats-io/nats.go,nats.aio,async_nats,async-nats,NATS.Client,NATS.Net,io.nats	call	publish,Publish,request,Request,PublishAsync,PublishMsg,publishAsync,PublishRequest	#0
+consume	NATS	nats,@nats-io/transport-node,@nats-io/nats-core,github.com/nats-io/nats.go,nats.aio,async_nats,async-nats,NATS.Client,NATS.Net,io.nats	call	subscribe,Subscribe,QueueSubscribe,SubscribeAsync,SubscribeSync,ChanSubscribe,subscribe_with_reply	#0
+produce	BullMQ	bullmq,bull,@nestjs/bullmq,@nestjs/bull	call	Queue	#0
+consume	BullMQ	bullmq,bull,@nestjs/bullmq,@nestjs/bull	call	Worker	#0
+produce	BullMQ	@nestjs/bullmq,@nestjs/bull	decorator	InjectQueue	#0
+consume	BullMQ	@nestjs/bullmq,@nestjs/bull	decorator	Processor	#0,name
+produce	Amazon SQS	@aws-sdk/client-sqs,boto3,AWSSDK.SQS,aws-sdk,software.amazon.awssdk.services.sqs,github.com/aws/aws-sdk-go-v2/service/sqs	call	SendMessageCommand,SendMessageBatchCommand,send_message,send_message_batch,SendMessage,SendMessageAsync,SendMessageBatch,SendMessageRequest	QueueUrl,queueUrl,#0
+consume	Amazon SQS	@aws-sdk/client-sqs,boto3,AWSSDK.SQS,aws-sdk,software.amazon.awssdk.services.sqs,github.com/aws/aws-sdk-go-v2/service/sqs	call	ReceiveMessageCommand,receive_message,ReceiveMessage,ReceiveMessageAsync,ReceiveMessageRequest	QueueUrl,queueUrl,#0
+consume	Amazon SQS	io.awspring.cloud.sqs	decorator	SqsListener	queueNames,value,#0
+produce	Amazon SNS	@aws-sdk/client-sns,boto3,AWSSDK.SimpleNotificationService,aws-sdk,software.amazon.awssdk.services.sns,github.com/aws/aws-sdk-go-v2/service/sns	call	PublishCommand,publish,Publish,PublishAsync,PublishRequest	TopicArn,topicArn,#0
+produce	Google Pub/Sub	@google-cloud/pubsub,google.cloud.pubsub,google.cloud.pubsub_v1,cloud.google.com/go/pubsub,Google.Cloud.PubSub,com.google.cloud.pubsub	call	topic,Topic,topic_path,TopicName	#0,#1
+consume	Google Pub/Sub	@google-cloud/pubsub,google.cloud.pubsub,google.cloud.pubsub_v1,cloud.google.com/go/pubsub,Google.Cloud.PubSub,com.google.cloud.pubsub	call	subscription,Subscription,subscription_path,SubscriptionName	#0,#1
+produce	Redis	ioredis,redis,@redis/client,Predis,redis-rb	call	publish	#0
+consume	Redis	ioredis,redis,@redis/client,Predis,redis-rb	call	subscribe,psubscribe,pSubscribe	#0
+produce	Redis	github.com/redis/go-redis,github.com/go-redis/redis,github.com/redis/rueidis	call	Publish	#1
+consume	Redis	github.com/redis/go-redis,github.com/go-redis/redis,github.com/redis/rueidis	call	Subscribe,PSubscribe	#1
+produce	Redis	StackExchange.Redis	call	Publish,PublishAsync	#0
+consume	Redis	StackExchange.Redis	call	Subscribe,SubscribeAsync	#0
+produce	Redis	redis.clients.jedis,io.lettuce	call	publish	#0
+produce	JMS	org.springframework.jms,javax.jms,jakarta.jms	call	convertAndSend	#0
+consume	JMS	org.springframework.jms	decorator	JmsListener	destination,#0
+produce	Azure Service Bus	@azure/service-bus,Azure.Messaging.ServiceBus,azure.servicebus	call	createSender,CreateSender,get_queue_sender,get_topic_sender	#0,queue_name,topic_name
+consume	Azure Service Bus	@azure/service-bus,Azure.Messaging.ServiceBus,azure.servicebus	call	createReceiver,CreateReceiver,CreateProcessor,get_queue_receiver,get_subscription_receiver	#0,queue_name,topic_name
+consume	Azure Service Bus	@azure/service-bus,Azure.Messaging.ServiceBus,azure.servicebus	call	subscribe	#0
+produce	MQTT	mqtt,paho.mqtt,paho-mqtt,github.com/eclipse/paho.mqtt.golang,rumqttc,MQTTnet	call	publish,Publish	#0
+consume	MQTT	mqtt,paho.mqtt,paho-mqtt,github.com/eclipse/paho.mqtt.golang,rumqttc,MQTTnet	call	subscribe,Subscribe	#0
+produce	Background jobs	-	job	perform_async,perform_in,perform_at,perform_later	-
+consume	Background jobs	-	method	perform	-
+produce	Celery	celery	job	delay,apply_async,s,si,signature	-
+consume	Celery	celery	decorator	task,shared_task,periodic_task	-
+produce	MassTransit	MassTransit	call	Publish,Send	typearg#0,type#0
+consume	MassTransit	-	implementer	IConsumer	Consume
+produce	EventBus	EventBus	call	PublishAsync,Publish	type#0
+consume	EventBus	-	implementer	IIntegrationEventHandler	Handle,HandleAsync

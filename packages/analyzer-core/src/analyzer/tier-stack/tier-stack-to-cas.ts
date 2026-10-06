@@ -90,6 +90,7 @@ const EXIT_ENVELOPE = new Set([
 
 const CARRIED_SECTIONS: Record<string, keyof CASOutput> = {
   architectural_conflicts: 'architectural_conflicts',
+  crossings: 'crossings',
   libraries: 'libraries',
   type_shapes: 'type_shapes',
 };

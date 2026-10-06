@@ -54,6 +54,14 @@ fn without_a_leading_base(path: &str) -> &str {
     }
 }
 
+fn origin_of(written: &str) -> Option<String> {
+    let start = written.find("://")? + 3;
+    let host = &written[start..];
+    let end = host.find(['/', '?', '#']).unwrap_or(host.len());
+    let origin = &written[..start + end];
+    (end > 0 && !origin.contains(['{', '$', ' '])).then(|| origin.to_string())
+}
+
 fn as_a_path(written: &str) -> Option<String> {
     let path = written.split(['?', '#']).next()?.trim();
     let path = match path.find("://") {
@@ -112,9 +120,11 @@ pub fn fold(exits: &mut [ExitPoint], calls: &[CallFact], locals: &[LocalBinding]
             .collect();
         let addressed = named.into_iter().chain(built).find_map(|literal| {
             let template = known(literal.trim()).unwrap_or_else(|| literal.clone());
-            as_a_path(&folded(&template, &known))
+            let written = folded(&template, &known);
+            as_a_path(&written).map(|path| (path, origin_of(&written)))
         });
-        exit.addressed = addressed;
+        exit.origin = addressed.as_ref().and_then(|(_, origin)| origin.clone());
+        exit.addressed = addressed.map(|(path, _)| path);
     }
 }
 
@@ -338,6 +348,8 @@ pub fn through_wrappers(
             awaited: call.context.awaited,
             addressed: Some(path),
             service: None,
+            method: None,
+            origin: None,
         });
     }
     exits.retain(|exit| {

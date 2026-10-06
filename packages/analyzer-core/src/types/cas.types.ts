@@ -11,6 +11,22 @@ export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProv
 import type { CASFirstPartyProductEvidence } from './cas-product-evidence.types';
 import type { CASHistoryPercentiles } from './cas-history.types';
 export type { CASFirstPartyProductEvidence, CASFirstPartyProductEvidenceValue, CASFirstPartyProductStatement } from './cas-product-evidence.types';
+export interface CASCrossing {
+  kind: string;
+  communication: string;
+  channel: string;
+  from: string;
+  from_file: number;
+  from_line: number;
+  through?: string;
+  to: string;
+  to_file: number;
+  to_line: number;
+  to_end_line?: number;
+  broker?: string;
+  open?: 'producer' | 'consumer';
+}
+
 export interface CASOutput extends CASSourceInputCatalog {
   id?: string;
   parent_id?: string | null;
@@ -169,6 +185,7 @@ export interface CASOutput extends CASSourceInputCatalog {
   consistency_model?: import('../analyzer/core/consistency-model').ConsistencyModelResult;
 
   libraries?: CASLibrary[];
+  crossings?: CASCrossing[];
   type_shapes?: CASTypeShape[];
 
 

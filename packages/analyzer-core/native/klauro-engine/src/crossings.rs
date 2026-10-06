@@ -34,6 +34,10 @@ pub struct Crossing {
     pub to_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<&'static str>,
 }
 
 struct Site<'a> {
@@ -153,6 +157,8 @@ fn events(files: &[String], nodes: &[IndexNode], calls: &[CallFact], constants: 
                 to_file: to.file,
                 to_line: to.line,
                 to_end_line: None,
+                broker: None,
+                open: None,
             });
         }
     }
@@ -189,6 +195,8 @@ fn messages(files: &[String], messages: &[MessageFact]) -> Vec<Crossing> {
                 to_file: to.file,
                 to_line: to.line,
                 to_end_line: Some(to.end_line),
+                broker: None,
+                open: None,
             });
         }
     }
@@ -237,6 +245,8 @@ fn commands(entry_points: &[EntryPoint], exit_points: &[ExitPoint], files: &[Str
                 to_file: handler.file,
                 to_line: handler.line,
                 to_end_line: None,
+                broker: None,
+                open: None,
             });
         }
     }
@@ -244,6 +254,7 @@ fn commands(entry_points: &[EntryPoint], exit_points: &[ExitPoint], files: &[Str
 }
 
 pub fn derive(
+    root: &std::path::Path,
     files: &[String],
     nodes: &[IndexNode],
     calls: &[CallFact],
@@ -258,5 +269,6 @@ pub fn derive(
     found.extend(events(files, nodes, calls, &constants));
     found.extend(messages(files, held_messages));
     found.extend(crate::queues::derive(files, nodes, calls, locals, imports));
+    found.extend(crate::brokers::derive(root, files, nodes, calls, locals, imports));
     found
 }

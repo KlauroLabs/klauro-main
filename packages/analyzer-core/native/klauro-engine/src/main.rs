@@ -14,6 +14,7 @@ mod parent;
 mod conform;
 mod constants;
 mod crossings;
+mod brokers;
 mod convention;
 mod coverage;
 mod bundler;
@@ -55,6 +56,7 @@ mod published;
 mod resolve;
 mod roles;
 mod rules;
+mod requests;
 mod route;
 mod rust_use;
 mod layers;
@@ -1019,6 +1021,7 @@ fn read_it() {
         "patterns {:?} | found {} | messages {} | dispatched {} | topics {}",
         patterns_started.elapsed(),
         derived.patterns.found.len(),
+    requests::fold(&mut index.exit_points, &index.calls);
         derived.patterns.messages.len(),
         derived.dispatched.len(),
         derived.patterns.topics.len()
@@ -1266,6 +1269,7 @@ fn read_it() {
     eprintln!(
         "health {:?} | projects {} | noted {}",
         health_started.elapsed(),
+        &root,
         health.projects.len(),
         health.noted
     );

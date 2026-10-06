@@ -51,24 +51,11 @@ async function klauroWiring(dir: string): Promise<{ wiring: string[]; bytes: num
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
   const time_ms = Date.now() - t0;
-  const byId = new Map((cas.nodes || []).map((n: any) => [n.id, n]));
-  const topicName = (id: string, fallback: string): string => {
-    const n: any = byId.get(id);
-    if (n?.type === 'topic') return n.name;
-
-    return String(n?.name || fallback).replace(/\s+(producer|consumer)$/i, '');
-  };
   const wiring: string[] = [];
-  for (const e of (cas.edges || [])) {
-
-
-    if (e.type === 'produces' || e.type === 'enqueues') {
-      const t = [e.target, e.source].map(id => byId.get(id)).find((n: any) => n?.type === 'topic' || n?.type === 'queue');
-      wiring.push(`produces ${t ? (t as any).name : topicName(e.target, e.target)}`);
-    } else if (e.type === 'consumes') {
-      const t = [e.source, e.target].map(id => byId.get(id)).find((n: any) => n?.type === 'topic' || n?.type === 'queue');
-      wiring.push(`consumes ${t ? (t as any).name : topicName(e.source, e.source)}`);
-    }
+  for (const crossing of (cas.crossings || [])) {
+    if (crossing.kind !== 'queue' || typeof crossing.channel !== 'string') continue;
+    if (crossing.open !== 'producer') wiring.push(`produces ${crossing.channel}`);
+    if (crossing.open !== 'consumer') wiring.push(`consumes ${crossing.channel}`);
   }
   const uniq = [...new Set(wiring)];
   return { wiring: uniq, bytes: Buffer.byteLength(uniq.join('\n'), 'utf8'), time_ms };
@@ -95,7 +82,7 @@ export async function runMessagingWiringBench(fixtureDir: string): Promise<Messa
 
   const verdict = validateWin(
     arms,
-    'the architectural-library detector emits produces/consumes edges to named topic nodes (the event-driven wiring); structural indexers see generic method calls and embeddings retrieve similar code — none model the topic graph.',
+    'the engine emits one queue crossing per broker topic or queue, with the producing and the consuming code on its two ends (the event-driven wiring); structural indexers see generic method calls and embeddings retrieve similar code — none model the topic graph.',
   );
 
   return { fixture: path.basename(fixtureDir), arms, verdict, detail };

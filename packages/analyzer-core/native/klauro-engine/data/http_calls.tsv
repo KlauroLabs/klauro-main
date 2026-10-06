@@ -1,0 +1,9 @@
+GET	get,getasync,getstringasync,getbytearrayasync,getstreamasync,getfromjsonasync,getforobject,getforentity,get_async
+POST	post,postasync,postasjsonasync,postforobject,postforentity,postforlocation,postform,post_async
+PUT	put,putasync,putasjsonasync,put_async
+PATCH	patch,patchasync,patchasjsonasync,patch_async
+DELETE	delete,deleteasync,deleteforentity,delete_async
+HEAD	head,headasync
+OPTIONS	options,optionsasync
+*	fetch,request,send,sendasync,send_async,exchange,do,newrequest,newrequestwithcontext,urlopen,execute,executeasync,open
+?GET	fetch
