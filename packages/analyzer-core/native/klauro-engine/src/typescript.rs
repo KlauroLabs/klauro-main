@@ -1788,7 +1788,7 @@ impl<'a> Extractor<'a> {
         let label = named_by_a_literal
             .map(|argument| trim_quotes(self.text(*argument)).to_string())
             .or_else(|| named_by_a_remembered_constant.and_then(|argument| self.remembered.get(self.text(*argument)).cloned()))
-            .or_else(|| self.property_holding(arguments));
+            .or_else(|| self.property_holding(arguments).filter(|held| crate::rules::registrar_kind(callee, Some(held), false) != Some("http")));
         let label_argument_id = named_by_a_literal.or(named_by_a_remembered_constant).map(|argument| argument.id());
         self.declared_route_objects(callee, &children);
 

@@ -9,6 +9,10 @@ use crate::entry_exit::ExitPoint;
 use crate::model::{EdgeKind, IndexEdge, IndexNode, Via};
 use crate::paths::is_scaffolding;
 
+mod carry;
+
+use carry::{Carrier, Imports};
+
 const BETWEEN_REACH: usize = 6;
 const EFFECT_REACH: usize = 6;
 const MOST_CROSSINGS: usize = 6;
@@ -182,6 +186,8 @@ fn is_component(symbol: &str) -> bool {
 struct Walk<'a> {
     graph: &'a Graph<'a>,
     crossings: &'a [&'a Crossing],
+    carriers: Vec<Carrier<'a>>,
+    imports: Imports,
 }
 
 impl<'a> Walk<'a> {
@@ -235,18 +241,55 @@ impl<'a> Walk<'a> {
         step.does = format!("{}: sends {} over {}", humanized(&step.symbol), crossing.channel, medium(crossing.kind));
     }
 
+    fn carried_by(&self, message: &Crossing) -> Option<&Carrier<'a>> {
+        self.carriers.iter().find(|carrier| carrier.carries(&self.imports, message))
+    }
+
+    fn carry(&self, carrier: &Carrier<'a>, message: &Crossing, steps: &mut Vec<Step>) {
+        if let Some(last) = steps.last_mut() {
+            last.does = format!("{}: sends {} over the network", humanized(&last.symbol), message.channel);
+        }
+        let send = self.graph.step(&carrier.send.from, String::new(), Some(carrier.send.kind));
+        if let Some(mut step) = send
+            && steps.last().is_none_or(|last| last.unit != step.unit)
+        {
+            self.sends(&mut step, carrier.send);
+            steps.push(step);
+        }
+        self.crossing_steps(carrier.send, steps);
+        let reached = self.graph.within(&carrier.send.to, BETWEEN_REACH);
+        let onward = self.graph.path(&reached, &carrier.forward.from);
+        for unit in onward.iter().skip(1) {
+            self.passing(unit, None, steps);
+        }
+        if let Some(last) = steps.last_mut() {
+            match onward.len() {
+                1 => last.does = format!("{}: receives {} from the network and forwards it", humanized(&last.symbol), carrier.send.channel),
+                _ => self.sends(last, carrier.forward),
+            }
+        }
+        self.crossing_steps(carrier.forward, steps);
+    }
+
     fn extend(&self, root: &'a Crossing, branch: usize) -> Option<Journey> {
         let mut steps: Vec<Step> = Vec::new();
         if let Some(mut step) = self.graph.step(&root.from, String::new(), None) {
             self.sends(&mut step, root);
             steps.push(step);
         }
+        let carrier = self.carried_by(root);
+        if let Some(carrier) = carrier {
+            self.carry(carrier, root, &mut steps);
+        }
         self.crossing_steps(root, &mut steps);
         let mut used: Vec<&Crossing> = vec![root];
-        let mut visited: Vec<&str> = [root.from.as_str(), root.to.as_str()]
-            .iter()
-            .filter_map(|unit| self.graph.named_unit(unit).map(|node| node.id.as_str()))
-            .collect();
+        let mut told: Vec<&Crossing> = vec![root];
+        let mut places: Vec<&str> = vec![root.from.as_str(), root.to.as_str()];
+        if let Some(carrier) = carrier {
+            told = vec![carrier.send, carrier.forward, root];
+            places.extend([carrier.send.to.as_str(), carrier.forward.from.as_str()]);
+        }
+        let mut visited: Vec<&str> = places.iter().filter_map(|unit| self.graph.named_unit(unit).map(|node| node.id.as_str())).collect();
         let mut at = root.to.as_str();
         for _ in 0..MOST_CROSSINGS {
             if used.last().is_some_and(|last| last.kind == "event") {
@@ -265,6 +308,7 @@ impl<'a> Walk<'a> {
             }
             self.crossing_steps(next, &mut steps);
             used.push(next);
+            told.push(next);
             visited.extend([next.from.as_str(), next.to.as_str()].iter().filter_map(|unit| self.graph.named_unit(unit).map(|node| node.id.as_str())));
             at = next.to.as_str();
         }
@@ -291,7 +335,7 @@ impl<'a> Walk<'a> {
         let does = format!(
             "{label} from {} through {} to {}{}",
             first.file,
-            used.iter().map(|held| format!("{} {}", held.kind, held.channel)).collect::<Vec<_>>().join(", "),
+            told.iter().map(|held| format!("{} {}", held.kind, held.channel)).collect::<Vec<_>>().join(", "),
             last.file,
             last.effect.as_deref().map(|effect| format!(", ending in {effect}")).unwrap_or_default()
         );
@@ -318,7 +362,12 @@ pub fn derive(
     for crossing in &held {
         followed.extend(graph.within(crossing.to.as_str(), BETWEEN_REACH).keys().copied().filter(|unit| *unit != crossing.to.as_str()));
     }
-    let walk = &Walk { graph: &graph, crossings: &held };
+    let walk = &Walk {
+        graph: &graph,
+        crossings: &held,
+        carriers: carry::pairs(&held, |send, forward| graph.within(send.to.as_str(), BETWEEN_REACH).contains_key(forward.from.as_str())),
+        imports: Imports::new(files, edges),
+    };
     let mut journeys: Vec<Journey> = held
         .iter()
         .copied()
@@ -334,14 +383,70 @@ pub fn derive(
         noisy(left).cmp(&noisy(right)).then(reach(right).cmp(&reach(left))).then(left.id.cmp(&right.id))
     });
     journeys.dedup_by(|left, right| left.id == right.id);
+    let mut journeys = without_repeats(journeys);
     journeys.truncate(MOST_JOURNEYS);
-    let mut represented: HashSet<String> = HashSet::default();
     for (position, journey) in journeys.iter_mut().enumerate() {
         journey.rank = position as u32 + 1;
-        let root = journey.steps.first().map(|step| step.unit.clone()).unwrap_or_default();
-        journey.representative = represented.len() < MOST_REPRESENTATIVE && !noisy_steps(&graph, set_aside, &journey.steps) && represented.insert(root);
+    }
+    let calm: Vec<usize> = (0..journeys.len()).filter(|position| !noisy_steps(&graph, set_aside, &journeys[*position].steps)).collect();
+    let mut chosen: Vec<usize> = Vec::new();
+    let mut courses: HashSet<(String, String)> = HashSet::default();
+    for position in calm.iter().copied() {
+        if chosen.len() >= MOST_REPRESENTATIVE {
+            break;
+        }
+        if courses.insert(course_of(&journeys[position])) {
+            chosen.push(position);
+        }
+    }
+    let mut roots: HashSet<&str> = chosen.iter().filter_map(|position| journeys[*position].steps.first()).map(|step| step.unit.as_str()).collect();
+    let mut filled: Vec<usize> = Vec::new();
+    for position in calm.iter().copied().filter(|position| !chosen.contains(position)) {
+        if chosen.len() + filled.len() >= MOST_REPRESENTATIVE {
+            break;
+        }
+        if journeys[position].steps.first().is_some_and(|step| roots.insert(step.unit.as_str())) {
+            filled.push(position);
+        }
+    }
+    chosen.extend(filled);
+    for position in chosen {
+        journeys[position].representative = true;
     }
     journeys
+}
+
+fn area_of(step: &Step) -> String {
+    step.file.split('/').next().unwrap_or_default().to_string()
+}
+
+fn course_of(journey: &Journey) -> (String, String) {
+    let first = journey.steps.first().map(area_of).unwrap_or_default();
+    let last = journey.steps.last();
+    let ending = last.map(|step| format!("{}:{}", area_of(step), step.effect.as_deref().unwrap_or_default())).unwrap_or_default();
+    (first, ending)
+}
+
+fn units(journey: &Journey) -> Vec<&str> {
+    journey.steps.iter().map(|step| step.unit.as_str()).collect()
+}
+
+fn contained_at_an_end(shorter: &[&str], longer: &[&str]) -> bool {
+    shorter.len() <= longer.len() && (longer.starts_with(shorter) || longer.ends_with(shorter))
+}
+
+fn without_repeats(journeys: Vec<Journey>) -> Vec<Journey> {
+    let mut kept: Vec<Journey> = Vec::new();
+    let mut walked: Vec<Vec<String>> = Vec::new();
+    for journey in journeys {
+        let these: Vec<&str> = units(&journey);
+        if walked.iter().any(|held| contained_at_an_end(&these, &held.iter().map(String::as_str).collect::<Vec<_>>())) {
+            continue;
+        }
+        walked.push(these.iter().map(|unit| unit.to_string()).collect());
+        kept.push(journey);
+    }
+    kept
 }
 
 fn noisy_steps(graph: &Graph, set_aside: &HashSet<u32>, steps: &[Step]) -> bool {

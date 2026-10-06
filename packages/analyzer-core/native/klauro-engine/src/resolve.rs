@@ -1596,6 +1596,19 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         None
     };
+    let mut forwarded_edges: HashSet<(u32, u32)> = HashSet::default();
+    for (forward, reached) in index.forwards.iter().zip(&forwarded_to) {
+        for target in reached {
+            if forwarded_edges.insert((forward.file, *target)) {
+                edges.push(IndexEdge {
+                    via: Via::Structure,
+                    source: index.files[forward.file as usize].clone(),
+                    target: index.files[*target as usize].clone(),
+                    kind: EdgeKind::Imports,
+                });
+            }
+        }
+    }
     let mut reached_files: HashMap<(u32, String), u32> = HashMap::default();
     for (fact, reached) in index.imports.iter().zip(reached_by_import) {
         let from = index.files[fact.file as usize].as_str();
