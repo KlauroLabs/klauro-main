@@ -1,7 +1,15 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
+
+before(() => {
+  execFileSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'build-bundle.mjs'), '--hosted'], {
+    cwd: path.join(__dirname, '..'),
+    stdio: 'ignore',
+    timeout: 240_000,
+  });
+});
 
 for (const entry of ['query', 'semantic-search', 'hosted-project-query', 'telemetry-ingestion']) {
   test(`${entry} reads CAS without initializing the analysis engine`, () => {
