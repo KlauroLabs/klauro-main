@@ -52,9 +52,6 @@ const stubRunners: Partial<ScorecardRunners> = {
   componentTree: async () => [
     row({ camp: 'C', scenario: 'component-tree: react', best_competitor: 'none', best_competitor_score: null, verdict: 'win' }),
   ],
-  structuralLanguages: async () => [
-    row({ camp: 'B', scenario: 'structural-languages: ts', best_competitor: 'scip-typescript', best_competitor_score: 1, verdict: 'tie' }),
-  ],
 };
 
 test('normalizes injected runner rows into A/B/C camps with correct counts', async () => {
@@ -70,16 +67,16 @@ test('normalizes injected runner rows into A/B/C camps with correct counts', asy
   assert.equal(byCamp.A.wins, 2);
   assert.equal(byCamp.A.ties, 1);
   assert.equal(byCamp.A.losses, 0);
-  assert.equal(byCamp.B.rows.length, 3);
+  assert.equal(byCamp.B.rows.length, 2);
   assert.equal(byCamp.B.wins, 2);
-  assert.equal(byCamp.B.ties, 1);
+  assert.equal(byCamp.B.ties, 0);
   assert.equal(byCamp.B.losses, 0);
   assert.equal(byCamp.C.rows.length, 3);
   assert.equal(byCamp.C.wins, 3);
 
-  assert.equal(report.totals.scenarios, 9);
+  assert.equal(report.totals.scenarios, 8);
   assert.equal(report.totals.wins, 7);
-  assert.equal(report.totals.ties, 2);
+  assert.equal(report.totals.ties, 1);
   assert.equal(report.totals.losses, 0);
   assert.equal(report.complete, true);
   assert.equal(report.zeroLosses, true);
@@ -109,9 +106,9 @@ test('renderScorecardMarkdown separates measured, proxy, and unopposed evidence'
   assert.match(md, /none \(n\/a\) \| unopposed \| CAPABILITY/);
   assert.match(md, /cursor-proxy 0\.50 \| proxy \| PROXY WIN/);
   assert.match(md, /\*\*No measured losses\*\*/);
-  assert.match(md, /Evidence: 5 named head-to-head \/ 1 proxy \/ 3 unopposed/);
+  assert.match(md, /Evidence: 4 named head-to-head \/ 1 proxy \/ 3 unopposed/);
   assert.match(md, /Proxy and unopposed rows .* do not establish competitor wins/);
-  assert.match(md, /Raw outcomes across all evidence kinds: 7 win \/ 2 tie \/ 0 loss across 9 scenarios/);
+  assert.match(md, /Raw outcomes across all evidence kinds: 7 win \/ 1 tie \/ 0 loss across 8 scenarios/);
 });
 
 test('runner errors make the scorecard incomplete and suppress the zero-loss claim', async () => {
@@ -133,8 +130,8 @@ test('runner errors make the scorecard incomplete and suppress the zero-loss cla
 test('a loss anywhere flips zeroLosses and the summary line', async () => {
   const withLoss: Partial<ScorecardRunners> = {
     ...stubRunners,
-    structuralLanguages: async () => [
-      row({ camp: 'B', scenario: 'structural-languages: ts [who-calls]', best_competitor: 'scip-typescript', best_competitor_score: 1.0, klauro_score: 0.9, verdict: 'loss' }),
+    componentTree: async () => [
+      row({ camp: 'C', scenario: 'component-tree: react', best_competitor: 'codebase-memory', best_competitor_score: 1.0, klauro_score: 0.9, verdict: 'loss' }),
     ],
   };
   const report = await generateCompetitorScorecard({ runners: withLoss, timestamp: 'x' });
