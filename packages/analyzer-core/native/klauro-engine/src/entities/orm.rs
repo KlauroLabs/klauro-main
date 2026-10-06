@@ -234,7 +234,7 @@ pub(crate) fn balanced(text: &str, open_at: usize) -> Option<&str> {
                 } else if letter == open {
                     depth += 1;
                 } else if letter == close {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
                         return Some(&text[open_at + 1..at]);
                     }
@@ -279,4 +279,45 @@ pub(crate) fn top_level(text: &str) -> Vec<&str> {
     }
     parts.push(&text[start..]);
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declared;
+
+    const HOSTILE: &[(&str, &str)] = &[
+        ("a.rb", "class 名前 < ApplicationRecord\n  has_many :🦀s,\n"),
+        ("a.rb", "class A < ApplicationRecord\n  belongs_to :e\u{301}toile, class_name: 'É"),
+        ("a.rb", "class A < ApplicationRecord\n  has_many"),
+        ("a.php", "<?php\n#[ORM\\Entity\nclass 日本 {\n  #[ORM\\OneToMany(targetEntity: \u{1F980}::class\n  private $x"),
+        ("a.php", "<?php\nclass A extends Model { function é() { return $this->hasMany(É::class"),
+        ("a.php", "<?php\n#[ORM\\Entity]\nclass A { class B { } }\nclass C {"),
+        ("a.php", "<?php\n/* \u{1F980}\n#[ORM\\Entity] class A {\n// \u{301}\n"),
+        ("A.java", "@Entity\nclass 日本 {\n  @OneToMany(targetEntity = \n  private List<\u{1F980}> x;\n"),
+        ("A.java", "@Entity class A { @ManyToOne private"),
+        ("A.java", "@Entity class A { class B { } } class C {"),
+        ("a.py", "import django\nclass A(models.Model):\n    x = models.ForeignKey(\n        '\u{1F980}"),
+        ("a.py", "import sqlalchemy\nclass A(Base):\n    é = relationship(\"\n"),
+        ("a.py", "import django\nclass A(models.Model):\n    x = models.ForeignKey()\n    y = models.ManyToManyField(\"\")\n"),
+        ("a.ts", "import mongoose from 'mongoose';\nconst s = new Schema({ \u{1F980}: [{ ref: '日"),
+        ("a.ts", "const s = new Schema({ a: { ref: '' }, : 1, , });\nmodel('A', s)"),
+        ("a.ts", "const s = new Schema({ /* \u{301}\nmodel('A', s)"),
+    ];
+
+    #[test]
+    fn malformed_and_multibyte_sources_are_skipped_and_never_panic() {
+        for (path, source) in HOSTILE {
+            for end in (0..=source.len()).filter(|at| source.is_char_boundary(*at)) {
+                declared(source[..end].as_bytes(), path, 0);
+            }
+        }
+        assert!(declared(&[0xff, 0xfe, 0x41], "a.rb", 0).is_empty());
+        assert!(declared(b"", "a.php", 0).is_empty());
+    }
+
+    #[test]
+    fn a_multibyte_model_name_is_kept_whole() {
+        let found = declared("<?php\n#[ORM\\Entity]\nclass 名前 {\n}\n".as_bytes(), "a.php", 0);
+        assert_eq!(found.first().map(|model| model.name.as_str()), Some("名前"));
+    }
 }

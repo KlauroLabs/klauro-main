@@ -32,7 +32,7 @@ fn fields_of<'a>(held: &'a [(String, Vec<String>)], name: &str) -> &'a [String] 
 fn a_record_is_what_a_migration_creates_and_never_a_shape_handed_to_a_caller() {
     let rails = entities("stored/rails");
     assert_eq!(named(&rails), vec!["Account", "StatusEdit", "Webhook", "settings"]);
-    assert_eq!(fields_of(&rails, "Account"), ["username", "email"]);
+    assert_eq!(fields_of(&rails, "Account"), ["status_edits", "username", "email"]);
     assert_eq!(fields_of(&rails, "StatusEdit"), ["account", "text"]);
 
     let laravel = entities("stored/laravel");

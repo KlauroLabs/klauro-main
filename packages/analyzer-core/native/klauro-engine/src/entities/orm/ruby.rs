@@ -13,7 +13,7 @@ pub fn declared(text: &str) -> Vec<Model> {
     let mut found = Vec::new();
     for opening in class.captures_iter(text) {
         let whole = opening.get(0).expect("a whole match");
-        let first = line_of(text, whole.start()) as usize - 1;
+        let first = (line_of(text, whole.start()) as usize).saturating_sub(1);
         let indent = opening[1].len();
         let base = opening[3].to_string();
         let name = last_segment(&opening[2]).to_string();
@@ -21,17 +21,18 @@ pub fn declared(text: &str) -> Vec<Model> {
         let mut shared = false;
         let mut at = first + 1;
         while at < lines.len() {
-            let line = lines[at];
+            let Some(line) = lines.get(at).copied() else { break };
             let depth = line.len() - line.trim_start().len();
             if line.trim() == "end" && depth <= indent {
                 break;
             }
             shared |= line.contains("abstract_class");
             let mut statement = line.to_string();
-            while statement.trim_end().ends_with(',') && at + 1 < lines.len() {
+            while statement.trim_end().ends_with(',') {
                 at += 1;
+                let Some(next) = lines.get(at) else { break };
                 statement.push(' ');
-                statement.push_str(lines[at].trim());
+                statement.push_str(next.trim());
             }
             at += 1;
             let Some(held) = association.captures(&statement) else { continue };

@@ -33,8 +33,8 @@ pub fn declared(text: &str) -> Vec<Model> {
         let whole = opening.get(0).expect("a whole match");
         let open_at = whole.end() - 1;
         let Some(body) = balanced(text, open_at) else { continue };
-        let preface = &text[previous_end..whole.start()];
-        previous_end = open_at + body.len() + 2;
+        let preface = text.get(previous_end..whole.start()).unwrap_or_default();
+        previous_end = previous_end.max(open_at + body.len() + 2);
         let name = opening[2].to_string();
         let base = opening.get(3).map(|held| last_segment(held.as_str()).to_string());
         let line = line_of(text, whole.start());
