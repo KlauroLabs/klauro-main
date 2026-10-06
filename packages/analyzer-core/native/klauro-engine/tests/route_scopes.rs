@@ -56,3 +56,11 @@ fn a_router_that_uses_a_guard_guards_only_the_routes_registered_after_it() {
     assert!(found.contains(&route("GET", "/users", 1)), "{found:?}");
     assert!(found.contains(&route("POST", "/users", 1)), "{found:?}");
 }
+
+#[test]
+fn a_group_opened_with_a_guard_or_given_one_later_guards_each_of_its_routes_once() {
+    assert_eq!(
+        guarded("route-scopes/echo"),
+        vec![route("GET", "/admin/users", 1), route("GET", "/users", 0), route("GET", "/v1/x", 1)]
+    );
+}

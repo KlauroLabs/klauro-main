@@ -1906,7 +1906,10 @@ impl Gathering<'_> {
             let Some(name) = variable else { break };
             for (written_at, written) in self.used.get(&(file, caller, name)).into_iter().flatten() {
                 if let Some(kind) = guarding(written).filter(|_| *written_at <= line) {
-                    found.push(Guard { name: written.to_string(), kind, via: "route" });
+                    let guard = Guard { name: written.to_string(), kind, via: "route" };
+                    if !found.contains(&guard) {
+                        found.push(guard);
+                    }
                 }
             }
             variable = self.groups.get(&(file, caller, name)).and_then(|(_, within)| *within);
