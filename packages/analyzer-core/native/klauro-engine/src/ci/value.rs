@@ -11,6 +11,8 @@ pub struct Value {
     pub kind: Kind,
 }
 
+const DEEPEST: usize = 48;
+
 const NO_ENTRIES: &[(String, Value)] = &[];
 const NO_ITEMS: &[Value] = &[];
 
@@ -19,6 +21,9 @@ impl Value {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_yaml::LANGUAGE.into()).ok()?;
         let tree = parser.parse(source, None)?;
+        if deeper_than(tree.root_node(), DEEPEST) {
+            return None;
+        }
         convert(tree.root_node(), source.as_bytes())
     }
 
@@ -90,6 +95,26 @@ impl Value {
             return Some(found);
         }
         self.entries().iter().find_map(|(_, value)| value.find_deep(key))
+    }
+}
+
+fn deeper_than(root: Node, limit: usize) -> bool {
+    let mut cursor = root.walk();
+    let mut depth = 0usize;
+    loop {
+        if cursor.goto_first_child() {
+            depth += 1;
+            if depth > limit {
+                return true;
+            }
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if depth == 0 || !cursor.goto_parent() {
+                return false;
+            }
+            depth -= 1;
+        }
     }
 }
 
