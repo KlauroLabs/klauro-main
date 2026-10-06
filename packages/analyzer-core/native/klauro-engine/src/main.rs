@@ -47,6 +47,7 @@ mod icelot;
 mod model;
 mod mounts;
 mod names;
+mod namespaced;
 mod paths;
 mod reach;
 mod published;

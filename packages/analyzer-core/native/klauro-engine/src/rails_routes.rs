@@ -51,7 +51,7 @@ fn named_args(call: &CallFact) -> Vec<String> {
         .collect()
 }
 
-fn singular(word: &str) -> String {
+pub(crate) fn singular(word: &str) -> String {
     if let Some(stem) = word.strip_suffix("ies") {
         return format!("{stem}y");
     }

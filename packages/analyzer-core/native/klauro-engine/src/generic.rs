@@ -8,6 +8,7 @@ use crate::model::*;
 mod bounds;
 mod lambdas;
 mod messages;
+mod phoenix_scopes;
 mod programs;
 mod swift_routes;
 
@@ -2923,6 +2924,16 @@ impl<'a> Extractor<'a> {
                 true => Some(self.swift_path(Some(arguments))),
                 false => direct,
             };
+            let scoped = REQUEST_METHODS
+                .binary_search(&callee.to_ascii_lowercase().as_str())
+                .ok()
+                .and_then(|_| self.phoenix_scopes(node));
+            let direct = match (&scoped, direct) {
+                (Some(scoped), Some(path)) if !scoped.path.is_empty() => {
+                    Some(format!("{}/{}", scoped.path, path.trim_start_matches('/')).trim_end_matches('/').to_string())
+                }
+                (_, direct) => direct,
+            };
             let label = match direct {
                 Some(path) => Some(match self.mounted_method(arguments) {
                     Some(method) if path.starts_with('/') => format!("{method} {path}"),
@@ -2984,13 +2995,19 @@ impl<'a> Extractor<'a> {
                     self.handed_over(arguments, &mut handlers);
                 }
                 handlers.retain(|(handler, _)| !chained_handlers.iter().any(|(chained, _, _)| chained == handler));
-                for (handler, at) in handlers {
+                for (handler, _) in handlers {
+                    let handler = match &scoped {
+                        Some(scoped) if !scoped.module.is_empty() && handler.starts_with(char::is_uppercase) => {
+                            format!("{}.{handler}", scoped.module)
+                        }
+                        _ => handler,
+                    };
                     self.facts.registrations.push(RegistrationFact {
                         file: self.file,
                         registrar: registrar.clone(),
                         label: label.clone(),
                         handler,
-                        line: at.start_position().row as u32 + 1,
+                        line: node.start_position().row as u32 + 1,
                     });
                 }
                 let bare_path = label.split_once(' ').map(|(_, path)| path).unwrap_or(label.as_str()).to_string();
@@ -3028,6 +3045,9 @@ impl<'a> Extractor<'a> {
         let mut literals = literals;
         let listed = self.listed_program_words(&callee, arguments);
         literals.extend(listed);
+        if matches!(callee.as_str(), "only" | "except") && literals.is_empty() {
+            literals = arguments.map(|held| string_literals(self.text(held))).unwrap_or_default();
+        }
         let member_named = node.prev_named_sibling().and_then(|held| match held.kind() {
             "name_equals" => held.named_child(0),
             "identifier" if node.parent().is_some_and(|parent| parent.kind() == "anonymous_object_creation_expression") => {

@@ -1,5 +1,5 @@
 ipc	exact	handle,handleOnce,on,once	ipcMain,ipc	any	-
-http	lower	handle,handlefunc,handler,handlerfunc,mount,nest,path,re_path,resource,route,service,all,delete,get,head,options,patch,post,put	*	route-or-slash	stop
+http	lower	apiresource,handle,handlefunc,handler,handlerfunc,mount,nest,path,re_path,resource,route,service,all,delete,get,head,options,patch,post,put	*	route-or-slash	stop
 cli	lower	run,rune,runfunc,action,execute,handler	~command,~cmd	any	-
 rpc	lower	mutation,query,subscription	^procedure	any	-
 http	mapped	-	*	route	stop

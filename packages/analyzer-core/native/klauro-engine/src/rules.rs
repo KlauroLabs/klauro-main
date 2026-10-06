@@ -125,6 +125,9 @@ fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>, i
             let through_receiver = verb.len() != registrar.len();
             let on_a_router = crate::entry_exit::registered_on_a_router(registrar);
             let path = crate::entry_exit::split_label(held).1;
+            if path.is_empty() {
+                return through_receiver && on_a_router;
+            }
             let addresses_a_path = match through_receiver {
                 true => on_a_router || path.contains('/'),
                 false => in_a_routing_dsl || path.contains('/'),

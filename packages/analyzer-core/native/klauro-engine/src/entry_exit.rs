@@ -443,6 +443,33 @@ fn plainly_a_table(held: &str) -> Option<String> {
     spoken.then(|| named.to_string())
 }
 
+fn declared_methods(decorator: &Decorator) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for argument in &decorator.arguments {
+        let value = argument.value.trim().trim_matches(['"', '\'']).to_ascii_uppercase();
+        if argument.literal && HTTP_METHODS.binary_search(&value.to_ascii_lowercase().as_str()).is_ok() && !found.contains(&value) {
+            found.push(value);
+        }
+    }
+    found
+}
+
+fn action_name(node: &IndexNode) -> String {
+    node.decorators
+        .iter()
+        .find(|decorator| names::leaf(&decorator.name) == "ActionName")
+        .and_then(|decorator| decorator.arguments.first())
+        .map(|argument| argument.value.clone())
+        .unwrap_or_else(|| node.name.trim_end_matches("Async").to_string())
+}
+
+fn declared_base(class: &IndexNode) -> Option<String> {
+    class.decorators.iter().find_map(|decorator| match decorator_entry(decorator) {
+        Some(("http", _, Some(path))) => Some(path),
+        _ => None,
+    })
+}
+
 fn owner_path(path: &str, owner: &str) -> String {
     path.replace("[controller]", owner.strip_suffix("Controller").unwrap_or(owner))
 }
@@ -528,14 +555,7 @@ fn controller_stem(node: &IndexNode, named_of: &HashMap<&str, &IndexNode>) -> Op
 
 fn conventional_path(node: &IndexNode, named_of: &HashMap<&str, &IndexNode>) -> Option<String> {
     let stem = controller_stem(node, named_of)?;
-    let action = node
-        .decorators
-        .iter()
-        .find(|decorator| names::leaf(&decorator.name) == "ActionName")
-        .and_then(|decorator| decorator.arguments.first())
-        .map(|argument| argument.value.clone())
-        .unwrap_or_else(|| node.name.trim_end_matches("Async").to_string());
-    Some(format!("/{stem}/{action}"))
+    Some(format!("/{stem}/{}", action_name(node)))
 }
 
 fn conventional_actions(
@@ -1633,6 +1653,61 @@ fn handed_to_functions<'a>(groups: &mut Groups<'a>, calls: &'a [CallFact], nodes
     }
 }
 
+fn opened_groups<'a>(nodes: &'a [IndexNode], calls: &'a [CallFact]) -> HashMap<&'a str, String> {
+    let mut opening: HashMap<(u32, &str), Vec<&CallFact>> = HashMap::default();
+    for call in calls.iter().filter(|call| call.callee == "group") {
+        if let Some(caller) = call.caller.as_deref() {
+            opening.entry((call.file, caller)).or_default().push(call);
+        }
+    }
+    let mut prefixes: HashMap<(u32, &str, u32, u32), String> = HashMap::default();
+    for call in calls.iter().filter(|call| call.callee == "prefix" && call.receiver.is_some()) {
+        let (Some(caller), Some(prefix)) =
+            (call.caller.as_deref(), call.literals.iter().find_map(|literal| a_route_prefix(literal)))
+        else {
+            continue;
+        };
+        prefixes.entry((call.file, caller, call.line, call.column)).or_insert(prefix);
+    }
+    let mut opened: HashMap<&str, String> = HashMap::default();
+    if prefixes.is_empty() {
+        return opened;
+    }
+    for node in nodes.iter().filter(|node| node.callback_of.as_deref().is_some_and(|registrar| names::leaf(registrar) == "group")) {
+        let Some(parent) = node.parent.as_deref() else { continue };
+        let Some(group) = opening
+            .get(&(node.file, parent))
+            .into_iter()
+            .flatten()
+            .filter(|call| call.line <= node.span.line)
+            .max_by_key(|call| (call.line, call.column))
+        else {
+            continue;
+        };
+        if let Some(prefix) = prefixes.get(&(group.file, parent, group.line, group.column)) {
+            opened.insert(node.id.as_str(), prefix.clone());
+        }
+    }
+    opened
+}
+
+fn enclosing_groups(
+    caller: &str,
+    opened: &HashMap<&str, String>,
+    parents: &HashMap<&str, Option<&str>>,
+) -> Option<String> {
+    let mut prefixes: Vec<&str> = Vec::new();
+    let mut current = Some(caller);
+    for _ in 0..16 {
+        let Some(held) = current else { break };
+        if let Some(prefix) = opened.get(held) {
+            prefixes.push(prefix);
+        }
+        current = parents.get(held).copied().flatten();
+    }
+    (!prefixes.is_empty()).then(|| prefixes.iter().rev().fold(String::new(), |base, next| join_paths(&base, next)))
+}
+
 type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
 
 fn calls_by_line<'a>(calls: &'a [CallFact], wanted: &HashSet<(u32, u32)>) -> CallsByLine<'a> {
@@ -1644,12 +1719,65 @@ fn calls_by_line<'a>(calls: &'a [CallFact], wanted: &HashSet<(u32, u32)>) -> Cal
     held
 }
 
-fn grouped_under(registration: &RegistrationFact, by_line: &CallsByLine, groups: &Groups) -> Option<String> {
-    let verb = names::leaf(&registration.registrar).to_ascii_lowercase();
-    let call = by_line.get(&(registration.file, registration.line, verb))?;
-    let unit = call.caller.as_deref()?;
-    let receiver = names::root(call.receiver.as_deref()?);
-    prefix_of(groups, registration.file, unit, receiver, 0)
+static RESOURCE_OPERATIONS: &[(&str, &str, &str)] = &[
+    ("index", "GET", ""),
+    ("create", "GET", "create"),
+    ("store", "POST", ""),
+    ("show", "GET", "{}"),
+    ("edit", "GET", "{}/edit"),
+    ("update", "PUT", "{}"),
+    ("update", "PATCH", "{}"),
+    ("destroy", "DELETE", "{}"),
+];
+
+fn resource_operations(verb: &str) -> Option<Vec<(&'static str, &'static str, &'static str)>> {
+    let apiish = match verb {
+        "resource" => false,
+        "apiResource" => true,
+        _ => return None,
+    };
+    Some(
+        RESOURCE_OPERATIONS
+            .iter()
+            .filter(|(action, _, _)| !apiish || !matches!(*action, "create" | "edit"))
+            .copied()
+            .collect(),
+    )
+}
+
+fn resource_path(collection: &str, suffix: &str) -> String {
+    let segment = collection.rsplit('/').next().unwrap_or(collection);
+    let parameter = crate::rails_routes::singular(&segment.replace('-', "_"));
+    join_paths(collection, &suffix.replace("{}", &format!("{{{parameter}}}")))
+}
+
+fn restricted_to(calls: &[CallFact], file: u32, line: u32) -> Option<(bool, Vec<String>)> {
+    calls.iter().filter(|call| call.file == file && call.line == line).find_map(|call| match call.callee.as_str() {
+        "only" => Some((true, call.literals.clone())),
+        "except" => Some((false, call.literals.clone())),
+        _ => None,
+    })
+}
+
+struct Gathering<'a> {
+    by_line: CallsByLine<'a>,
+    groups: Groups<'a>,
+    opened: HashMap<&'a str, String>,
+    parents: HashMap<&'a str, Option<&'a str>>,
+}
+
+impl Gathering<'_> {
+    fn prefix_at(&self, file: u32, line: u32, registrar: &str) -> Option<String> {
+        let verb = names::leaf(registrar).to_ascii_lowercase();
+        let call = self.by_line.get(&(file, line, verb))?;
+        let caller = call.caller.as_deref()?;
+        let chained = enclosing_groups(caller, &self.opened, &self.parents);
+        let local = call.receiver.as_deref().and_then(|receiver| prefix_of(&self.groups, file, caller, names::root(receiver), 0));
+        match (chained, local) {
+            (Some(chained), Some(local)) => Some(join_paths(&chained, &local)),
+            (chained, local) => chained.or(local),
+        }
+    }
 }
 
 static OPENS_A_CONNECTION: &[&str] = &["EventSource", "WebSocket"];
@@ -2081,10 +2209,16 @@ pub fn derive(
         .map(|registration| (registration.file, registration.line))
         .chain(nodes.iter().filter(|node| node.callback_of.is_some()).map(|node| (node.file, node.span.line)))
         .collect();
-    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
+    let opened = opened_groups(nodes, calls);
+    let by_line = if groups.is_empty() && opened.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
     if !groups.is_empty() {
         handed_to_functions(&mut groups, calls, nodes);
     }
+    let parents: HashMap<&str, Option<&str>> = match opened.is_empty() {
+        true => HashMap::default(),
+        false => nodes.iter().map(|node| (node.id.as_str(), node.parent.as_deref())).collect(),
+    };
+    let gathering = Gathering { by_line, groups, opened, parents };
     lap("route groups");
     let prefix_for = |registrar: &str, file: u32, unit: Option<&str>| -> Option<String> {
         let of_the_file = (registered_on_a_router_like(registrar) || mounts.children.contains(&file))
@@ -2106,16 +2240,40 @@ pub fn derive(
         if !matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
             continue;
         }
-        for decorator in &node.decorators {
-            if let Some(("http", _, Some(path))) = decorator_entry(decorator) {
-                base_paths.insert(node.id.as_str(), owner_path(&path, &node.name));
-                break;
-            }
+        if let Some(path) = declared_base(node) {
+            base_paths.insert(node.id.as_str(), owner_path(&path, &node.name));
         }
         if !base_paths.contains_key(node.id.as_str())
             && let Some(base) = exposed_under(node, &written_in)
         {
             base_paths.insert(node.id.as_str(), base);
+        }
+    }
+    let mut parent_named: HashMap<&str, &str> = HashMap::default();
+    for fact in type_references.iter().filter(|fact| matches!(fact.kind, EdgeKind::Extends)) {
+        parent_named.entry(fact.source.as_str()).or_insert(fact.name.as_str());
+    }
+    if !parent_named.is_empty() {
+        let mut classes_named: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+        for node in nodes.iter().filter(|node| node.kind == NodeKind::Class) {
+            classes_named.entry(names::leaf(&node.name)).or_default().push(node);
+        }
+        let own: HashSet<&str> = base_paths.keys().copied().collect();
+        for node in nodes.iter().filter(|node| node.kind == NodeKind::Class && !own.contains(node.id.as_str())) {
+            let mut current = node.id.as_str();
+            for _ in 0..8 {
+                let Some(parent) = parent_named.get(current).and_then(|named| match classes_named.get(names::leaf(named)).map(Vec::as_slice) {
+                    Some([only]) => Some(*only),
+                    _ => None,
+                }) else {
+                    break;
+                };
+                if let Some(path) = declared_base(parent) {
+                    base_paths.insert(node.id.as_str(), owner_path(&path, &node.name));
+                    break;
+                }
+                current = parent.id.as_str();
+            }
         }
     }
 
@@ -2170,11 +2328,7 @@ pub fn derive(
                         None
                     },
                     path: if kind == "http" {
-                        let grouped = by_line
-                            .get(&(node.file, node.span.line, names::leaf(registrar).to_ascii_lowercase()))
-                            .and_then(|call| {
-                                prefix_of(&groups, node.file, call.caller.as_deref()?, names::root(call.receiver.as_deref()?), 0)
-                            });
+                        let grouped = gathering.prefix_at(node.file, node.span.line, registrar);
                         let base = match (prefix_for(registrar, node.file, node.parent.as_deref()), grouped) {
                             (Some(base), Some(grouped)) => Some(join_paths(&base, &grouped)),
                             (base, None) => base,
@@ -2261,19 +2415,30 @@ pub fn derive(
                 if kind == "http" && path.is_none() {
                     continue;
                 }
-                entry_points.push(EntryPoint {
-                    id: format!("entry:{}:{}:{}", node.id, decorator.name, position),
-                    kind,
-                    name: path.clone().unwrap_or_else(|| node.name.clone()),
-                    method: Some(method),
-                    path,
-                    handler: node.id.clone(),
-                    file: node.file,
-                    line: node.span.line,
-                    guards: Vec::new(),
-                    registrar: decorator.name.clone(),
-                    unshipped: None,
-                });
+                let path = path.map(|held| held.replace("[action]", &action_name(node)));
+                let listed = declared_methods(decorator);
+                let methods = match kind == "http" && listed.len() > 1 && listed.contains(&method) {
+                    true => listed,
+                    false => vec![method],
+                };
+                for (offset, method) in methods.into_iter().enumerate() {
+                    entry_points.push(EntryPoint {
+                        id: match offset {
+                            0 => format!("entry:{}:{}:{}", node.id, decorator.name, position),
+                            _ => format!("entry:{}:{}:{}:{method}", node.id, decorator.name, position),
+                        },
+                        kind,
+                        name: path.clone().unwrap_or_else(|| node.name.clone()),
+                        method: Some(method),
+                        path: path.clone(),
+                        handler: node.id.clone(),
+                        file: node.file,
+                        line: node.span.line,
+                        guards: Vec::new(),
+                        registrar: decorator.name.clone(),
+                        unshipped: None,
+                    });
+                }
             }
         }
     }
@@ -2426,18 +2591,29 @@ pub fn derive(
             _ => {}
         }
     }
+    let mut imported_classes: HashMap<(u32, &str), &str> = HashMap::default();
+    for import in imports.iter().filter(|import| import.specifier.contains('\\')) {
+        for held in &import.names {
+            imported_classes.insert((import.file, held.local.as_str()), import.specifier.as_str());
+        }
+    }
+    let owner_type = |file: u32, owner: &str, action: Option<&str>| -> Option<&IndexNode> {
+        let written = owner;
+        let owner = names::leaf(owner);
+        let named = || nodes.iter().filter(|node| node.kind.is_type() && names::leaf(&node.name) == owner);
+        let acts = |node: &&IndexNode| {
+            action.is_none_or(|action| members.get(node.id.as_str()).is_some_and(|held| held.iter().any(|member| member.name == action)))
+        };
+        match imported_classes.get(&(file, owner)) {
+            Some(specifier) => named().find(|node| crate::namespaced::names_the_file(specifier, &files[node.file as usize])),
+            None => named().find(|node| node.name == written && acts(node)).or_else(|| named().find(acts)),
+        }
+    };
     let acted: HashMap<(u32, u32), String> = acting
         .into_iter()
         .filter_map(|(at, action)| {
             let owner = owning.get(&at)?;
-            let owner = names::leaf(owner);
-            let held = members.get(
-                nodes
-                    .iter()
-                    .find(|node| node.kind.is_type() && names::leaf(&node.name) == owner)?
-                    .id
-                    .as_str(),
-            )?;
+            let held = members.get(owner_type(at.0, owner, Some(action))?.id.as_str())?;
             let member = held.iter().find(|member| member.name == action)?;
             Some((at, member.id.clone()))
         })
@@ -2469,6 +2645,10 @@ pub fn derive(
         let Some(handler) = acted
             .get(&(registration.file, registration.line))
             .cloned()
+            .or_else(|| imported_classes
+            .contains_key(&(registration.file, registration.handler.as_str()))
+            .then(|| owner_type(registration.file, &registration.handler, None).map(|node| node.id.clone()))
+            .flatten())
             .or_else(|| known
             .contains(registration.handler.as_str())
             .then(|| registration.handler.clone()))
@@ -2504,7 +2684,7 @@ pub fn derive(
         }
         let verb = names::leaf(&registration.registrar);
         let (label_method, path) = split_label(&label);
-        let path = match grouped_under(registration, &by_line, &groups) {
+        let path = match gathering.prefix_at(registration.file, registration.line, &registration.registrar) {
             Some(prefix) => join_paths(&prefix, &path),
             None => path,
         };
@@ -2515,6 +2695,35 @@ pub fn derive(
             Some(base) => join_paths(&base, &path),
             None => path,
         };
+        if kind == "http"
+            && let Some(operations) = resource_operations(verb)
+            && let Some(owned) = members.get(handler.as_str())
+        {
+            let narrowing = restricted_to(calls, registration.file, registration.line);
+            for (action, method, suffix) in operations {
+                let allowed = match &narrowing {
+                    Some((true, listed)) => listed.iter().any(|held| held == action),
+                    Some((false, listed)) => !listed.iter().any(|held| held == action),
+                    None => true,
+                };
+                let Some(member) = owned.iter().find(|member| member.name == *action).filter(|_| allowed) else { continue };
+                let at = resource_path(&path, suffix);
+                entry_points.push(EntryPoint {
+                    id: format!("entry:{}:{method}:{at}", member.id),
+                    kind,
+                    name: at.clone(),
+                    method: Some((*method).to_string()),
+                    path: Some(at),
+                    handler: member.id.clone(),
+                    file: registration.file,
+                    line: registration.line,
+                    guards: Vec::new(),
+                    registrar: registration.registrar.clone(),
+                    unshipped: None,
+                });
+            }
+            continue;
+        }
         if kind == "http" && handler == files[registration.file as usize] {
             let stands_for_itself = entry_points.iter().any(|entry| {
                 entry.kind == "http"
@@ -2548,7 +2757,7 @@ pub fn derive(
                     }),
                 false => None,
             },
-            path: if kind == "http" { Some(path) } else { None },
+            path: if kind == "http" { Some(if path.is_empty() { "/".to_string() } else { path }) } else { None },
             handler,
             file: registration.file,
             line: registration.line,
