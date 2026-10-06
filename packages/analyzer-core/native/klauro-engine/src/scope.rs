@@ -1,6 +1,8 @@
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 mod app_bundles;
+mod installers;
+mod primary;
 
 use serde::Serialize;
 
@@ -910,47 +912,6 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
     None
 }
 
-static INSTALLER_SUFFIXES: &[&str] = &[".bat", ".cmd", ".iss", ".nsi", ".ps1", ".sh"];
-
-fn installer(
-    files: &Files,
-    path: &str,
-    calls: &[CallFact],
-    file: u32,
-) -> Option<Candidate> {
-    let basename = path.rsplit('/').next()?.to_ascii_lowercase();
-    if !basename.contains("install") || crate::paths::is_continuous_integration(path) {
-        return None;
-    }
-    if !INSTALLER_SUFFIXES
-        .iter()
-        .any(|suffix| basename.ends_with(suffix))
-    {
-        return None;
-    }
-    let root = directory_of(path).to_string();
-    let mut ships: Vec<String> = calls
-        .iter()
-        .filter(|call| call.file == file)
-        .flat_map(|call| call.literals.iter())
-        .map(|literal| join(&root, literal))
-        .filter(|candidate| files.holds(candidate) && !candidate.is_empty())
-        .collect();
-    ships.sort();
-    ships.dedup();
-    Some(Candidate {
-        name: display_name(&root),
-        root,
-        declarations: vec![Declaration {
-            declares: Declares::Ship,
-            kind: "installer",
-            at: path.to_string(),
-        }],
-        ships,
-        runs: None,
-    })
-}
-
 fn apple_application(files: &Files, path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     let bundle = directory_of(path);
     if crate::paths::is_test(path) || !runnable.contains(bundle) {
@@ -1062,7 +1023,7 @@ pub fn derive(
     let index = Files::build(files, nodes);
     let runnable = runnable_roots(files, entry_points);
     let mut candidates: Vec<Candidate> = Vec::new();
-    let mut scripted: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut scripted: Vec<(usize, installers::Evidence)> = Vec::new();
 
     for (at, path) in index.paths.iter().enumerate() {
         if !kinds.get(at).copied().unwrap_or(false) {
@@ -1098,8 +1059,8 @@ pub fn derive(
             candidates.extend(apple_application(&index, path, &runnable));
             continue;
         }
-        if let Some(found) = installer(&index, path, calls, at as u32) {
-            scripted.push((candidates.len(), named_by_script(calls, at as u32)));
+        if let Some((found, evidence)) = installers::detect(&index, path, calls, at as u32) {
+            scripted.push((candidates.len(), evidence));
             candidates.push(found);
             continue;
         }
@@ -1154,24 +1115,26 @@ pub fn derive(
         }
     }
 
-    for (at, named) in scripted {
-        let homes: Vec<String> = named
-            .iter()
-            .filter_map(|word| {
-                let mut held = candidates.iter().filter(|other| {
-                    !other.root.is_empty()
-                        && other.declarations.iter().any(|found| found.declares == Declares::Identity)
-                        && (other.name == *word || other.root.rsplit('/').next() == Some(word.as_str()))
-                });
-                let first = held.next()?;
-                held.next().is_none().then(|| first.root.clone())
-            })
-            .collect();
-        candidates[at].ships.extend(homes);
+    let mut unfounded: HashSet<usize> = HashSet::default();
+    let mut produced: HashMap<String, Vec<String>> = HashMap::default();
+    for (at, evidence) in scripted {
+        let built = installers::units_built(&index, &candidates, &evidence);
+        candidates[at].ships.extend(built);
+        if candidates[at].ships.is_empty() && !evidence.by_format {
+            unfounded.insert(at);
+            continue;
+        }
+        produced.entry(candidates[at].root.clone()).or_default().extend(evidence.produced);
     }
+    let mut position = 0;
+    candidates.retain(|_| {
+        position += 1;
+        !unfounded.contains(&(position - 1))
+    });
     separate_containers(&mut candidates);
-    let mut scope = consolidate(candidates, &index, nodes, edges, entry_points, code, calls);
-    ship_the_programs_containers_run(&mut scope.deployables, &index);
+    let links = primary::Links { files: &index, edges, calls };
+    let mut scope = consolidate(candidates, &index, nodes, edges, entry_points, code, calls, &links, &produced);
+    ship_the_programs_containers_run(&mut scope.deployables, &index, &links);
     scope.bundled_entries = bundler_builds
         .iter()
         .filter_map(|build| {
@@ -1212,33 +1175,7 @@ fn follow_a_relative_import(files: &[String], nodes: &[IndexNode], imports: &[Im
     Some(normalize(&format!("{}/{}", directory_of(target), specifier)))
 }
 
-fn named_by_script(calls: &[CallFact], file: u32) -> Vec<String> {
-    let mut named: Vec<String> = calls
-        .iter()
-        .filter(|call| call.file == file)
-        .flat_map(|call| call.literals.iter())
-        .filter(|literal| !literal.is_empty() && !literal.contains(['/', '=', ' ', '$']))
-        .cloned()
-        .collect();
-    named.sort();
-    named.dedup();
-    named
-}
-
-fn stem_of_the_rest(group: &[usize], deployables: &[Deployable]) -> Option<usize> {
-    group.iter().copied().find(|candidate| {
-        let stem = deployables[*candidate].name.as_str();
-        group.len() > 1
-            && group.iter().filter(|other| **other != *candidate).all(|other| {
-                deployables[*other]
-                    .name
-                    .strip_prefix(stem)
-                    .is_some_and(|rest| rest.starts_with(['-', '_', '.']))
-            })
-    })
-}
-
-fn fold_into(deployables: &mut [Deployable], group: &[usize], primary: usize) {
+fn bundle_under(deployables: &mut [Deployable], group: &[usize], primary: usize) {
     let owner_id = deployables[primary].id.clone();
     deployables[primary].bundled_into = None;
     for member in group.iter().copied().filter(|member| *member != primary) {
@@ -1271,7 +1208,7 @@ fn programs_of_a_container(files: &Files, path: &str) -> Vec<String> {
     programs
 }
 
-fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &Files) {
+fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &Files, links: &primary::Links) {
     let containers: Vec<(String, Vec<String>, Option<String>)> = deployables
         .iter()
         .flat_map(|unit| {
@@ -1307,9 +1244,9 @@ fn ship_the_programs_containers_run(deployables: &mut [Deployable], files: &File
         let entry = containers.iter().find(|(at, _, _)| at == artifact).and_then(|(_, _, program)| program.as_deref());
         let primary = entry
             .and_then(|program| group.iter().copied().find(|unit| deployables[*unit].name == program))
-            .or_else(|| stem_of_the_rest(&group, deployables));
+            .or_else(|| primary::leader(links, &group, deployables, &[]));
         if let Some(primary) = primary {
-            fold_into(deployables, &group, primary);
+            bundle_under(deployables, &group, primary);
         }
     }
 }
@@ -1389,6 +1326,8 @@ fn consolidate(
     entry_points: &[EntryPoint],
     code: &[bool],
     calls: &[CallFact],
+    links: &primary::Links,
+    produced: &HashMap<String, Vec<String>>,
 ) -> Scope {
     candidates.sort_by(|left, right| {
         right
@@ -1515,13 +1454,14 @@ fn consolidate(
         let group: Vec<usize> = (0..deployables.len())
             .filter(|unit| deployables[*unit].bundled_into.as_deref() == Some(artifact_id.as_str()))
             .collect();
-        if let Some(primary) = stem_of_the_rest(&group, &deployables) {
+        let named = produced.get(&deployables[artifact].root).map(Vec::as_slice).unwrap_or(&[]);
+        if let Some(primary) = primary::leader(links, &group, &deployables, named) {
             let artifact_declarations: Vec<Declaration> =
                 deployables[artifact].declarations.iter().filter(|found| found.declares == Declares::Ship).cloned().collect();
             deployables[primary].declarations.extend(artifact_declarations);
             deployables[primary].category = Declares::Ship.category();
             deployables[primary].shipped = true;
-            fold_into(&mut deployables, &group, primary);
+            bundle_under(&mut deployables, &group, primary);
             let folded: Vec<String> = group.iter().map(|unit| deployables[*unit].id.clone()).collect();
             deployables[artifact].members.retain(|member| !folded.contains(member));
         }

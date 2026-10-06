@@ -1,0 +1,9 @@
+placing	cp,install,ln,mv,rsync,ditto,copy,xcopy,robocopy,Copy-Item,Move-Item
+system	/usr/,/opt/,/bin/,/sbin/,/etc/,/Applications,/Library,~/,$HOME,${HOME},$PREFIX,${PREFIX},$DESTDIR,${DESTDIR},%ProgramFiles%,%LOCALAPPDATA%,%APPDATA%,$env:ProgramFiles,$env:LOCALAPPDATA
+packaging	tar,zip,7z,7za,pkgbuild,productbuild,hdiutil,create-dmg,makensis,iscc,dpkg-deb,rpmbuild,fpm,makeself,Compress-Archive,candle,light,wix
+archive	.tar,.tar.gz,.tgz,.tar.xz,.tar.bz2,.zip,.7z,.dmg,.pkg,.deb,.rpm,.msi,.exe,.AppImage,.nupkg,.run
+format	iss,nsi
+package_option	-p,--package,-w,--workspace,--filter,-F,--project
+spawn	Command::new,Popen,subprocess.run,subprocess.call,child_process.spawn,child_process.exec,child_process.execFile,spawn,execFile,exec.Command,Process.Start,ProcessBuilder
+script	sh,bash,zsh,bat,cmd,ps1
+builder	cargo,npm,yarn,pnpm,lerna,nx,turbo,dotnet,gradle,gradlew,mvn,go,make,bun
