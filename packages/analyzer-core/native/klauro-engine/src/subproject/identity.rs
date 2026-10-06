@@ -4,19 +4,16 @@ use rayon::prelude::*;
 
 use crate::comprehend::{Capability, Product};
 use crate::entry_exit::{EntryPoint, ExitPoint};
-use crate::paths::{contains, file_of, is_scaffolding, is_test};
+use crate::paths::{contains, file_of, is_test};
 use crate::subproject::{Partition, SubProject};
 
 const SERVING_KINDS: &[&str] = &["http", "rpc", "graphql", "tool", "cli"];
 const BACKGROUND_KINDS: &[&str] = &["schedule", "message", "event", "background", "lifecycle"];
-const PRESENTATION_FILES: &[&str] = &["tsx", "jsx", "vue", "svelte", "html", "astro", "css", "scss", "xaml", "storyboard", "xib"];
 const OUTWARD_EXITS: &[&str] = &["api", "network", "message"];
 const PERSISTING_EXITS: &[&str] = &["database", "file"];
-const GENERIC_SEGMENTS: &[&str] = &["src", "lib", "apps", "app", "packages", "crates", "native"];
 const SAMPLES_TOLD: usize = 5;
 const SET_ASIDE_SHARE: f64 = 0.7;
 const DOMINANT: f64 = 0.5;
-const INTERFACE_SHARE: f64 = 1.0 / 3.0;
 const RELAYED_PER_SURFACE: usize = 2;
 const IPC_SHARE: f64 = 0.25;
 const CAPABILITIES_TOLD: usize = 8;
@@ -39,10 +36,8 @@ struct Tally<'a> {
     exits: BTreeMap<&'static str, usize>,
     reaches: BTreeMap<&'static str, Vec<&'a str>>,
     languages: BTreeMap<&'static str, usize>,
-    presentation_files: usize,
-    code_files: usize,
     files_seen: usize,
-    harness_files: usize,
+    test_files: usize,
     screen_events: usize,
     shipped_elsewhere: bool,
 }
@@ -64,8 +59,8 @@ impl Tally<'_> {
         kinds.iter().map(|kind| self.exits.get(kind).copied().unwrap_or(0)).sum()
     }
 
-    fn is_harness(&self) -> bool {
-        self.files_seen > 0 && share(self.harness_files, self.files_seen) >= SET_ASIDE_SHARE
+    fn is_made_of_tests(&self) -> bool {
+        self.files_seen > 0 && share(self.test_files, self.files_seen) >= SET_ASIDE_SHARE
     }
 
     fn leading_language(&self) -> Option<&'static str> {
@@ -85,8 +80,8 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
     if entered > 0 && share(tally.set_aside, entered) >= SET_ASIDE_SHARE {
         return ("tooling", format!("{} of its {entered} entry points are set aside as programs nothing ships", tally.set_aside));
     }
-    if tally.is_harness() {
-        return ("tooling", format!("{} of its {} files are tests or test harness code and nothing in it serves anyone", tally.harness_files, tally.files_seen));
+    if tally.is_made_of_tests() {
+        return ("tooling", format!("{} of its {} files are tests and nothing in it serves anyone", tally.test_files, tally.files_seen));
     }
     if project.declared_by == "repository-residue" {
         return ("tooling", "it holds the files that sit outside every declared part".to_string());
@@ -94,9 +89,6 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
     let screens = tally.of_kinds(&["ui"]) + tally.screen_events;
     if screens * 2 > entered {
         return ("presentation", format!("{screens} of its {entered} entry points are screens or reactions to what someone does on one"));
-    }
-    if tally.presentation_files > 0 && share(tally.presentation_files, tally.code_files) >= INTERFACE_SHARE && tally.of_kinds(SERVING_KINDS) == 0 {
-        return ("presentation", format!("{} of its {} source files are markup, style or component files", tally.presentation_files, tally.code_files));
     }
     let serving = tally.of_kinds(SERVING_KINDS);
     let commands = tally.of_kinds(&["ipc"]);
@@ -192,10 +184,7 @@ fn plain_name(project: &SubProject, repository: &str) -> String {
         true => root,
         false => package.to_string(),
     };
-    let mut words: Vec<String> = base.split(|held: char| !held.is_alphanumeric()).filter(|word| !word.is_empty()).map(str::to_ascii_lowercase).collect();
-    while words.len() > 1 && GENERIC_SEGMENTS.contains(&words[0].as_str()) {
-        words.remove(0);
-    }
+    let words: Vec<String> = base.split(|held: char| !held.is_alphanumeric()).filter(|word| !word.is_empty()).map(str::to_ascii_lowercase).collect();
     let mut named: Vec<String> = words
         .iter()
         .map(|word| match word.len() <= 3 && word.chars().all(|held| held.is_ascii_alphabetic() && !"aeiouy".contains(held)) {
@@ -219,8 +208,8 @@ fn capitalised(word: &str) -> String {
 
 fn plain_summary(role: &str, tally: &Tally, project: &SubProject) -> String {
     let language = tally.leading_language().map(|language| format!("{} ", capitalised(language))).unwrap_or_default();
-    if tally.is_harness() {
-        return format!("{language}test and harness code of {} files", tally.files_seen);
+    if tally.is_made_of_tests() {
+        return format!("{language}test code of {} files", tally.files_seen);
     }
     let surfaces = surfaces_told(tally);
     match surfaces.is_empty() {
@@ -297,19 +286,12 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
     for (path, language) in &facts.files {
         let Some(at) = deepest(path) else { continue };
         tallies[at].files_seen += 1;
-        if is_scaffolding(path) {
-            tallies[at].harness_files += 1;
-        }
         if is_test(path) {
+            tallies[at].test_files += 1;
             continue;
         }
         if let Some(language) = language {
             *tallies[at].languages.entry(language).or_default() += 1;
-            tallies[at].code_files += 1;
-        }
-        let extension = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
-        if PRESENTATION_FILES.contains(&extension.as_str()) {
-            tallies[at].presentation_files += 1;
         }
     }
     let path_of = |file: u32| facts.files.get(file as usize).map(|(path, _)| *path);
@@ -436,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_name_drops_the_repository_prefix_and_reads_plainly() {
-        assert_eq!(plain_name(&project("src-tauri", "agent-desktop", "deployable"), "agent-desktop"), "Tauri");
+        assert_eq!(plain_name(&project("src-tauri", "agent-desktop", "deployable"), "agent-desktop"), "SRC tauri");
         assert_eq!(plain_name(&project("packages/remote-client", "@agent-desktop/remote-client", "library"), "agent-desktop"), "Remote client");
         assert_eq!(plain_name(&project("apps/mcp-server", "mcp-server", "deployable"), "klauro"), "MCP server");
     }
@@ -464,21 +446,21 @@ mod tests {
     fn a_part_made_only_of_test_files_is_tooling_with_a_summary_that_says_so() {
         let mut held = tally(&[("export", 3)]);
         held.files_seen = 16;
-        held.harness_files = 16;
+        held.test_files = 16;
         let mut remote = project("e2e/remote", "remote-e2e", "library");
         remote.files = 16;
         remote.consumed_by = vec!["subproject:app".to_string()];
         let (role, basis) = role_of(&remote, &held);
         assert_eq!(role, "tooling");
         assert!(basis.contains("16 of its 16 files"), "{basis}");
-        assert_eq!(plain_summary(role, &held, &remote), "test and harness code of 16 files");
+        assert_eq!(plain_summary(role, &held, &remote), "test code of 16 files");
     }
 
     #[test]
-    fn a_part_with_mostly_product_files_is_not_a_harness() {
+    fn a_part_with_mostly_product_files_is_not_made_of_tests() {
         let mut held = tally(&[("export", 3)]);
         held.files_seen = 16;
-        held.harness_files = 4;
+        held.test_files = 4;
         let mut library = project("packages/sdk", "sdk", "library");
         library.consumed_by = vec!["subproject:app".to_string()];
         assert_eq!(role_of(&library, &held).0, "library");
@@ -509,14 +491,6 @@ mod tests {
         let mut residue = project("", "repository", "library");
         residue.declared_by = "repository-residue";
         assert_eq!(role_of(&residue, &tally(&[])).0, "tooling");
-    }
-
-    #[test]
-    fn a_part_made_mostly_of_interface_files_with_nothing_served_is_presentation() {
-        let mut held = tally(&[("event", 29), ("schedule", 3)]);
-        held.presentation_files = 33;
-        held.code_files = 72;
-        assert_eq!(role_of(&project("mobile", "mobile", "deployable"), &held).0, "presentation");
     }
 
     #[test]

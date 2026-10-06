@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 use crate::crossings::Crossing;
 use crate::model::{CallFact, ImportFact, IndexNode, LocalBinding};
 use crate::names;
-use crate::paths::is_scaffolding;
+use crate::paths::is_test;
 use crate::rules::{queue_calls, QueueRole};
 
 const MOST_PER_QUEUE: usize = 24;
@@ -245,7 +245,7 @@ pub fn derive(files: &[String], nodes: &[IndexNode], calls: &[CallFact], locals:
     let mut receiving: HashMap<(u32, &str), Vec<Site>> = HashMap::default();
     for call in calls {
         let (Some(unit), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref()) else { continue };
-        if files.get(call.file as usize).is_none_or(|path| is_scaffolding(path)) {
+        if files.get(call.file as usize).is_none_or(|path| is_test(path)) {
             continue;
         }
         let verb = names::leaf(&call.callee);

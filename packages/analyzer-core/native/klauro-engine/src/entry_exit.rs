@@ -1975,8 +1975,6 @@ fn lets_anyone_in(node: &IndexNode) -> bool {
     })
 }
 
-static STANDS_IN_FOR_A_PROGRAM: &[&str] = &["dummy", "fake", "mock", "stub"];
-
 fn program_name(path: &str) -> String {
     let stem = crate::paths::basename(path).split('.').next().unwrap_or_default();
     stem.to_ascii_lowercase().replace('_', "-")
@@ -1995,7 +1993,7 @@ fn set_aside_test_programs(entry_points: &mut [EntryPoint], calls: &[CallFact], 
         return;
     }
     for call in calls {
-        let from_a_test = files.get(call.file as usize).is_some_and(|path| is_test(path) || crate::paths::is_not_shipped(path));
+        let from_a_test = files.get(call.file as usize).is_some_and(|path| is_test(path));
         for literal in &call.literals {
             let spoken = literal.to_ascii_lowercase().replace('_', "-");
             for (name, (tests, product)) in named.iter_mut() {
@@ -2011,13 +2009,11 @@ fn set_aside_test_programs(entry_points: &mut [EntryPoint], calls: &[CallFact], 
     for entry in entry_points.iter_mut().filter(|entry| entry.kind == "lifecycle" && entry.unshipped.is_none()) {
         let Some(path) = files.get(entry.file as usize) else { continue };
         let Some((tests, product)) = named.get(&program_name(path)).copied() else { continue };
-        let name = program_name(path);
-        let says_so = STANDS_IN_FOR_A_PROGRAM.iter().any(|word| name.contains(word));
-        if product == 0 && (tests > 0 || says_so) {
+        if product == 0 && tests > 0 {
             entry.unshipped = Some(Unshipped {
                 role: "tooling",
                 basis: "test-only-reach",
-                evidence: format!("{path} is started only by tests ({tests} references) and by no shipped code, or says so by name"),
+                evidence: format!("{path} is started only by tests ({tests} references) and by no shipped code"),
             });
         }
     }

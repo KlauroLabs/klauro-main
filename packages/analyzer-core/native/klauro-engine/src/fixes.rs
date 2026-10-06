@@ -1,6 +1,6 @@
-const FIX_WORDS: &[&str] = &["fix", "fixes", "fixed", "fixing", "bugfix", "bugfixes", "hotfix", "hotfixes", "bug", "bugs", "regression", "regressions", "revert", "reverts", "reverted", "reverting"];
 const CLOSING_WORDS: &[&str] = &["close", "closes", "closed", "resolve", "resolves", "resolved"];
 const FIX_TYPES: &[&str] = &["fix", "bugfix", "hotfix", "revert"];
+const GIT_REVERT_SUBJECT: &str = "revert \"";
 const OTHER_TYPES: &[&str] = &["feat", "feature", "docs", "doc", "test", "tests", "chore", "refactor", "style", "ci", "build", "perf", "deps", "release", "wip"];
 const DOCUMENTATION: &[&str] = &["md", "mdx", "rst", "txt", "adoc", "markdown"];
 const CONFIGURATION: &[&str] = &["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "lock", "env", "properties", "editorconfig", "gitignore", "gitattributes", "npmrc", "prettierrc", "eslintrc"];
@@ -24,11 +24,10 @@ pub fn is_fix(subject: &str) -> bool {
         }
     }
     let lowered = subject.to_ascii_lowercase();
-    let words: Vec<&str> = lowered.split(|letter: char| !letter.is_ascii_alphanumeric() && letter != '#').filter(|word| !word.is_empty()).collect();
-    let narrates = |at: usize| at == 0 || matches!(words[at - 1], "and" | "also" | "then" | "bug" | "bugs");
-    if words.iter().enumerate().any(|(at, word)| FIX_WORDS.contains(word) && (*word != "fixed" || narrates(at))) {
+    if lowered.starts_with(GIT_REVERT_SUBJECT) {
         return true;
     }
+    let words: Vec<&str> = lowered.split(|letter: char| !letter.is_ascii_alphanumeric() && letter != '#').filter(|word| !word.is_empty()).collect();
     words.windows(2).any(|pair| CLOSING_WORDS.contains(&pair[0]) && pair[1].starts_with('#') && pair[1][1..].chars().all(|digit| digit.is_ascii_digit()) && pair[1].len() > 1)
 }
 
@@ -56,15 +55,11 @@ mod tests {
     #[test]
     fn subjects_that_say_they_fix_something_are_fixes() {
         for subject in [
-            "Fix crash when the queue is empty",
             "fix(parser): handle trailing commas",
             "Bugfix: stale cache entry",
-            "hotfix for login",
             "Revert \"Add retry\"",
             "Resolve #1234",
             "Handle null body, closes #88",
-            "Fixed the off-by-one",
-            "regression in sorting",
         ] {
             assert!(is_fix(subject), "{subject}");
         }
@@ -82,6 +77,13 @@ mod tests {
             "Merge branch 'main'",
             "Update the issue template",
         ] {
+            assert!(!is_fix(subject), "{subject}");
+        }
+    }
+
+    #[test]
+    fn free_prose_is_not_read_for_words_that_sound_like_fixing() {
+        for subject in ["Fix crash when the queue is empty", "regression in sorting", "Fixed the off-by-one"] {
             assert!(!is_fix(subject), "{subject}");
         }
     }
