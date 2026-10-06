@@ -40,6 +40,7 @@ The customer path is the published CLI/MCP plus hosted analyzer. Source-checkout
 - `docs/cas/CAS_ROADMAP.md` contains only active priorities and implemented foundations; `docs/PRODUCT-READINESS.md` decides completion.
 - `docs/PROPOSAL-ANALYSIS-TRUST-AND-REVIEW.md` is a proposal (2026-10-04): open ends in flow standing, resolver kind on edges, failed AI asks fail the run, a route query and rename-safe comparison. It explicitly adds no validation passes. Nothing in it is built.
 - `docs/PROPOSAL-ACCURACY-AND-DEPTH-FROM-THE-FIELD.md` is a proposal (2026-10-04): improving speed, accuracy, depth and breadth of the engine's own output, with offline answer-key testing to find resolver misses. Nothing in it is built.
+- `docs/PROPOSAL-JOURNEYS-AS-FLOW-CHAINS.md` is a proposal (2026-10-06): amend the specification so entry-point flows are named as flows and journeys as a query-time projection that chains flows across stored crossings, matching the code. The specification text is unchanged until the owner decides.
 
 ## Evidence and historical documents
 
