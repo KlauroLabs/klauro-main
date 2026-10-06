@@ -1,12 +1,43 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 static HELD: OnceLock<ureq::Agent> = OnceLock::new();
 static ASKED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn asked() -> usize {
     ASKED.load(Ordering::Relaxed)
+}
+
+struct Occupancy {
+    now: usize,
+    peak: usize,
+    since: Option<Instant>,
+    first: Option<Instant>,
+    area: f64,
+}
+
+static OCCUPIED: Mutex<Occupancy> = Mutex::new(Occupancy { now: 0, peak: 0, since: None, first: None, area: 0.0 });
+
+fn occupied(by: isize) {
+    let Ok(mut held) = OCCUPIED.lock() else { return };
+    let now = Instant::now();
+    if let Some(since) = held.since {
+        held.area += held.now as f64 * now.duration_since(since).as_secs_f64();
+    }
+    held.first.get_or_insert(now);
+    held.since = Some(now);
+    held.now = held.now.saturating_add_signed(by);
+    held.peak = held.peak.max(held.now);
+}
+
+pub fn concurrency() -> (f64, usize) {
+    let Ok(held) = OCCUPIED.lock() else { return (0.0, 0) };
+    let span = match (held.first, held.since) {
+        (Some(first), Some(last)) => last.duration_since(first).as_secs_f64(),
+        _ => 0.0,
+    };
+    (if span > 0.0 { held.area / span } else { 0.0 }, held.peak)
 }
 
 fn agent() -> &'static ureq::Agent {
@@ -46,11 +77,13 @@ pub fn asking(endpoint: &str, key: &str, request: &str) -> Answer {
     if telling {
         eprintln!("    reach {at} start {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000);
     }
+    occupied(1);
     let answered = agent()
         .post(endpoint)
         .header("Authorization", &format!("Bearer {key}"))
         .header("Content-Type", "application/json")
         .send(request);
+    occupied(-1);
     if telling {
         eprintln!("    reach {at} done  {:?} after {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000, started.elapsed());
     }

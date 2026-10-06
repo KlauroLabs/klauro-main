@@ -69,6 +69,7 @@ mod shared;
 mod service_catalog;
 mod services;
 mod tables;
+mod told_paths;
 mod source_rewrite;
 mod steps;
 mod dataset;

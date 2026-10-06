@@ -37,6 +37,19 @@ pub fn asking<R: Send>(work: impl FnOnce() -> R + Send) -> R {
     ASKING.install(work)
 }
 
+const ASKING_BESIDE: usize = 6;
+
+static ASKING_BESIDE_THE_REST: std::sync::LazyLock<rayon::ThreadPool> = std::sync::LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(ASKING_BESIDE)
+        .build()
+        .expect("a pool of threads to ask on")
+});
+
+pub fn asking_beside_the_rest<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    ASKING_BESIDE_THE_REST.install(work)
+}
+
 static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
 static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
@@ -365,7 +378,7 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
     }
-    asking(|| {
+    asking_beside_the_rest(|| {
         listed
             .par_chunks(PATHS_PER_CALL)
             .map(|chunk| tell_a_batch(spoken_for, chunk, true))
@@ -1425,7 +1438,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                     crate::reach::Answer::Missed,
                     crate::reach::Answer::Held,
                 ),
-                None => ask(&request),
+                None => ask(&request, of, most),
             };
             match answered {
                 crate::reach::Answer::Held(text) => {
@@ -1483,7 +1496,7 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
     String::from_utf8(answered.stdout).ok()
 }
 
-fn ask(request: &str) -> crate::reach::Answer {
+fn ask(request: &str, of: &str, most: u32) -> crate::reach::Answer {
     let started = std::time::Instant::now();
     let answer = match (key(), addressed()) {
         (Some(key), _) => crate::reach::asking(&endpoint(), &key, request),
@@ -1493,12 +1506,8 @@ fn ask(request: &str) -> crate::reach::Answer {
     if let crate::reach::Answer::Held(held) = &answer {
         measured(held, started.elapsed());
         if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
-            let kind = held
-                .split('"')
-                .find(|word| word.len() > 2 && word.chars().all(|letter| letter.is_ascii_lowercase()))
-                .unwrap_or("?");
             eprintln!(
-                "ask at {:>7}ms took {:>6}ms in {:>6} out {:>6} {kind}",
+                "ask at {:>7}ms took {:>6}ms in {:>6} out {:>6} {of}/{most}",
                 (started - *BEGAN).as_millis(),
                 started.elapsed().as_millis(),
                 request.len(),

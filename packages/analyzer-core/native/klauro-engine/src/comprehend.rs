@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use rayon::prelude::*;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +85,10 @@ pub struct Field {
 
 impl From<Column> for Field {
     fn from(column: Column) -> Self {
-        Field { name: column.named, declared_as: column.declared_as }
+        Field {
+            name: column.named,
+            declared_as: column.declared_as,
+        }
     }
 }
 
@@ -162,6 +165,9 @@ pub struct Capability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounding: Option<crate::author::Grounding>,
     pub standing: &'static str,
+    pub level: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub touches: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,14 +208,28 @@ pub struct Comprehension {
 }
 
 static GENERIC: &[&str] = &[
-    "Command", "Controller", "Handler", "Main", "Mutation", "Query", "Resolver", "Service", "View",
-    "ViewSet", "handle", "main", "on", "perform_mutation", "run", "wmain",
+    "Command",
+    "Controller",
+    "Handler",
+    "Main",
+    "Mutation",
+    "Query",
+    "Resolver",
+    "Service",
+    "View",
+    "ViewSet",
+    "handle",
+    "main",
+    "on",
+    "perform_mutation",
+    "run",
+    "wmain",
 ];
 
 static CHANGING: &[&str] = &[
     "add", "commit", "create", "delete", "dispatch", "emit", "enqueue", "insert", "mkdir", "patch",
-    "post", "publish", "put", "remove", "rename", "save", "send", "set", "store", "unlink", "update",
-    "upsert", "write",
+    "post", "publish", "put", "remove", "rename", "save", "send", "set", "store", "unlink",
+    "update", "upsert", "write",
 ];
 
 pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
@@ -218,11 +238,13 @@ pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
 
 const FIELDS_TOLD: usize = 10;
 
-const SERVED_PATHS_TOLD: usize = 120;
-
 const INHERITED_AT_MOST: usize = 4;
 
-fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, Vec<&str>>, id: &str) -> Vec<Field> {
+fn with_inherited(
+    named: &HashMap<&str, Vec<Field>>,
+    extending: &HashMap<&str, Vec<&str>>,
+    id: &str,
+) -> Vec<Field> {
     let mut held: Vec<Field> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::default();
     let mut pending: Vec<(&str, usize)> = vec![(id, 0)];
@@ -236,7 +258,13 @@ fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, V
             }
         }
         if depth < INHERITED_AT_MOST {
-            pending.extend(extending.get(at).into_iter().flatten().map(|base| (*base, depth + 1)));
+            pending.extend(
+                extending
+                    .get(at)
+                    .into_iter()
+                    .flatten()
+                    .map(|base| (*base, depth + 1)),
+            );
         }
     }
     let spoken: HashSet<String> = held
@@ -246,13 +274,18 @@ fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, V
         .collect();
     held.retain(|field| {
         let bare = field.name.trim_start_matches('_').to_ascii_lowercase();
-        !BOOKKEEPING_FIELDS.contains(&bare.as_str()) && (!field.name.starts_with('_') || !spoken.contains(&bare))
+        !BOOKKEEPING_FIELDS.contains(&bare.as_str())
+            && (!field.name.starts_with('_') || !spoken.contains(&bare))
     });
     held
 }
 
 fn same_record(named: &str) -> String {
-    let whole: String = named.to_ascii_lowercase().chars().filter(|letter| letter.is_alphanumeric()).collect();
+    let whole: String = named
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|letter| letter.is_alphanumeric())
+        .collect();
     let bare = match whole.strip_suffix("table").filter(|stem| stem.len() > 2) {
         Some(stem) => stem.to_string(),
         None => whole,
@@ -260,10 +293,16 @@ fn same_record(named: &str) -> String {
     if let Some(stem) = bare.strip_suffix("ies") {
         return format!("{stem}y");
     }
-    if let Some(stem) = bare.strip_suffix("ses").filter(|stem| stem.ends_with('s') || stem.ends_with("ss")) {
+    if let Some(stem) = bare
+        .strip_suffix("ses")
+        .filter(|stem| stem.ends_with('s') || stem.ends_with("ss"))
+    {
         return format!("{stem}s");
     }
-    match bare.strip_suffix('s').filter(|stem| !stem.ends_with('s') && stem.len() > 2) {
+    match bare
+        .strip_suffix('s')
+        .filter(|stem| !stem.ends_with('s') && stem.len() > 2)
+    {
         Some(stem) => stem.to_string(),
         None => bare,
     }
@@ -279,9 +318,9 @@ fn changes(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
     match exit.kind {
         "process" | "message" => true,
-        "database" | "file" | "network" | "api" | "client_storage" | "cache" => CHANGING
-            .iter()
-            .any(|word| operation.contains(word)),
+        "database" | "file" | "network" | "api" | "client_storage" | "cache" => {
+            CHANGING.iter().any(|word| operation.contains(word))
+        }
         _ => false,
     }
 }
@@ -318,7 +357,9 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
         if node.name != "description" || node.kind != NodeKind::Property {
             continue;
         }
-        let Some(path) = files.get(node.file as usize) else { continue };
+        let Some(path) = files.get(node.file as usize) else {
+            continue;
+        };
         if !matches!(
             crate::paths::basename(path),
             "package.json" | "composer.json" | "pyproject.toml" | "Cargo.toml" | "pubspec.yaml"
@@ -326,7 +367,10 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
             continue;
         }
         if let Some(said_here) = node.type_annotation.as_deref() {
-            said.push(format!("It describes itself as: {}", said_here.trim_matches('"')));
+            said.push(format!(
+                "It describes itself as: {}",
+                said_here.trim_matches('"')
+            ));
         }
     }
     match said.is_empty() {
@@ -339,15 +383,26 @@ const EXCERPTS_SHOWN: usize = 2;
 const DISTINCT_WORD: usize = 5;
 const SETTING_LINES_SHOWN: usize = 12;
 static SAID_OF_ANY_CAPABILITY: &[&str] = &[
-    "access", "account", "create", "delete", "detail", "details", "handle", "items", "manage", "orders", "process",
-    "receive", "update", "users", "using", "their", "through", "with",
+    "access", "account", "create", "delete", "detail", "details", "handle", "items", "manage",
+    "orders", "process", "receive", "update", "users", "using", "their", "through", "with",
 ];
-static SETS_UP: &[&str] = &["appsettings", "config", "configuration", "program", "settings", "setup", "startup"];
+static SETS_UP: &[&str] = &[
+    "appsettings",
+    "config",
+    "configuration",
+    "program",
+    "settings",
+    "setup",
+    "startup",
+];
 
 fn sets_up_a_part(path: &str) -> bool {
     let named = crate::paths::basename(path).to_ascii_lowercase();
     let stem = named.split('.').next().unwrap_or(&named);
-    !crate::paths::is_test(path) && SETS_UP.iter().any(|word| stem == *word || stem.ends_with(word) || stem.starts_with(word))
+    !crate::paths::is_test(path)
+        && SETS_UP
+            .iter()
+            .any(|word| stem == *word || stem.ends_with(word) || stem.starts_with(word))
 }
 const EXCERPT_LINES: usize = 30;
 
@@ -377,14 +432,20 @@ fn talks_to<'a>(flows: &'a [Flow]) -> HashMap<&'a str, Talking<'a>> {
     let of: HashMap<&str, &str> = flows
         .iter()
         .filter_map(|flow| {
-            flow.project.as_deref().map(|part| (flow.entry_point.as_str(), part))
+            flow.project
+                .as_deref()
+                .map(|part| (flow.entry_point.as_str(), part))
         })
         .collect();
     let mut found: HashMap<&str, Talking> = HashMap::default();
     for flow in flows {
-        let Some(part) = flow.project.as_deref() else { continue };
+        let Some(part) = flow.project.as_deref() else {
+            continue;
+        };
         for into in flow.leads_into.iter() {
-            let Some(other) = of.get(into.as_str()).copied() else { continue };
+            let Some(other) = of.get(into.as_str()).copied() else {
+                continue;
+            };
             if other == part {
                 continue;
             }
@@ -411,16 +472,25 @@ fn carries(
             _ => 1.0,
         })
         .sum();
-    let kept = entities.iter().filter(|entity| within(entity.project.as_ref())).count();
+    let kept = entities
+        .iter()
+        .filter(|entity| within(entity.project.as_ref()))
+        .count();
     let held = project.and_then(|part| talking.get(part));
-    let spoken_to = held.map(|talking| talking.reached.len()).unwrap_or_default() as f64;
-    let speaking = held.map(|talking| talking.reaching.len()).unwrap_or_default() as f64;
+    let spoken_to = held
+        .map(|talking| talking.reached.len())
+        .unwrap_or_default() as f64;
+    let speaking = held
+        .map(|talking| talking.reaching.len())
+        .unwrap_or_default() as f64;
     (doing + 2.0 * kept as f64) * (1.0 + SPOKEN_TO_BY * spoken_to + SPEAKING_TO * speaking)
 }
 
 fn parts_of(capabilities: &[Capability]) -> Vec<String> {
-    let mut held: Vec<String> =
-        capabilities.iter().filter_map(|capability| capability.project.clone()).collect();
+    let mut held: Vec<String> = capabilities
+        .iter()
+        .filter_map(|capability| capability.project.clone())
+        .collect();
     held.sort();
     held.dedup();
     held
@@ -439,7 +509,9 @@ fn describe_product(
     }
     let projects = parts_of(capabilities);
     if projects.len() < 2 {
-        return describe_one(capabilities, entities, spoken, told, None).into_iter().collect();
+        return describe_one(capabilities, entities, spoken, told, None)
+            .into_iter()
+            .collect();
     }
     let mut named: Vec<&str> = projects.iter().map(String::as_str).collect();
     for part in told.within.iter() {
@@ -472,11 +544,20 @@ fn describe_product(
                 let beneath: Vec<&Product> = parts
                     .iter()
                     .filter(|part| {
-                        part.project.as_deref().is_some_and(|held| held_within(held, project))
+                        part.project
+                            .as_deref()
+                            .is_some_and(|held| held_within(held, project))
                     })
                     .collect();
                 describe_whole(
-                    &under, &beneath, capabilities, entities, flows, spoken, told, Some(project),
+                    &under,
+                    &beneath,
+                    capabilities,
+                    entities,
+                    flows,
+                    spoken,
+                    told,
+                    Some(project),
                 )
             })
             .collect();
@@ -494,7 +575,16 @@ fn describe_product(
         .map(|held| Some(*held))
         .collect();
     let top: Vec<&Product> = parts.iter().collect();
-    let whole = describe_whole(&standing, &top, capabilities, entities, flows, spoken, told, None);
+    let whole = describe_whole(
+        &standing,
+        &top,
+        capabilities,
+        entities,
+        flows,
+        spoken,
+        told,
+        None,
+    );
     let mut written: Vec<Product> = whole.into_iter().collect();
     written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
@@ -524,11 +614,18 @@ fn describe_whole(
     let weighed: Vec<(Option<&str>, Option<&Product>, f64)> = speaking
         .iter()
         .map(|held| {
-            let part = parts.iter().find(|part| part.project.as_deref() == *held).copied();
+            let part = parts
+                .iter()
+                .find(|part| part.project.as_deref() == *held)
+                .copied();
             (*held, part, carries(*held, flows, entities, &talking))
         })
         .collect();
-    let whole: f64 = weighed.iter().map(|(_, _, held)| held).sum::<f64>().max(1.0);
+    let whole: f64 = weighed
+        .iter()
+        .map(|(_, _, held)| held)
+        .sum::<f64>()
+        .max(1.0);
     let mut ranked: Vec<(Option<&str>, Option<&Product>, f64)> = weighed
         .into_iter()
         .map(|(named, part, held)| (named, part, 100.0 * held / whole))
@@ -541,7 +638,10 @@ fn describe_whole(
                 Some(_) => "",
                 None => "  (no description held)",
             };
-            eprintln!("  carries {share:5.1}%  {}{told}", named.rsplit(':').next().unwrap_or(named));
+            eprintln!(
+                "  carries {share:5.1}%  {}{told}",
+                named.rsplit(':').next().unwrap_or(named)
+            );
         }
     }
     let said = ranked
@@ -581,11 +681,17 @@ fn describe_whole(
                     .iter()
                     .filter(|capability| {
                         capability.project.as_deref() == *held
-                            || held.is_some_and(|part| capability.also_in.iter().any(|in_| in_ == part))
+                            || held.is_some_and(|part| {
+                                capability.also_in.iter().any(|in_| in_ == part)
+                            })
                     })
                     .filter_map(|capability| capability.name.as_deref())
                     .collect();
-                format!("{held:?}:{}:{}", part.map(|part| part.description.as_str()).unwrap_or(""), doing.join(","))
+                format!(
+                    "{held:?}:{}:{}",
+                    part.map(|part| part.description.as_str()).unwrap_or(""),
+                    doing.join(",")
+                )
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -649,36 +755,44 @@ fn describe_one(
             || project.is_some_and(|part| capability.also_in.iter().any(|held| held == part))
     };
     let mine: Vec<&Capability> = held.iter().filter(|capability| its(capability)).collect();
-    let leading: Vec<&Capability> =
-        mine.iter().copied().filter(|capability| capability.place != Some("supporting")).collect();
+    let leading: Vec<&Capability> = mine
+        .iter()
+        .copied()
+        .filter(|capability| capability.place != Some("supporting"))
+        .collect();
     let capabilities = if leading.is_empty() { mine } else { leading };
     if capabilities.is_empty() {
         return None;
     }
     let listed = capabilities
         .iter()
-        .map(|capability| format!(
-            "- {} (for {}): {}",
-            capability.name.as_deref().unwrap_or(""),
-            capability.audience.as_deref().unwrap_or("someone"),
-            capability.description.as_deref().unwrap_or("")
-        ))
+        .map(|capability| {
+            format!(
+                "- {} (for {}): {}",
+                capability.name.as_deref().unwrap_or(""),
+                capability.audience.as_deref().unwrap_or("someone"),
+                capability.description.as_deref().unwrap_or("")
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let kept = {
-            let mut kept: Vec<&str> = match project {
-                Some(_) => capabilities
-                    .iter()
-                    .flat_map(|capability| capability.records.iter().map(String::as_str))
-                    .collect(),
-                None => entities.iter().map(|entity| entity.declared_as.as_str()).collect(),
-            };
-            kept.dedup();
-            match kept.is_empty() {
-                true => "no named records".to_string(),
-                false => kept.join(", "),
-            }
+        let mut kept: Vec<&str> = match project {
+            Some(_) => capabilities
+                .iter()
+                .flat_map(|capability| capability.records.iter().map(String::as_str))
+                .collect(),
+            None => entities
+                .iter()
+                .map(|entity| entity.declared_as.as_str())
+                .collect(),
         };
+        kept.dedup();
+        match kept.is_empty() {
+            true => "no named records".to_string(),
+            false => kept.join(", "),
+        }
+    };
     let digest = crate::jev::named(&format!(
         "{project:?}\u{1}{}\u{1}{spoken}\u{1}{listed}\u{1}{kept}\u{1}{}\u{1}{}",
         crate::author::DESCRIBING,
@@ -706,7 +820,8 @@ fn describe_one(
         listed,
         kept,
         match project.is_some() {
-            true => "These last counts are the whole repository's, not this part's, and belong in a \
+            true =>
+                "These last counts are the whole repository's, not this part's, and belong in a \
                      description of this part only where they are plainly true of it:\n",
             false => "",
         },
@@ -750,103 +865,43 @@ fn describe_one(
     })
 }
 
-const PRIMARY_PATHS_TOLD: usize = 4;
-
-fn say_what_happens(held: &mut Comprehension, spoken: &str) {
-    let asked_for: Option<Vec<String>> = std::env::var("KLAURO_DESCRIBE_FLOWS")
-        .ok()
-        .filter(|held| !held.is_empty())
-        .map(|held| held.split(',').map(|id| id.trim().to_string()).collect());
-    let everything = asked_for.as_ref().is_some_and(|ids| ids.iter().any(|id| id == "all"));
-    let mut chosen: HashSet<String> = HashSet::default();
-    match (&asked_for, everything) {
-        (Some(ids), false) => chosen.extend(ids.iter().cloned()),
-        (_, true) => chosen.extend(held.flows.iter().filter(|flow| !flow.steps.is_empty()).map(|flow| flow.id.clone())),
-        (None, _) => {
-            for capability in held.capabilities.iter().filter(|capability| capability.project.is_some()) {
-                chosen.extend(
-                    capability
-                        .delivered
-                        .iter()
-                        .filter(|delivery| delivery.role == "primary")
-                        .take(PRIMARY_PATHS_TOLD)
-                        .map(|delivery| delivery.flow.clone()),
-                );
-            }
-            let mut served: Vec<&Flow> = held
-                .flows
-                .iter()
-                .filter(|flow| !matches!(flow.kind, "export" | "test") && !flow.steps.is_empty() && !chosen.contains(&flow.id))
-                .collect();
-            served.sort_by_key(|flow| (std::cmp::Reverse(flow.steps.len()), flow.id.clone()));
-            chosen.extend(served.into_iter().take(SERVED_PATHS_TOLD).map(|flow| flow.id.clone()));
-        }
-    }
-    let told: Vec<(String, String)> = held
-        .flows
-        .iter()
-        .filter(|flow| chosen.contains(&flow.id) && !flow.steps.is_empty())
-        .map(|flow| {
-            (
-                flow.id.clone(),
-                format!(
-                    "  reached through: {}\n  steps: {}",
-                    crate::capabilities::surface_of(flow),
-                    crate::capabilities::told_steps(flow)
-                ),
-            )
-        })
-        .collect();
-    if told.is_empty() {
-        return;
-    }
-    let context = format!("{spoken}\u{1}{}", crate::author::NAMING);
-    let mut unanswered: Vec<String> = Vec::new();
-    let said = crate::memory::each("what happens, named", &context, &told, |missing| {
-        let written = crate::author::what_happens(spoken, missing);
-        unanswered.extend(missing.iter().map(|(id, _)| id.clone()).filter(|id| !written.contains_key(id)));
-        let evidence: BTreeMap<String, String> = missing.iter().cloned().collect();
-        let grounded = crate::author::ground(&written, &evidence);
-        written
-            .into_iter()
-            .filter(|(id, _)| grounded.get(id).is_some_and(|grounding| grounding.holds()))
-            .collect()
-    });
-    for flow in held.flows.iter_mut() {
-        if let Some(written) = said.get(&flow.id) {
-            flow.description = Some(written.description.clone());
-            if !written.name.is_empty() {
-                flow.name = Some(written.name.clone());
-            }
-        } else if unanswered.contains(&flow.id) {
-            flow.unsettled = Some(crate::confidence::AI_UNANSWERED);
-            flow.confidence = crate::confidence::left_unsettled(flow.confidence);
-        }
-    }
-}
-
 fn score_capabilities(capabilities: &mut [Capability], confidence_of: &HashMap<&str, f64>) {
     for capability in capabilities.iter_mut() {
-        let flows: Vec<f64> =
-            capability.flows.iter().filter_map(|id| confidence_of.get(id.as_str()).copied()).collect();
-        capability.confidence = Some(crate::confidence::of_capability(&crate::confidence::Backing {
-            grounding: capability.grounding.as_ref(),
-            flows: &flows,
-            parent_originated_alone: capability.parent_originated.is_some()
-                && capability.composition_provenance.is_empty(),
-            unsettled: capability.unsettled.is_some(),
-        }));
+        let flows: Vec<f64> = capability
+            .flows
+            .iter()
+            .filter_map(|id| confidence_of.get(id.as_str()).copied())
+            .collect();
+        capability.confidence = Some(crate::confidence::of_capability(
+            &crate::confidence::Backing {
+                grounding: capability.grounding.as_ref(),
+                flows: &flows,
+                stages: capability.stages.len(),
+                parent_originated_alone: capability.parent_originated.is_some()
+                    && capability.composition_provenance.is_empty(),
+                unsettled: capability.unsettled.is_some(),
+            },
+        ));
     }
 }
 
-fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
+fn test_capabilities(
+    capabilities: &mut Vec<Capability>,
+    spoken: &str,
+    level: &str,
+    excerpt: &(dyn Fn(&Capability) -> String + Sync),
+) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
             let told: String = capability
                 .evidence
                 .lines()
-                .filter(|line| !line.trim_start().starts_with(crate::capabilities::RECORDS_HOLD))
+                .filter(|line| {
+                    !line
+                        .trim_start()
+                        .starts_with(crate::capabilities::RECORDS_HOLD)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
                 .chars()
@@ -856,7 +911,11 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
                 "FACTS read from the code about what it delivers:\n{}\n\n\
                  PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}\nFOR: {}",
                 match told.is_empty() {
-                    true => format!("  reached through: {}\n  writes: {}", capability.surfaces.join(", "), capability.records.join(", ")),
+                    true => format!(
+                        "  reached through: {}\n  writes: {}",
+                        capability.surfaces.join(", "),
+                        capability.records.join(", ")
+                    ),
                     false => told,
                 },
                 capability.name.as_deref().unwrap_or(""),
@@ -867,10 +926,17 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         })
         .collect();
     let context = format!("A software system describes itself like this:\n{spoken}");
-    let context = format!("{context}\n\u{1}{level}\u{1}{}", crate::author::questions_asked());
+    let context = format!(
+        "{context}\n\u{1}{level}\u{1}{}",
+        crate::author::questions_asked()
+    );
     let clock = std::time::Instant::now();
     let judged = crate::memory::each("judged", &context, &tests, |missing| {
-        crate::author::test_capabilities(context.split('\u{1}').next().unwrap_or_default(), missing, level)
+        crate::author::test_capabilities(
+            context.split('\u{1}').next().unwrap_or_default(),
+            missing,
+            level,
+        )
     });
     let facts_of: HashMap<String, String> = tests.iter().cloned().collect();
     capabilities.retain_mut(|capability| {
@@ -920,7 +986,9 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         .iter()
         .map(|capability| {
             let facts = facts_of.get(&capability.id).cloned().unwrap_or_default();
-            let facts = facts.replacen("PROPOSED CAPABILITY", "  proposed name", 1).replacen("PROPOSED DESCRIPTION", "  proposed sentence", 1);
+            let facts = facts
+                .replacen("PROPOSED CAPABILITY", "  proposed name", 1)
+                .replacen("PROPOSED DESCRIPTION", "  proposed sentence", 1);
             let code = excerpt(capability);
             let told = match code.is_empty() {
                 true => facts,
@@ -930,17 +998,32 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         })
         .collect();
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("  judged {} capabilities for {level} in {:?}", told.len(), clock.elapsed());
+        eprintln!(
+            "  judged {} capabilities for {level} in {:?}",
+            told.len(),
+            clock.elapsed()
+        );
     }
     let clock = std::time::Instant::now();
     let tightened_all = crate::author::tighten_claims(spoken, &told);
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("  reworded {} capabilities for {level} in {:?}", told.len(), clock.elapsed());
+        eprintln!(
+            "  reworded {} capabilities for {level} in {:?}",
+            told.len(),
+            clock.elapsed()
+        );
     }
-    let dropped: HashSet<&str> = tightened_all.iter().filter(|held| held.drop).map(|held| held.id.as_str()).collect();
+    let dropped: HashSet<&str> = tightened_all
+        .iter()
+        .filter(|held| held.drop)
+        .map(|held| held.id.as_str())
+        .collect();
     capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
     for tightened in tightened_all.iter().filter(|held| !held.drop) {
-        if let Some(capability) = capabilities.iter_mut().find(|capability| capability.id == tightened.id) {
+        if let Some(capability) = capabilities
+            .iter_mut()
+            .find(|capability| capability.id == tightened.id)
+        {
             capability.name = Some(tightened.name.trim().to_string());
             if !tightened.description.trim().is_empty() {
                 capability.description = Some(tightened.description.trim().to_string());
@@ -949,8 +1032,8 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
     }
 }
 
-fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
-    let listed: BTreeMap<String, String> = held
+fn what_each_is_for(held: &[Capability], spoken: &str) -> Vec<Option<&'static str>> {
+    let listed: Vec<(String, String)> = held
         .iter()
         .enumerate()
         .map(|(at, capability)| {
@@ -965,17 +1048,22 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
             )
         })
         .collect();
-    let listed: Vec<(String, String)> = listed.into_iter().collect();
     let said = crate::memory::each("placed", spoken, &listed, |missing| {
         crate::author::what_it_is_for(spoken, &missing.iter().cloned().collect())
     });
-    for (at, capability) in held.iter_mut().enumerate() {
-        capability.place = match said.get(&format!("p{at}")).map(String::as_str) {
+    (0..held.len())
+        .map(|at| match said.get(&format!("p{at}")).map(String::as_str) {
             Some("terminal") => Some("terminal"),
             Some("proximal") => Some("proximal"),
             Some("supporting") => Some("supporting"),
             _ => None,
-        };
+        })
+        .collect()
+}
+
+fn set_places(held: &mut [Capability], places: Vec<Option<&'static str>>) {
+    for (capability, place) in held.iter_mut().zip(places) {
+        capability.place = place;
     }
 }
 
@@ -1009,9 +1097,15 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if other.standing == PUBLISHED {
         into.standing = PUBLISHED;
     }
-    into.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
-    into.delivered.dedup_by(|left, right| left.flow == right.flow);
-    into.flows = into.delivered.iter().map(|held| held.flow.clone()).collect();
+    into.delivered
+        .sort_by(|left, right| left.flow.cmp(&right.flow));
+    into.delivered
+        .dedup_by(|left, right| left.flow == right.flow);
+    into.flows = into
+        .delivered
+        .iter()
+        .map(|held| held.flow.clone())
+        .collect();
     settle(&mut into.records);
     settle(&mut into.changes);
     settle(&mut into.surfaces);
@@ -1024,7 +1118,8 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
         }
     }
     into.composition_provenance.sort_by(|left, right| {
-        (&left.source_child, &left.source_capability_id).cmp(&(&right.source_child, &right.source_capability_id))
+        (&left.source_child, &left.source_capability_id)
+            .cmp(&(&right.source_child, &right.source_capability_id))
     });
     match (into.parent_originated.as_mut(), other.parent_originated) {
         (None, other) => into.parent_originated = other,
@@ -1039,9 +1134,13 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     }
 }
 
-
-
-fn summarised(entry: &EntryPoint, named: &str, writes: &[String], reads: &[String], reaching: &[String]) -> String {
+fn summarised(
+    entry: &EntryPoint,
+    named: &str,
+    writes: &[String],
+    reads: &[String],
+    reaching: &[String],
+) -> String {
     let entered = match (entry.kind, entry.method.as_deref(), entry.path.as_deref()) {
         ("http", Some(method), _) => format!("{method} {named}"),
         ("export", _, _) => format!("uses {named}"),
@@ -1076,7 +1175,10 @@ pub(crate) fn carved_name(name: &str) -> String {
             false => '-',
         })
         .collect();
-    held.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
+    held.split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -1124,9 +1226,15 @@ pub(crate) fn family_of(flow: &Flow) -> Family {
             .map(|change| change.split(':').next().unwrap_or(change).to_string())
             .collect();
         settle(&mut held);
-        return Family { key: format!("effect:{}", held.join(",")), basis: "the effect it ends in" };
+        return Family {
+            key: format!("effect:{}", held.join(",")),
+            basis: "the effect it ends in",
+        };
     }
-    Family { key: format!("trigger:{}", flow.kind), basis: "how it is triggered" }
+    Family {
+        key: format!("trigger:{}", flow.kind),
+        basis: "how it is triggered",
+    }
 }
 
 fn surface_family(flow: &Flow) -> Option<String> {
@@ -1138,9 +1246,9 @@ fn surface_family(flow: &Flow) -> Option<String> {
         return None;
     }
     let operation = held;
-    let named = operation
-        .split('/')
-        .find(|segment| !segment.is_empty() && !addressed_by_version(segment) && !segment.starts_with(':'))?;
+    let named = operation.split('/').find(|segment| {
+        !segment.is_empty() && !addressed_by_version(segment) && !segment.starts_with(':')
+    })?;
     let held: String = named
         .chars()
         .take_while(|letter| letter.is_ascii_alphanumeric())
@@ -1155,9 +1263,10 @@ fn addressed_by_version(segment: &str) -> bool {
 }
 
 static BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Array", "BigInt", "Boolean", "Bytes", "Dict", "Hash", "List", "Map", "Number", "Object", "Record", "Set",
-    "String", "Symbol", "Tuple", "Vec", "array", "bool", "boolean", "bytes", "dict", "double", "float", "int",
-    "list", "map", "number", "object", "set", "str", "string", "tuple", "vec",
+    "Array", "BigInt", "Boolean", "Bytes", "Dict", "Hash", "List", "Map", "Number", "Object",
+    "Record", "Set", "String", "Symbol", "Tuple", "Vec", "array", "bool", "boolean", "bytes",
+    "dict", "double", "float", "int", "list", "map", "number", "object", "set", "str", "string",
+    "tuple", "vec",
 ];
 
 fn guessed_callee_is_hand_written(
@@ -1177,7 +1286,10 @@ fn guessed_callee_is_hand_written(
     if receiver.starts_with(['"', '\'', '`', '[', '{']) {
         return false;
     }
-    let Some(annotation) = declared_as.get(&(caller, crate::names::root(receiver))).copied() else {
+    let Some(annotation) = declared_as
+        .get(&(caller, crate::names::root(receiver)))
+        .copied()
+    else {
         return true;
     };
     let bare = annotation.trim_start_matches(['&', '*', ' ']);
@@ -1196,12 +1308,21 @@ pub fn author(
     if !crate::author::asked() && std::env::var("KLAURO_FAMILY_DUMP").is_err() {
         return 0;
     }
-    if let Some(only) = std::env::var("KLAURO_ONLY_PARTS").ok().filter(|held| !held.trim().is_empty()) {
-        let wanted: Vec<&str> = only.split(',').map(str::trim).filter(|part| !part.is_empty()).collect();
+    if let Some(only) = std::env::var("KLAURO_ONLY_PARTS")
+        .ok()
+        .filter(|held| !held.trim().is_empty())
+    {
+        let wanted: Vec<&str> = only
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
         let chosen = |project: &Option<String>| {
             project.as_deref().is_some_and(|id| {
                 let bare = id.strip_prefix("subproject:").unwrap_or(id);
-                wanted.iter().any(|want| bare == *want || id == *want || bare.ends_with(&format!("/{want}")))
+                wanted
+                    .iter()
+                    .any(|want| bare == *want || id == *want || bare.ends_with(&format!("/{want}")))
             })
         };
         held.flows.retain(|flow| chosen(&flow.project));
@@ -1209,24 +1330,40 @@ pub fn author(
     }
     let spoken = spoken_for(root, nodes, files);
     let root_path = root;
-    let node_at: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let node_at: HashMap<&str, &IndexNode> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let flow_at: HashMap<String, (String, u32, u32)> = held
         .flows
         .iter()
         .filter_map(|flow| {
             let start = node_at.get(flow.path.first()?.unit.as_str())?;
-            Some((flow.id.clone(), (files.get(start.file as usize)?.clone(), start.span.line, start.span.end_line)))
+            Some((
+                flow.id.clone(),
+                (
+                    files.get(start.file as usize)?.clone(),
+                    start.span.line,
+                    start.span.end_line,
+                ),
+            ))
         })
         .collect();
     let configured_in: HashMap<&str, Vec<&str>> = {
         let mut held_in: HashMap<&str, Vec<&str>> = HashMap::default();
         for path in files.iter().filter(|path| sets_up_a_part(path)) {
-            held_in.entry(crate::paths::directory_of(path)).or_default().push(path.as_str());
+            held_in
+                .entry(crate::paths::directory_of(path))
+                .or_default()
+                .push(path.as_str());
         }
         held_in
     };
     let configuration = |capability: &Capability| -> String {
-        let Some(root) = capability.project.as_deref().or(capability.also_in.first().map(String::as_str)).and_then(|part| part.strip_prefix("subproject:")) else {
+        let Some(root) = capability
+            .project
+            .as_deref()
+            .or(capability.also_in.first().map(String::as_str))
+            .and_then(|part| part.strip_prefix("subproject:"))
+        else {
             return String::new();
         };
         let words: Vec<String> = capability
@@ -1235,7 +1372,9 @@ pub fn author(
             .unwrap_or_default()
             .split(|held: char| !held.is_alphanumeric())
             .map(str::to_ascii_lowercase)
-            .filter(|word| word.len() >= DISTINCT_WORD && !SAID_OF_ANY_CAPABILITY.contains(&word.as_str()))
+            .filter(|word| {
+                word.len() >= DISTINCT_WORD && !SAID_OF_ANY_CAPABILITY.contains(&word.as_str())
+            })
             .collect();
         if words.is_empty() {
             return String::new();
@@ -1250,17 +1389,28 @@ pub fn author(
         }
         let mut matched: Vec<String> = Vec::new();
         for path in &setting_files {
-            let Ok(text) = std::fs::read_to_string(root_path.join(path)) else { continue };
+            let Ok(text) = std::fs::read_to_string(root_path.join(path)) else {
+                continue;
+            };
             for (at, line) in text.lines().enumerate() {
                 let lowered = line.to_ascii_lowercase();
-                if words.iter().any(|word| lowered.contains(word.as_str())) && matched.len() < SETTING_LINES_SHOWN {
+                if words.iter().any(|word| lowered.contains(word.as_str()))
+                    && matched.len() < SETTING_LINES_SHOWN
+                {
                     matched.push(format!("    {path}:{} | {}", at + 1, line.trim()));
                 }
             }
         }
         match matched.is_empty() {
-            true => format!("  the part's setup ({}) mentions none of: {}", setting_files.join(", "), words.join(", ")),
-            false => format!("  where the part's setup mentions it:\n{}", matched.join("\n")),
+            true => format!(
+                "  the part's setup ({}) mentions none of: {}",
+                setting_files.join(", "),
+                words.join(", ")
+            ),
+            false => format!(
+                "  where the part's setup mentions it:\n{}",
+                matched.join("\n")
+            ),
         }
     };
     let excerpt = |capability: &Capability| -> String {
@@ -1274,8 +1424,19 @@ pub fn author(
                 let text = std::fs::read_to_string(root.join(path)).ok()?;
                 let from = line.saturating_sub(1) as usize;
                 let to = (*end as usize).min(from + EXCERPT_LINES);
-                let shown: Vec<&str> = text.lines().skip(from).take(to.saturating_sub(from).max(1)).collect();
-                Some(format!("    {path}:{line}\n{}", shown.iter().map(|held| format!("    | {held}")).collect::<Vec<_>>().join("\n")))
+                let shown: Vec<&str> = text
+                    .lines()
+                    .skip(from)
+                    .take(to.saturating_sub(from).max(1))
+                    .collect();
+                Some(format!(
+                    "    {path}:{line}\n{}",
+                    shown
+                        .iter()
+                        .map(|held| format!("    | {held}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ))
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -1315,7 +1476,10 @@ pub fn author(
                     ),
                 },
                 match entity.project.as_deref() {
-                    Some(part) => format!("\n  kept by the part: {}", part.rsplit(['/', ':']).next().unwrap_or(part)),
+                    Some(part) => format!(
+                        "\n  kept by the part: {}",
+                        part.rsplit(['/', ':']).next().unwrap_or(part)
+                    ),
                     None => String::new(),
                 },
                 match entity.named_fields.is_empty() {
@@ -1339,151 +1503,256 @@ pub fn author(
         .iter()
         .filter(|entity| !entity.named_fields.is_empty())
         .map(|entity| {
-            let named: Vec<&str> = entity.named_fields.iter().map(|field| field.name.as_str()).take(FIELDS_TOLD).collect();
+            let named: Vec<&str> = entity
+                .named_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .take(FIELDS_TOLD)
+                .collect();
             (entity.declared_as.clone(), named.join(", "))
         })
         .collect();
+    let paths = crate::told_paths::Paths::new(&spoken);
     let started = std::time::Instant::now();
     let reaching = rayon::ThreadPoolBuilder::new()
         .num_threads(crate::author::reaching_at_once(REACHING_AT_ONCE))
         .build()
         .ok();
-    let work = || rayon::join(
-        || {
-            let mut parts: Vec<Option<String>> =
-                held.flows.iter().map(|flow| flow.project.clone()).collect();
-            parts.sort();
-            parts.dedup();
-            let several = parts.iter().filter(|part| part.is_some()).count() > 1;
-            let read: Vec<(Vec<Capability>, Option<Product>)> = parts
-                .par_iter()
-                .map(|part| {
-                    let flows: Vec<&Flow> = held.flows.iter().filter(|flow| &flow.project == part).collect();
-                    let said = spoken_within(&spoken, part.as_deref());
-                    let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
-                    let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
-                    test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" }, &excerpt);
-                    say_what_each_is_for(&mut found, &said);
-                    crate::capabilities::one_of_each(&mut found, &said);
-                    let described = match (several, part.as_deref()) {
-                        (true, Some(named)) if !found.is_empty() => {
-                            describe_one(&found, &held.entities, &spoken, told, Some(named))
+    let work = || {
+        rayon::join(
+            || {
+                let mut parts: Vec<Option<String>> =
+                    held.flows.iter().map(|flow| flow.project.clone()).collect();
+                parts.sort();
+                parts.dedup();
+                let several = parts.iter().filter(|part| part.is_some()).count() > 1;
+                let read: Vec<(Vec<Capability>, Option<Product>)> = parts
+                    .par_iter()
+                    .map(|part| {
+                        let flows: Vec<&Flow> = held
+                            .flows
+                            .iter()
+                            .filter(|flow| &flow.project == part)
+                            .collect();
+                        let said = spoken_within(&spoken, part.as_deref());
+                        let remembered_as =
+                            format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
+                        let mut found =
+                            crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
+                        test_capabilities(
+                            &mut found,
+                            &said,
+                            if part.is_some() {
+                                "this part of the system"
+                            } else {
+                                "this system"
+                            },
+                            &excerpt,
+                        );
+                        let (places, same) = rayon::join(
+                            || what_each_is_for(&found, &said),
+                            || crate::capabilities::which_are_the_same(&found, &said),
+                        );
+                        set_places(&mut found, places);
+                        crate::capabilities::merge_the_same(&mut found, same);
+                        paths.tell_what_delivers(&found, &held.flows);
+                        let described = match (several, part.as_deref()) {
+                            (true, Some(named)) if !found.is_empty() => {
+                                describe_one(&found, &held.entities, &spoken, told, Some(named))
+                            }
+                            _ => None,
+                        };
+                        (found, described)
+                    })
+                    .collect();
+                let ((), formed_whole) = rayon::join(
+                    || paths.tell_the_busiest(&held.flows),
+                    || {
+                        let mut described: Vec<Product> = Vec::new();
+                        let mut capabilities: Vec<Capability> = Vec::new();
+                        for (found, product) in read {
+                            capabilities.extend(found);
+                            described.extend(product);
                         }
-                        _ => None,
-                    };
-                    (found, described)
-                })
-                .collect();
-            let mut described: Vec<Product> = Vec::new();
-            let mut capabilities: Vec<Capability> = Vec::new();
-            for (found, product) in read {
-                capabilities.extend(found);
-                described.extend(product);
-            }
-            if parts_of(&capabilities).len() < 2 {
-                described.clear();
-            }
-            described.sort_by(|left, right| left.project.cmp(&right.project));
-            capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let offered_only: std::collections::BTreeSet<&str> = held
-                .flows
-                .iter()
-                .filter(|flow| flow.kind == "export")
-                .map(|flow| flow.id.as_str())
-                .collect();
-            let served: Vec<Capability> = capabilities
-                .iter()
-                .filter(|capability| capability.flows.iter().any(|flow| !offered_only.contains(flow.as_str())))
-                .cloned()
-                .collect();
-            let judged_in_a_part: HashSet<&str> = served
-                .iter()
-                .filter(|capability| capability.grounding.is_some())
-                .map(|capability| capability.id.as_str())
-                .collect();
-            let derived = told
-                .composition
-                .and_then(|composition| crate::parent::derive(composition, &served, &held.flows, &spoken, told.scope));
-            let (mut whole, listed_parts, reasons) = match derived {
-                Some((listed, derivation)) => {
-                    let mut whole = derivation.capabilities;
-                    test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
-                    (whole, Some(listed), derivation.reasons)
-                }
-                None => {
-                    let (carried, mut whole): (Vec<Capability>, Vec<Capability>) = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows)
-                        .into_iter()
-                        .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
-                    test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
-                    whole.extend(carried);
-                    (whole, None, std::collections::BTreeMap::new())
-                }
-            };
-            whole.sort_by(|left, right| left.id.cmp(&right.id));
-            eprintln!(
-                "  author read {} capabilities across the parts into {} for the whole",
-                capabilities.len(),
-                whole.len()
-            );
-            let mut together = capabilities.clone();
-            together.extend(whole.iter().cloned());
-            together.sort_by(|left, right| left.id.cmp(&right.id));
-            let formed = started.elapsed();
-            let ((), products) = rayon::join(
-                || say_what_each_is_for(&mut whole, &spoken),
-                || describe_product(&together, &held.entities, &held.flows, &spoken, told, described),
-            );
-            crate::capabilities::one_of_each(&mut whole, &spoken);
-            let summary = match (told.composition, listed_parts) {
-                (Some(composition), Some(_)) => {
-                    crate::parent::mark_parent_originated(&mut whole);
-                    let every_part = crate::parent::parts_within(composition, &capabilities);
-                    Some(crate::parent::summarise(&whole, &every_part, &reasons, composition, &offered_only))
-                }
-                _ => None,
-            };
-            capabilities.extend(whole);
-            capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            eprintln!(
-                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {} | went unanswered {}",
-                parts.len(),
-                started.elapsed() - formed,
-                crate::author::writing_rate(),
-                crate::author::asked_again(),
-                crate::author::went_unanswered() + crate::jev::went_unanswered()
-            );
-            (capabilities, products, summary)
-        },
-        || {
-            let written = crate::author::name_them("records this system keeps", &spoken, &evidence);
-            let named = started.elapsed();
-            let grounded = crate::author::ground(&written, &evidence);
-            eprintln!("  author name {named:?} | ground {:?}", started.elapsed() - named);
-            (written, grounded)
-        },
-    );
+                        if parts_of(&capabilities).len() < 2 {
+                            described.clear();
+                        }
+                        described.sort_by(|left, right| left.project.cmp(&right.project));
+                        capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+                        let offered_only: std::collections::BTreeSet<&str> = held
+                            .flows
+                            .iter()
+                            .filter(|flow| flow.kind == "export")
+                            .map(|flow| flow.id.as_str())
+                            .collect();
+                        let served: Vec<Capability> = capabilities
+                            .iter()
+                            .filter(|capability| {
+                                capability
+                                    .flows
+                                    .iter()
+                                    .any(|flow| !offered_only.contains(flow.as_str()))
+                            })
+                            .cloned()
+                            .collect();
+                        let judged_in_a_part: HashSet<&str> = served
+                            .iter()
+                            .filter(|capability| capability.grounding.is_some())
+                            .map(|capability| capability.id.as_str())
+                            .collect();
+                        let derived = told.composition.and_then(|composition| {
+                            crate::parent::derive(
+                                composition,
+                                &served,
+                                &held.flows,
+                                &spoken,
+                                told.scope,
+                            )
+                        });
+                        let (mut whole, listed_parts, reasons) = match derived {
+                            Some((listed, derivation)) => {
+                                let mut whole = derivation.capabilities;
+                                test_capabilities(
+                                    &mut whole,
+                                    &spoken,
+                                    "this system as a whole",
+                                    &excerpt,
+                                );
+                                (whole, Some(listed), derivation.reasons)
+                            }
+                            None => {
+                                let (carried, mut whole): (Vec<Capability>, Vec<Capability>) =
+                                    crate::capabilities::of_the_whole(
+                                        &served,
+                                        &spoken,
+                                        told.scope,
+                                        &held.flows,
+                                    )
+                                    .into_iter()
+                                    .partition(|capability| {
+                                        judged_in_a_part.contains(capability.id.as_str())
+                                            && capability.also_in.len() <= 1
+                                    });
+                                test_capabilities(
+                                    &mut whole,
+                                    &spoken,
+                                    "this system as a whole",
+                                    &excerpt,
+                                );
+                                whole.extend(carried);
+                                (whole, None, std::collections::BTreeMap::new())
+                            }
+                        };
+                        whole.sort_by(|left, right| left.id.cmp(&right.id));
+                        eprintln!(
+                            "  author read {} capabilities across the parts into {} for the whole",
+                            capabilities.len(),
+                            whole.len()
+                        );
+                        let mut together = capabilities.clone();
+                        together.extend(whole.iter().cloned());
+                        together.sort_by(|left, right| left.id.cmp(&right.id));
+                        let formed = started.elapsed();
+                        let ((places, same), products) = rayon::join(
+                            || {
+                                rayon::join(
+                                    || what_each_is_for(&whole, &spoken),
+                                    || crate::capabilities::which_are_the_same(&whole, &spoken),
+                                )
+                            },
+                            || {
+                                describe_product(
+                                    &together,
+                                    &held.entities,
+                                    &held.flows,
+                                    &spoken,
+                                    told,
+                                    described,
+                                )
+                            },
+                        );
+                        set_places(&mut whole, places);
+                        crate::capabilities::merge_the_same(&mut whole, same);
+                        crate::capabilities::keep_levels_apart(&mut capabilities, &mut whole);
+                        let summary = match (told.composition, listed_parts) {
+                            (Some(composition), Some(_)) => {
+                                crate::parent::mark_parent_originated(&mut whole);
+                                let every_part =
+                                    crate::parent::parts_within(composition, &capabilities);
+                                Some(crate::parent::summarise(
+                                    &whole,
+                                    &every_part,
+                                    &reasons,
+                                    composition,
+                                    &offered_only,
+                                ))
+                            }
+                            _ => None,
+                        };
+                        capabilities.extend(whole);
+                        capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+                        eprintln!(
+                            "  author form {formed:?} across {} parts | describe {:?} | asks {} at {:.1} average, {} peak in flight | backend writes {} bytes/s | asked again {} | went unanswered {}",
+                            parts.len(),
+                            started.elapsed() - formed,
+                            crate::reach::asked(),
+                            crate::reach::concurrency().0,
+                            crate::reach::concurrency().1,
+                            crate::author::writing_rate(),
+                            crate::author::asked_again(),
+                            crate::author::went_unanswered() + crate::jev::went_unanswered()
+                        );
+                        (capabilities, products, summary)
+                    },
+                );
+                formed_whole
+            },
+            || {
+                let written =
+                    crate::author::name_them("records this system keeps", &spoken, &evidence);
+                let named = started.elapsed();
+                let grounded = crate::author::ground(&written, &evidence);
+                eprintln!(
+                    "  author name {named:?} | ground {:?}",
+                    started.elapsed() - named
+                );
+                (written, grounded)
+            },
+        )
+    };
     let ((capabilities, products, summary), (written, grounded)) = match &reaching {
         Some(pool) => pool.install(work),
         None => work(),
     };
     held.capabilities = capabilities;
-    held.semantic_coverage = Some(crate::capabilities::coverage_of(&held.flows, &held.capabilities));
+    held.semantic_coverage = Some(crate::capabilities::coverage_of(
+        &held.flows,
+        &held.capabilities,
+    ));
     held.products = products;
     held.derivation = summary;
-    say_what_happens(held, &spoken);
-    let confidence_of: HashMap<&str, f64> = held.flows.iter().map(|flow| (flow.id.as_str(), flow.confidence)).collect();
+    paths.settle(held);
+    let confidence_of: HashMap<&str, f64> = held
+        .flows
+        .iter()
+        .map(|flow| (flow.id.as_str(), flow.confidence))
+        .collect();
     score_capabilities(&mut held.capabilities, &confidence_of);
-    let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
-        owner
-            .iter()
-            .filter_map(|(key, id)| {
-                Some((id.clone(), (written.get(key)?, grounded.get(key).copied()?)))
-            })
-            .collect();
+    let by_id: std::collections::BTreeMap<
+        String,
+        (&crate::author::Written, crate::author::Grounding),
+    > = owner
+        .iter()
+        .filter_map(|(key, id)| {
+            Some((id.clone(), (written.get(key)?, grounded.get(key).copied()?)))
+        })
+        .collect();
     let mut settled = held.capabilities.len() as u32;
     for entity in held.entities.iter_mut() {
         entity.name = Some(crate::names::spoken_as(&entity.declared_as));
-        let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
+        let Some((held, grounding)) = by_id.get(&entity.id).copied() else {
+            continue;
+        };
         let (_, description) = crate::author::written_name(held);
         crate::dataset::record(
             "entity",
@@ -1538,21 +1807,30 @@ pub fn derive(
         if held.kind != EdgeKind::Implements {
             continue;
         }
-        played.entry(held.source.as_str()).or_insert(held.name.as_str());
+        played
+            .entry(held.source.as_str())
+            .or_insert(held.name.as_str());
     }
     let mut guessed_receiver: HashMap<(&str, &str), &str> = HashMap::default();
     for call in calls {
-        let (Some(caller), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref()) else {
+        let (Some(caller), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref())
+        else {
             continue;
         };
-        guessed_receiver.entry((caller, crate::names::leaf(&call.callee))).or_insert(receiver);
+        guessed_receiver
+            .entry((caller, crate::names::leaf(&call.callee)))
+            .or_insert(receiver);
     }
     let mut declared_as: HashMap<(&str, &str), &str> = HashMap::default();
     for node in nodes {
-        let (Some(parent), Some(annotation)) = (node.parent.as_deref(), node.type_annotation.as_deref()) else {
+        let (Some(parent), Some(annotation)) =
+            (node.parent.as_deref(), node.type_annotation.as_deref())
+        else {
             continue;
         };
-        declared_as.entry((parent, node.name.as_str())).or_insert(annotation);
+        declared_as
+            .entry((parent, node.name.as_str()))
+            .or_insert(annotation);
     }
     let mut next: HashMap<u32, Vec<u32>> = HashMap::default();
     let mut by_name: HashSet<(u32, u32)> = HashSet::default();
@@ -1594,32 +1872,45 @@ pub fn derive(
     }
     let mut carried_names: HashSet<&str> = HashSet::default();
     for node in nodes.iter().filter(|node| node.kind.is_type()) {
-        let declared = files.get(node.file as usize).map(String::as_str).unwrap_or_default();
+        let declared = files
+            .get(node.file as usize)
+            .map(String::as_str)
+            .unwrap_or_default();
         if node.decorators.iter().any(over_a_wire) || agreed_in_a_schema(declared) {
             carried_names.insert(node.name.as_str());
         }
     }
     let mut carries: HashMap<&str, Vec<Shared>> = HashMap::default();
     for reference in type_references {
-        let Some(named) = carried_names.get(reference.name.as_str()).copied() else { continue };
+        let Some(named) = carried_names.get(reference.name.as_str()).copied() else {
+            continue;
+        };
         carried_by(&mut carries, reference.source.as_str(), contract(named));
     }
     for node in nodes.iter().filter(|node| node.type_annotation.is_some()) {
-        let Some(spoken) = node.type_annotation.as_deref() else { continue };
+        let Some(spoken) = node.type_annotation.as_deref() else {
+            continue;
+        };
         for word in spoken.split(|letter: char| !letter.is_alphanumeric() && letter != '_') {
-            let Some(named) = carried_names.get(word).copied() else { continue };
+            let Some(named) = carried_names.get(word).copied() else {
+                continue;
+            };
             let unit = node.parent.as_deref().unwrap_or(node.id.as_str());
             carried_by(&mut carries, unit, contract(named));
         }
     }
     for call in calls {
-        let Some(unit) = call.caller.as_deref() else { continue };
+        let Some(unit) = call.caller.as_deref() else {
+            continue;
+        };
         let spoken = [call.callee.as_str()]
             .into_iter()
             .chain(call.receiver.as_deref())
             .flat_map(|held| held.split(|letter: char| !letter.is_alphanumeric() && letter != '_'));
         for word in spoken {
-            let Some(named) = carried_names.get(word).copied() else { continue };
+            let Some(named) = carried_names.get(word).copied() else {
+                continue;
+            };
             carried_by(&mut carries, unit, contract(named));
         }
         for held in agreed_by_hand(call) {
@@ -1629,12 +1920,19 @@ pub fn derive(
     let served_shapes: Vec<(Vec<String>, &str)> = entry_points
         .iter()
         .filter(|entry| entry.kind == "http")
-        .filter_map(|entry| entry.path.as_deref().map(|path| (route_shape(path), entry.id.as_str())))
+        .filter_map(|entry| {
+            entry
+                .path
+                .as_deref()
+                .map(|path| (route_shape(path), entry.id.as_str()))
+        })
         .filter(|(shape, _)| said_plainly_in(shape) > 0)
         .collect();
     let mut served_at: HashMap<&str, &str> = HashMap::default();
     for exit in exit_points {
-        let Some(addressed) = exit.addressed.as_deref() else { continue };
+        let Some(addressed) = exit.addressed.as_deref() else {
+            continue;
+        };
         if served_at.contains_key(addressed) {
             continue;
         }
@@ -1655,7 +1953,9 @@ pub fn derive(
 
     for entry in entry_points.iter().filter(|entry| entry.kind == "ipc") {
         let address = format!("{}{}", crate::entry_exit::IPC_SCHEME, entry.name);
-        served_at.entry(Box::leak(address.into_boxed_str())).or_insert(entry.id.as_str());
+        served_at
+            .entry(Box::leak(address.into_boxed_str()))
+            .or_insert(entry.id.as_str());
     }
 
     let (entities_first, keeping) = entities(
@@ -1676,8 +1976,10 @@ pub fn derive(
         .collect();
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::default();
     let mut read_of: HashMap<&str, Vec<&str>> = HashMap::default();
-    let spoken_of: HashMap<&str, &str> =
-        nodes.iter().map(|node| (node.id.as_str(), node.name.as_str())).collect();
+    let spoken_of: HashMap<&str, &str> = nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect();
     let stored: HashSet<&str> = type_references
         .iter()
         .filter(|reference| declares_a_table(&reference.name))
@@ -1696,13 +1998,21 @@ pub fn derive(
         }
     }
     for call in calls {
-        let Some(unit) = call.caller.as_deref() else { continue };
+        let Some(unit) = call.caller.as_deref() else {
+            continue;
+        };
         let spoken = [crate::names::root(&call.callee)]
             .into_iter()
             .chain(call.receiver.as_deref().map(crate::names::root))
-            .chain(call.literals.iter().map(|literal| crate::names::root(literal)));
+            .chain(
+                call.literals
+                    .iter()
+                    .map(|literal| crate::names::root(literal)),
+            );
         for named in spoken {
-            let Some(named) = held.get(named).copied().filter(keeps) else { continue };
+            let Some(named) = held.get(named).copied().filter(keeps) else {
+                continue;
+            };
             let holding = named_within.entry(unit).or_default();
             if !holding.contains(&named) {
                 holding.push(named);
@@ -1711,37 +2021,62 @@ pub fn derive(
     }
     let mut handled_by: HashMap<String, &str> = HashMap::default();
     for node in nodes {
-        let Some(annotation) = node.type_annotation.as_deref() else { continue };
-        let Some(record) = held_by_a_handle(annotation).and_then(|record| held.get(record).copied()) else {
+        let Some(annotation) = node.type_annotation.as_deref() else {
             continue;
         };
-        handled_by.entry(node.name.to_ascii_lowercase()).or_insert(record);
+        let Some(record) =
+            held_by_a_handle(annotation).and_then(|record| held.get(record).copied())
+        else {
+            continue;
+        };
+        handled_by
+            .entry(node.name.to_ascii_lowercase())
+            .or_insert(record);
     }
-    let lowered_records: HashMap<String, &str> =
-        held.iter().map(|record| (record.to_ascii_lowercase(), *record)).collect();
+    let lowered_records: HashMap<String, &str> = held
+        .iter()
+        .map(|record| (record.to_ascii_lowercase(), *record))
+        .collect();
     let through_a_handle = |exit: &ExitPoint| -> Option<&str> {
         receiver_of(exit)
             .split('.')
             .map(|segment| {
                 let segment = segment.trim();
-                let end = segment.find(|letter: char| !(letter.is_alphanumeric() || letter == '_')).unwrap_or(segment.len());
+                let end = segment
+                    .find(|letter: char| !(letter.is_alphanumeric() || letter == '_'))
+                    .unwrap_or(segment.len());
                 segment[..end].trim_start_matches('_').to_ascii_lowercase()
             })
             .filter(|segment| !segment.is_empty())
-            .find_map(|segment| handled_by.get(&segment).or_else(|| lowered_records.get(&segment)).copied())
+            .find_map(|segment| {
+                handled_by
+                    .get(&segment)
+                    .or_else(|| lowered_records.get(&segment))
+                    .copied()
+            })
     };
     let mut exit_records: HashMap<&str, Vec<&str>> = HashMap::default();
     let mut typed_at: HashMap<(&str, u32), &str> = HashMap::default();
     for call in calls {
-        let Some(caller) = call.caller.as_deref() else { continue };
+        let Some(caller) = call.caller.as_deref() else {
+            continue;
+        };
         if let Some(record) = call.literals.iter().find_map(|literal| {
-            let bare = literal.rsplit('=').next().unwrap_or(literal).trim().trim_matches(['"', '\'', '`']);
+            let bare = literal
+                .rsplit('=')
+                .next()
+                .unwrap_or(literal)
+                .trim()
+                .trim_matches(['"', '\'', '`']);
             let bare = bare.split([' ', '.']).next().unwrap_or(bare);
-            lowered_records.get(&bare.to_ascii_lowercase()).copied().or_else(|| {
-                bare.split('_')
-                    .filter(|word| word.len() > 2)
-                    .find_map(|word| lowered_records.get(&word.to_ascii_lowercase()).copied())
-            })
+            lowered_records
+                .get(&bare.to_ascii_lowercase())
+                .copied()
+                .or_else(|| {
+                    bare.split('_')
+                        .filter(|word| word.len() > 2)
+                        .find_map(|word| lowered_records.get(&word.to_ascii_lowercase()).copied())
+                })
         }) {
             typed_at.entry((caller, call.line)).or_insert(record);
         }
@@ -1760,7 +2095,9 @@ pub fn derive(
         let named = crate::names::root(&exit.target);
         let addressed = exit.addressed.as_deref().and_then(|addressed| {
             let wanted = same_record(unquoted(addressed));
-            held.iter().copied().find(|record| same_record(unquoted(record)) == wanted)
+            held.iter()
+                .copied()
+                .find(|record| same_record(unquoted(record)) == wanted)
         });
         let touching: Vec<&str> = match (held.contains(named), through_a_handle(exit)) {
             _ if addressed.is_some() => addressed.into_iter().collect(),
@@ -1768,7 +2105,10 @@ pub fn derive(
             (false, Some(record)) => vec![record],
             (false, None) => match typed_at.get(&(exit.source.as_str(), exit.line)) {
                 Some(record) => vec![*record],
-                None => named_within.get(exit.source.as_str()).cloned().unwrap_or_default(),
+                None => named_within
+                    .get(exit.source.as_str())
+                    .cloned()
+                    .unwrap_or_default(),
             },
         };
         if touching.is_empty() {
@@ -1785,10 +2125,16 @@ pub fn derive(
             }
         }
     }
-    for (kept, into) in [(&keeping.stored, &mut entity_of), (&keeping.loaded, &mut read_of)] {
+    for (kept, into) in [
+        (&keeping.stored, &mut entity_of),
+        (&keeping.loaded, &mut read_of),
+    ] {
         for (unit, names) in kept {
             let holding = into.entry(unit.as_str()).or_default();
-            for named in names.iter().filter_map(|named| held.get(named.as_str()).copied()) {
+            for named in names
+                .iter()
+                .filter_map(|named| held.get(named.as_str()).copied())
+            {
                 if !holding.contains(&named) {
                     holding.push(named);
                 }
@@ -1796,7 +2142,10 @@ pub fn derive(
         }
     }
     for (exit, names) in &keeping.exits {
-        let known: Vec<&str> = names.iter().filter_map(|named| held.get(named.as_str()).copied()).collect();
+        let known: Vec<&str> = names
+            .iter()
+            .filter_map(|named| held.get(named.as_str()).copied())
+            .collect();
         if !known.is_empty() {
             exit_records.entry(exit.as_str()).or_insert(known);
         }
@@ -1816,8 +2165,10 @@ pub fn derive(
             .any(|held| held.iter().all(u8::is_ascii_alphabetic))
     }
 
-    let project_of: HashMap<&str, Option<&str>> =
-        nodes.iter().map(|node| (node.id.as_str(), node.project.as_deref())).collect();
+    let project_of: HashMap<&str, Option<&str>> = nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.project.as_deref()))
+        .collect();
     let mut by_project: BTreeMap<Option<&str>, Vec<&EntryPoint>> = BTreeMap::new();
     for entry in entry_points
         .iter()
@@ -1841,12 +2192,24 @@ pub fn derive(
     let mut stepping = next.clone();
     for (holder, inner) in members.iter() {
         for held in inner {
-            if nodes[*held as usize].id.contains(":callback:") && !handlers.contains_key(nodes[*held as usize].id.as_str()) {
+            if nodes[*held as usize].id.contains(":callback:")
+                && !handlers.contains_key(nodes[*held as usize].id.as_str())
+            {
                 stepping.entry(*holder).or_default().push(*held);
             }
         }
     }
-    let reader = crate::steps::Reader::new(nodes, &position_of, &stepping, calls, exit_points, &exit_records, &held, metrics, events);
+    let reader = crate::steps::Reader::new(
+        nodes,
+        &position_of,
+        &stepping,
+        calls,
+        exit_points,
+        &exit_records,
+        &held,
+        metrics,
+        events,
+    );
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();
     let mut carried: HashMap<String, Vec<Shared>> = HashMap::default();
@@ -1855,7 +2218,9 @@ pub fn derive(
     let mut tooling_reach: HashMap<u32, &'static str> = HashMap::default();
     let mut delegates: Vec<(usize, Vec<u32>)> = Vec::new();
     for entry in &served {
-        let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
+        let Some(start) = position_of.get(entry.handler.as_str()).copied() else {
+            continue;
+        };
         let mut seen: HashSet<u32> = HashSet::from_iter([start]);
         let mut queue: Vec<(u32, u32)> = vec![(start, 0)];
         for member in members.get(&start).into_iter().flatten() {
@@ -1909,7 +2274,9 @@ pub fn derive(
                 carrying.push(held.clone());
             }
             for exit in leaving.get(unit).into_iter().flatten() {
-                let Some(family) = shared_family(&exit.kind) else { continue };
+                let Some(family) = shared_family(&exit.kind) else {
+                    continue;
+                };
                 let named = exit.addressed.as_deref().unwrap_or(exit.target.as_str());
                 if named.len() < 2 {
                     continue;
@@ -1919,30 +2286,47 @@ pub fn derive(
                     ("artifact", false) => "reads",
                     _ => "mentions",
                 };
-                carrying.push(Shared { family, name: named.to_string(), role });
+                carrying.push(Shared {
+                    family,
+                    name: named.to_string(),
+                    role,
+                });
             }
             for exit in leaving.get(unit).into_iter().flatten() {
-                let Some(addressed) = exit.addressed.as_deref() else { continue };
-                let Some(other) = served_at.get(addressed).copied() else { continue };
+                let Some(addressed) = exit.addressed.as_deref() else {
+                    continue;
+                };
+                let Some(other) = served_at.get(addressed).copied() else {
+                    continue;
+                };
                 if other != entry.id {
                     into.push(other.to_string());
                 }
             }
             if steps.len() < STEPS_KEPT {
-                steps.push(Step { unit: unit.to_string(), depth, leaves });
+                steps.push(Step {
+                    unit: unit.to_string(),
+                    depth,
+                    leaves,
+                });
             }
             for target in next.get(&current).into_iter().flatten() {
                 if seen.insert(*target) {
                     queue.push((*target, depth + 1));
                     hops += 1;
-                    if by_name.contains(&(current, *target)) && !by_structure.contains(&(current, *target)) {
+                    if by_name.contains(&(current, *target))
+                        && !by_structure.contains(&(current, *target))
+                    {
                         hops_by_name += 1;
                     }
                 }
             }
             for inner in members.get(&current).into_iter().flatten() {
                 let held = nodes[*inner as usize].id.as_str();
-                if held.contains(":callback:") && !handlers.contains_key(held) && seen.insert(*inner) {
+                if held.contains(":callback:")
+                    && !handlers.contains_key(held)
+                    && seen.insert(*inner)
+                {
                     queue.push((*inner, depth));
                 }
             }
@@ -1965,7 +2349,9 @@ pub fn derive(
             .as_deref()
             .filter(|_| entry.kind == "http")
             .map(str::to_string)
-            .or_else(|| (entry.kind == "ui" && entry.name.contains('.')).then(|| entry.name.clone()))
+            .or_else(|| {
+                (entry.kind == "ui" && entry.name.contains('.')).then(|| entry.name.clone())
+            })
             .or_else(|| {
                 named_of
                     .get(entry.handler.as_str())
@@ -1974,10 +2360,12 @@ pub fn derive(
                     .filter(|owner| owner.kind.is_type())
                     .map(|owner| owner.name.as_str())
                     .filter(|named| !GENERIC.contains(named))
-                    .map(|owner| match (entry.kind, named_of.get(entry.handler.as_str())) {
-                        ("rpc" | "graphql", Some(method)) => format!("{owner}.{}", method.name),
-                        _ => owner.to_string(),
-                    })
+                    .map(
+                        |owner| match (entry.kind, named_of.get(entry.handler.as_str())) {
+                            ("rpc" | "graphql", Some(method)) => format!("{owner}.{}", method.name),
+                            _ => owner.to_string(),
+                        },
+                    )
                     .or_else(|| {
                         GENERIC.contains(&entry.name.as_str()).then(|| {
                             let path = crate::paths::basename(&files[entry.file as usize]);
@@ -2001,16 +2389,27 @@ pub fn derive(
             .map(|named| (*named).to_string())
             .filter(|named| !writes.contains(named))
             .collect();
-        let seen_units: Vec<&str> = seen.iter().map(|unit| nodes[*unit as usize].id.as_str()).collect();
+        let seen_units: Vec<&str> = seen
+            .iter()
+            .map(|unit| nodes[*unit as usize].id.as_str())
+            .collect();
         let through = keeping.through_documents(&seen_units);
-        for named in through.writes.iter().filter(|named| held.contains(named.as_str())) {
+        for named in through
+            .writes
+            .iter()
+            .filter(|named| held.contains(named.as_str()))
+        {
             if !writes.contains(named) {
                 writes.push(named.clone());
             }
         }
         writes.sort();
         reads.retain(|named| !writes.contains(named));
-        for named in through.reads.iter().filter(|named| held.contains(named.as_str())) {
+        for named in through
+            .reads
+            .iter()
+            .filter(|named| held.contains(named.as_str()))
+        {
             if !writes.contains(named) && !reads.contains(named) {
                 reads.push(named.clone());
             }
@@ -2033,7 +2432,13 @@ pub fn derive(
             .iter()
             .any(|step| matches!(step.kind, "change" | "remove") && step.doing.is_none());
         for step in &logical {
-            let Some(object) = step.object.as_deref().filter(|object| held.contains(object)) else { continue };
+            let Some(object) = step
+                .object
+                .as_deref()
+                .filter(|object| held.contains(object))
+            else {
+                continue;
+            };
             let in_memory = step.doing.is_some() || step.kind == "create";
             match step.kind {
                 "change" | "create" | "remove" if !in_memory || stores_something => {
@@ -2042,7 +2447,9 @@ pub fn derive(
                     }
                 }
                 "read" => {
-                    if !reads.iter().any(|held| held == object) && !writes.iter().any(|held| held == object) {
+                    if !reads.iter().any(|held| held == object)
+                        && !writes.iter().any(|held| held == object)
+                    {
                         reads.push(object.to_string());
                     }
                 }
@@ -2053,8 +2460,13 @@ pub fn derive(
         reads.retain(|held| !writes.contains(held));
         reads.sort();
         let summary = summarised(entry, &named, &writes, &reads, &reaching);
-        let hands_on = logical.iter().any(|step| matches!(step.kind, "raise" | "hand_off"));
-        let standing = match (!changing.is_empty() || !writes.is_empty() || hands_on, !into.is_empty()) {
+        let hands_on = logical
+            .iter()
+            .any(|step| matches!(step.kind, "raise" | "hand_off"));
+        let standing = match (
+            !changing.is_empty() || !writes.is_empty() || hands_on,
+            !into.is_empty(),
+        ) {
             (true, _) => "terminal",
             (false, true) => "proximal",
             (false, false) if open > 0 || cut => "open",
@@ -2069,7 +2481,11 @@ pub fn derive(
             cut,
             standing,
         });
-        match entry.unshipped.as_ref().filter(|held| held.is_established()) {
+        match entry
+            .unshipped
+            .as_ref()
+            .filter(|held| held.is_established())
+        {
             Some(held) => tooling_reach.extend(seen.iter().map(|unit| (*unit, held.role))),
             None => {
                 product_reach.extend(seen.iter().copied());
@@ -2083,7 +2499,8 @@ pub fn derive(
                         .copied()
                         .filter(|target| {
                             let held = &nodes[*target as usize];
-                            held.kind != crate::model::NodeKind::External && held.file != nodes[start as usize].file
+                            held.kind != crate::model::NodeKind::External
+                                && held.file != nodes[start as usize].file
                         })
                         .collect();
                     delegates.push((flows.len(), handed_to));
@@ -2142,8 +2559,14 @@ pub fn derive(
     flows.sort_by(|left, right| left.id.cmp(&right.id));
     link_across_parts(&mut flows, &carried);
     let mut received: HashMap<&str, Vec<String>> = HashMap::default();
-    for entry in entry_points.iter().filter(|entry| matches!(entry.kind, "message" | "event")) {
-        received.entry(entry.name.as_str()).or_default().push(entry.id.clone());
+    for entry in entry_points
+        .iter()
+        .filter(|entry| matches!(entry.kind, "message" | "event"))
+    {
+        received
+            .entry(entry.name.as_str())
+            .or_default()
+            .push(entry.id.clone());
     }
     for flow in flows.iter_mut() {
         if matches!(flow.kind, "export" | "test") {
@@ -2169,7 +2592,10 @@ pub fn derive(
         let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (unit, records) in holding {
             for record in records {
-                found.entry((*record).to_string()).or_default().push((*unit).to_string());
+                found
+                    .entry((*record).to_string())
+                    .or_default()
+                    .push((*unit).to_string());
             }
         }
         for units in found.values_mut() {
@@ -2185,13 +2611,22 @@ pub fn derive(
     let mut entities = entities_first;
     for entity in entities.iter_mut() {
         if entity.written_by.is_empty() {
-            entity.written_by = writers.get(&entity.declared_as).cloned().unwrap_or_default();
+            entity.written_by = writers
+                .get(&entity.declared_as)
+                .cloned()
+                .unwrap_or_default();
         }
         if entity.read_by.is_empty() {
-            entity.read_by = readers.get(&entity.declared_as).cloned().unwrap_or_default();
+            entity.read_by = readers
+                .get(&entity.declared_as)
+                .cloned()
+                .unwrap_or_default();
         }
         if let Some((writing, reading)) = through_units.get(&entity.declared_as) {
-            for (held, more) in [(&mut entity.written_by, writing), (&mut entity.read_by, reading)] {
+            for (held, more) in [
+                (&mut entity.written_by, writing),
+                (&mut entity.read_by, reading),
+            ] {
                 let mut more: Vec<&String> = more.iter().collect();
                 more.sort();
                 for unit in more {
@@ -2216,18 +2651,45 @@ pub fn derive(
     for entity in entities.iter_mut() {
         let named = entity.declared_as.as_str();
         entity.terminality = match (
-            flows.iter().any(|flow| flow.writes.iter().any(|held| held == named)),
-            flows.iter().any(|flow| flow.reads.iter().any(|held| held == named)),
+            flows
+                .iter()
+                .any(|flow| flow.writes.iter().any(|held| held == named)),
+            flows
+                .iter()
+                .any(|flow| flow.reads.iter().any(|held| held == named)),
         ) {
             (true, _) => Some("terminal"),
             (false, true) => Some("proximal"),
             _ => None,
         };
     }
-    set_aside_tooling_entities(&mut entities, &flows, &Reach { position_of: &position_of, product: &product_reach, tooling: &tooling_reach });
-    let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
-    let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None, derivation: None }
+    set_aside_tooling_entities(
+        &mut entities,
+        &flows,
+        &Reach {
+            position_of: &position_of,
+            product: &product_reach,
+            tooling: &tooling_reach,
+        },
+    );
+    let terminal = flows
+        .iter()
+        .filter(|flow| flow.standing == "terminal")
+        .count() as u32;
+    let chained = flows
+        .iter()
+        .filter(|flow| !flow.leads_into.is_empty())
+        .count() as u32;
+    Comprehension {
+        products: Vec::new(),
+        capabilities: Vec::new(),
+        flows,
+        entities,
+        terminal,
+        chained,
+        semantic_coverage: None,
+        derivation: None,
+    }
 }
 
 fn file_of_unit(unit: &str) -> &str {
@@ -2235,16 +2697,26 @@ fn file_of_unit(unit: &str) -> &str {
 }
 
 fn directory_of_flow(flow: &Flow) -> Option<&str> {
-    flow.path.first().map(|step| crate::paths::directory_of(file_of_unit(&step.unit)))
+    flow.path
+        .first()
+        .map(|step| crate::paths::directory_of(file_of_unit(&step.unit)))
 }
 
 const POINTED_TO_BY_AT_LEAST: usize = 2;
 
 fn names_a_command(operation: &str) -> bool {
-    operation.len() >= 4 && operation.chars().all(|held| held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))
+    operation.len() >= 4
+        && operation
+            .chars()
+            .all(|held| held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))
 }
 
-fn pointed_to_by_the_product(flows: &[Flow], calls: &[CallFact], files: &[String], served: &[&EntryPoint]) -> HashMap<String, usize> {
+fn pointed_to_by_the_product(
+    flows: &[Flow],
+    calls: &[CallFact],
+    files: &[String],
+    served: &[&EntryPoint],
+) -> HashMap<String, usize> {
     let tooling_files: HashSet<u32> = served
         .iter()
         .filter(|entry| crate::unshipped::is_set_aside(entry.unshipped.as_ref()))
@@ -2253,23 +2725,33 @@ fn pointed_to_by_the_product(flows: &[Flow], calls: &[CallFact], files: &[String
     let mut asked_for: HashMap<&str, Vec<usize>> = HashMap::default();
     for (at, flow) in flows.iter().enumerate() {
         if matches!(flow.kind, "tool" | "cli") && names_a_command(&flow.operation) {
-            asked_for.entry(flow.operation.as_str()).or_default().push(at);
+            asked_for
+                .entry(flow.operation.as_str())
+                .or_default()
+                .push(at);
         }
     }
     fn own_file(flow: &Flow) -> &str {
-        flow.path.first().map(|step| file_of_unit(&step.unit)).unwrap_or_default()
+        flow.path
+            .first()
+            .map(|step| file_of_unit(&step.unit))
+            .unwrap_or_default()
     }
     let mut mentioned_in: HashMap<usize, HashSet<u32>> = HashMap::default();
     for call in calls {
         if tooling_files.contains(&call.file) {
             continue;
         }
-        let Some(path) = files.get(call.file as usize) else { continue };
+        let Some(path) = files.get(call.file as usize) else {
+            continue;
+        };
         if crate::paths::is_test(path) {
             continue;
         }
         for literal in call.literals.iter().filter(|literal| literal.len() <= 400) {
-            for token in literal.split(|held: char| !(held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))) {
+            for token in literal.split(|held: char| {
+                !(held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))
+            }) {
                 for at in asked_for.get(token).into_iter().flatten() {
                     if own_file(&flows[*at]) != path.as_str() {
                         mentioned_in.entry(*at).or_default().insert(call.file);
@@ -2278,7 +2760,10 @@ fn pointed_to_by_the_product(flows: &[Flow], calls: &[CallFact], files: &[String
             }
         }
     }
-    mentioned_in.into_iter().map(|(at, held)| (flows[at].id.clone(), held.len())).collect()
+    mentioned_in
+        .into_iter()
+        .map(|(at, held)| (flows[at].id.clone(), held.len()))
+        .collect()
 }
 
 fn standing_tier(flow: &Flow, pointed_to: &HashMap<String, usize>) -> u8 {
@@ -2287,10 +2772,12 @@ fn standing_tier(flow: &Flow, pointed_to: &HashMap<String, usize>) -> u8 {
     }
     match flow.kind {
         "http" | "rpc" | "graphql" | "ui" | "ipc" => 0,
-        "tool" | "cli" => match pointed_to.get(&flow.id).copied().unwrap_or(0) >= POINTED_TO_BY_AT_LEAST {
-            true => 0,
-            false => 1,
-        },
+        "tool" | "cli" => {
+            match pointed_to.get(&flow.id).copied().unwrap_or(0) >= POINTED_TO_BY_AT_LEAST {
+                true => 0,
+                false => 1,
+            }
+        }
         "lifecycle" | "schedule" | "event" | "message" | "background" => 2,
         _ => 3,
     }
@@ -2329,8 +2816,15 @@ fn set_aside_what_only_programs_run(
         let mut distinct = handed_to.clone();
         distinct.sort_unstable();
         distinct.dedup();
-        let its_own: Vec<u32> = distinct.iter().copied().filter(|unit| product_count.get(unit) == handing.get(unit)).collect();
-        let only_programs: Vec<&'static str> = its_own.iter().filter_map(|unit| tooling_reach.get(unit).copied()).collect();
+        let its_own: Vec<u32> = distinct
+            .iter()
+            .copied()
+            .filter(|unit| product_count.get(unit) == handing.get(unit))
+            .collect();
+        let only_programs: Vec<&'static str> = its_own
+            .iter()
+            .filter_map(|unit| tooling_reach.get(unit).copied())
+            .collect();
         if only_programs.is_empty() || only_programs.len() * 2 <= its_own.len() {
             continue;
         }
@@ -2360,18 +2854,31 @@ impl Reach<'_> {
     }
 }
 
+const TOOLING_DIRECTORY_SHARE: f64 = 0.9;
+
+pub(crate) fn tooling_directories(flows: &[Flow]) -> HashSet<&str> {
+    let mut weight_of: HashMap<&str, (u64, u64)> = HashMap::default();
+    for flow in flows {
+        let Some(directory) = directory_of_flow(flow) else {
+            continue;
+        };
+        let held = weight_of.entry(directory).or_default();
+        held.1 += u64::from(flow.units);
+        if crate::unshipped::is_set_aside(flow.unshipped.as_ref()) {
+            held.0 += u64::from(flow.units);
+        }
+    }
+    weight_of
+        .into_iter()
+        .filter(|(_, (aside, all))| {
+            *aside > 0 && *aside as f64 >= TOOLING_DIRECTORY_SHARE * *all as f64
+        })
+        .map(|(directory, _)| directory)
+        .collect()
+}
+
 fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow], reach: &Reach<'_>) {
-    let product_directories: HashSet<&str> = flows
-        .iter()
-        .filter(|flow| !crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
-        .filter_map(directory_of_flow)
-        .collect();
-    let tooling_directories: HashSet<&str> = flows
-        .iter()
-        .filter(|flow| crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
-        .filter_map(directory_of_flow)
-        .filter(|directory| !product_directories.contains(directory))
-        .collect();
+    let tooling_directories = tooling_directories(flows);
     let aside = |path: &str| -> Option<(&'static str, &'static str)> {
         if crate::paths::is_test(path) {
             return Some(("test-support", "name"));
@@ -2386,15 +2893,29 @@ fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow], reach: &R
             .then_some(("tooling", "shipping-evidence"))
     };
     for entity in entities.iter_mut() {
-        let users: Vec<&str> =
-            entity.written_by.iter().chain(entity.read_by.iter()).map(|unit| file_of_unit(unit)).collect();
+        let users: Vec<&str> = entity
+            .written_by
+            .iter()
+            .chain(entity.read_by.iter())
+            .map(|unit| file_of_unit(unit))
+            .collect();
         let declared = entity.declared_in.as_deref().map(file_of_unit);
-        let verdicts: Vec<Option<(&'static str, &'static str)>> =
-            declared.into_iter().chain(users.iter().copied()).map(|path| aside(path)).collect();
+        let verdicts: Vec<Option<(&'static str, &'static str)>> = declared
+            .into_iter()
+            .chain(users.iter().copied())
+            .map(|path| aside(path))
+            .collect();
         let declared_aside = declared.is_some_and(|path| aside(path).is_some());
-        let used_by: Vec<&String> = entity.written_by.iter().chain(entity.read_by.iter()).collect();
+        let used_by: Vec<&String> = entity
+            .written_by
+            .iter()
+            .chain(entity.read_by.iter())
+            .collect();
         let only_tooling_uses = !users.is_empty()
-            && used_by.iter().zip(users.iter()).all(|(unit, path)| aside(path).is_some() || reach.only_tooling_runs(unit));
+            && used_by
+                .iter()
+                .zip(users.iter())
+                .all(|(unit, path)| aside(path).is_some() || reach.only_tooling_runs(unit));
         let named = verdicts.into_iter().flatten().next();
         match (declared_aside || only_tooling_uses, named) {
             (true, Some((role, basis))) => {
@@ -2445,7 +2966,10 @@ const MOUNTED_WITH_AT_LEAST: usize = 2;
 fn route_shape(path: &str) -> Vec<String> {
     let bare = path.split(['?', '#']).next().unwrap_or_default();
     let bare = match bare.find("://") {
-        Some(at) => bare[at + 3..].find('/').map(|slash| &bare[at + 3 + slash..]).unwrap_or(""),
+        Some(at) => bare[at + 3..]
+            .find('/')
+            .map(|slash| &bare[at + 3 + slash..])
+            .unwrap_or(""),
         None => bare,
     };
     bare.split('/')
@@ -2485,37 +3009,63 @@ fn mounted_under(asked: &[String], served: &[String]) -> bool {
 
 fn carried_by<'a>(carries: &mut HashMap<&'a str, Vec<Shared>>, unit: &'a str, held: Shared) {
     let holding = carries.entry(unit).or_default();
-    if !holding.iter().any(|kept| kept.family == held.family && kept.name == held.name) {
+    if !holding
+        .iter()
+        .any(|kept| kept.family == held.family && kept.name == held.name)
+    {
         holding.push(held);
     }
 }
 
 fn contract(named: &str) -> Shared {
-    Shared { family: "contract", name: named.to_string(), role: "mentions" }
+    Shared {
+        family: "contract",
+        name: named.to_string(),
+        role: "mentions",
+    }
 }
 
-static AGREED_IN_A_SCHEMA: &[&str] =
-    &["avsc", "capnp", "fbs", "gql", "graphql", "graphqls", "proto", "thrift"];
+static AGREED_IN_A_SCHEMA: &[&str] = &[
+    "avsc", "capnp", "fbs", "gql", "graphql", "graphqls", "proto", "thrift",
+];
 
 fn agreed_in_a_schema(path: &str) -> bool {
-    let Some((_, spoken)) = path.rsplit_once('.') else { return false };
+    let Some((_, spoken)) = path.rsplit_once('.') else {
+        return false;
+    };
     AGREED_IN_A_SCHEMA.binary_search(&spoken).is_ok()
 }
 
-static PUBLISHES: &[&str] =
-    &["broadcast", "enqueue", "postmessage", "produce", "publish", "sendmessage"];
+static PUBLISHES: &[&str] = &[
+    "broadcast",
+    "enqueue",
+    "postmessage",
+    "produce",
+    "publish",
+    "sendmessage",
+];
 
 static SUBSCRIBES: &[&str] = &["consume", "dequeue", "subscribe"];
 
-static READS_A_KEY: &[&str] = &["get", "getex", "hget", "hgetall", "lrange", "mget", "smembers"];
+static READS_A_KEY: &[&str] = &[
+    "get", "getex", "hget", "hgetall", "lrange", "mget", "smembers",
+];
 
-static WRITES_A_KEY: &[&str] =
-    &["decr", "del", "expire", "hset", "incr", "lpush", "mset", "rpush", "sadd", "set", "setex"];
+static WRITES_A_KEY: &[&str] = &[
+    "decr", "del", "expire", "hset", "incr", "lpush", "mset", "rpush", "sadd", "set", "setex",
+];
 
 static A_KEPT_PLACE: &[&str] = &["cache", "kv", "memcache", "redis", "store", "valkey"];
 
-static NAMES_AN_ADDRESS: &[&str] =
-    &["_addr", "_dsn", "_endpoint", "_host", "_port", "_uri", "_url"];
+static NAMES_AN_ADDRESS: &[&str] = &[
+    "_addr",
+    "_dsn",
+    "_endpoint",
+    "_host",
+    "_port",
+    "_uri",
+    "_url",
+];
 
 static ASKS_THE_ENVIRONMENT: &[&str] = &["env", "environ", "environment", "getenv", "var"];
 
@@ -2531,23 +3081,46 @@ fn a_topic_is_named(named: &str) -> bool {
 }
 
 fn agreed_by_hand(call: &CallFact) -> Vec<Shared> {
-    let Some(named) = call.literals.first().map(String::as_str).filter(|held| held.len() > 2)
+    let Some(named) = call
+        .literals
+        .first()
+        .map(String::as_str)
+        .filter(|held| held.len() > 2)
     else {
         return Vec::new();
     };
     let spoken = said_plainly(crate::names::leaf(&call.callee));
-    let within = call.receiver.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let within = call
+        .receiver
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let kept = A_KEPT_PLACE.iter().any(|place| within.contains(place));
     if kept && READS_A_KEY.contains(&spoken.as_str()) {
-        return vec![Shared { family: "store", name: named.to_string(), role: "reads" }];
+        return vec![Shared {
+            family: "store",
+            name: named.to_string(),
+            role: "reads",
+        }];
     }
     if kept && WRITES_A_KEY.contains(&spoken.as_str()) {
-        return vec![Shared { family: "store", name: named.to_string(), role: "writes" }];
+        return vec![Shared {
+            family: "store",
+            name: named.to_string(),
+            role: "writes",
+        }];
     }
     if ASKS_THE_ENVIRONMENT.contains(&spoken.as_str()) || within.contains("env") {
         let lowered = named.to_ascii_lowercase();
-        if NAMES_AN_ADDRESS.iter().any(|ending| lowered.ends_with(ending)) {
-            return vec![Shared { family: "address", name: lowered, role: "mentions" }];
+        if NAMES_AN_ADDRESS
+            .iter()
+            .any(|ending| lowered.ends_with(ending))
+        {
+            return vec![Shared {
+                family: "address",
+                name: lowered,
+                role: "mentions",
+            }];
         }
         return Vec::new();
     }
@@ -2555,10 +3128,18 @@ fn agreed_by_hand(call: &CallFact) -> Vec<Shared> {
         return Vec::new();
     }
     if PUBLISHES.contains(&spoken.as_str()) {
-        return vec![Shared { family: "topic", name: named.to_string(), role: "writes" }];
+        return vec![Shared {
+            family: "topic",
+            name: named.to_string(),
+            role: "writes",
+        }];
     }
     if SUBSCRIBES.contains(&spoken.as_str()) {
-        return vec![Shared { family: "topic", name: named.to_string(), role: "reads" }];
+        return vec![Shared {
+            family: "topic",
+            name: named.to_string(),
+            role: "reads",
+        }];
     }
     Vec::new()
 }
@@ -2574,10 +3155,7 @@ fn over_a_wire(decorator: &crate::model::Decorator) -> bool {
             .any(|argument| !argument.literal && spoken(&argument.value))
 }
 
-fn link_across_parts(
-    flows: &mut [Flow],
-    shared: &HashMap<String, Vec<Shared>>,
-) {
+fn link_across_parts(flows: &mut [Flow], shared: &HashMap<String, Vec<Shared>>) {
     let mut speaking: HashMap<(&str, &str), Vec<(usize, Option<&str>, &'static str)>> =
         HashMap::default();
     for (at, flow) in flows.iter().enumerate() {
@@ -2616,7 +3194,10 @@ fn link_across_parts(
                 continue;
             }
             for (other, elsewhere, played) in holding {
-                if elsewhere == part || !answering(role, played) || !receives(&flows[*other], family) {
+                if elsewhere == part
+                    || !answering(role, played)
+                    || !receives(&flows[*other], family)
+                {
                     continue;
                 }
                 linked[*at].push(flows[*other].entry_point.clone());
@@ -2648,7 +3229,10 @@ fn receives(flow: &Flow, family: &str) -> bool {
 fn sends(flow: &Flow) -> bool {
     match flow.kind {
         "test" => false,
-        "export" => flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise")),
+        "export" => flow
+            .steps
+            .iter()
+            .any(|step| matches!(step.kind, "call" | "hand_off" | "raise")),
         _ => true,
     }
 }
@@ -2721,13 +3305,20 @@ fn held_by_a_handle(annotation: &str) -> Option<&str> {
 }
 
 fn receiver_of(exit: &ExitPoint) -> &str {
-    exit.name.strip_suffix(&format!(".{}", exit.operation)).unwrap_or(&exit.name)
+    exit.name
+        .strip_suffix(&format!(".{}", exit.operation))
+        .unwrap_or(&exit.name)
 }
 
 fn plainly_named(held: &str) -> bool {
     !held.is_empty()
-        && held.chars().all(|letter| letter.is_alphanumeric() || letter == '_')
-        && !held.chars().next().is_some_and(|letter| letter.is_ascii_digit())
+        && held
+            .chars()
+            .all(|letter| letter.is_alphanumeric() || letter == '_')
+        && !held
+            .chars()
+            .next()
+            .is_some_and(|letter| letter.is_ascii_digit())
 }
 
 fn addressed<'a>(
@@ -2742,8 +3333,14 @@ fn addressed<'a>(
     if !segments.iter().all(|held| plainly_named(held)) {
         return None;
     }
-    if let Some(at) = segments.iter().position(|held| MANAGERS.binary_search(held).is_ok()) {
-        return segments[..at].last().copied().filter(|held| modelled.contains(held));
+    if let Some(at) = segments
+        .iter()
+        .position(|held| MANAGERS.binary_search(held).is_ok())
+    {
+        return segments[..at]
+            .last()
+            .copied()
+            .filter(|held| modelled.contains(held));
     }
     match segments.len() == 2 {
         true => segments
@@ -2761,17 +3358,47 @@ fn naming(held: &str) -> Vec<&str> {
 }
 
 static HOLDS_MANY: &[&str] = &[
-    "array", "arraylist", "btreemap", "collection", "deque", "dictionary", "enumerable", "flow",
-    "flux", "hashmap", "hashset", "icollection", "idictionary", "ienumerable", "ilist", "iterable",
-    "iterator", "linkedlist", "list", "map", "observable", "publisher", "queue", "seq", "sequence",
-    "set", "stream", "vec", "vector",
+    "array",
+    "arraylist",
+    "btreemap",
+    "collection",
+    "deque",
+    "dictionary",
+    "enumerable",
+    "flow",
+    "flux",
+    "hashmap",
+    "hashset",
+    "icollection",
+    "idictionary",
+    "ienumerable",
+    "ilist",
+    "iterable",
+    "iterator",
+    "linkedlist",
+    "list",
+    "map",
+    "observable",
+    "publisher",
+    "queue",
+    "seq",
+    "sequence",
+    "set",
+    "stream",
+    "vec",
+    "vector",
 ];
 
 fn beside_nothing(annotation: &str) -> &str {
     annotation
         .split('|')
         .map(str::trim)
-        .find(|part| !matches!(part.to_ascii_lowercase().as_str(), "none" | "null" | "undefined"))
+        .find(|part| {
+            !matches!(
+                part.to_ascii_lowercase().as_str(),
+                "none" | "null" | "undefined"
+            )
+        })
         .unwrap_or(annotation)
 }
 
@@ -2824,11 +3451,23 @@ fn unquoted(name: &str) -> &str {
 fn declares_no_records(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
     [
-        ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml", ".css",
-        ".scss", ".sass", ".less", ".styl",
+        ".yml",
+        ".yaml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".xml",
+        ".css",
+        ".scss",
+        ".sass",
+        ".less",
+        ".styl",
     ]
-        .iter()
-        .any(|extension| lowered.ends_with(extension))
+    .iter()
+    .any(|extension| lowered.ends_with(extension))
 }
 
 fn the_same_record(left: &[Column], right: &[Field]) -> bool {
@@ -2836,7 +3475,10 @@ fn the_same_record(left: &[Column], right: &[Field]) -> bool {
     if smaller < 4 {
         return false;
     }
-    let held: HashSet<String> = right.iter().map(|field| field.name.to_ascii_lowercase()).collect();
+    let held: HashSet<String> = right
+        .iter()
+        .map(|field| field.name.to_ascii_lowercase())
+        .collect();
     let shared = left
         .iter()
         .filter(|column| held.contains(&column.named.to_ascii_lowercase()))
@@ -2861,8 +3503,16 @@ struct Denoting<'a> {
 }
 
 static SPOKEN_ALIKE: &[(&str, &str)] = &[
-    ("cjs", "js"), ("cts", "js"), ("js", "js"), ("jsx", "js"), ("mjs", "js"), ("mts", "js"),
-    ("ts", "js"), ("tsx", "js"), ("vue", "js"), ("svelte", "js"),
+    ("cjs", "js"),
+    ("cts", "js"),
+    ("js", "js"),
+    ("jsx", "js"),
+    ("mjs", "js"),
+    ("mts", "js"),
+    ("ts", "js"),
+    ("tsx", "js"),
+    ("vue", "js"),
+    ("svelte", "js"),
 ];
 
 static NAMES_ITS_TABLE: &[&str] = &["__tablename__", "_table_name", "table_name"];
@@ -2898,9 +3548,15 @@ impl<'a> Denoting<'a> {
         let mut by_name: HashMap<String, Vec<&IndexNode>> = HashMap::default();
         let mut by_table: HashMap<String, Vec<&IndexNode>> = HashMap::default();
         for node in candidates {
-            by_name.entry(node.name.to_ascii_lowercase()).or_default().push(node);
+            by_name
+                .entry(node.name.to_ascii_lowercase())
+                .or_default()
+                .push(node);
             let holds_rows = !matches!(node.kind, NodeKind::Interface | NodeKind::Enum);
-            for key in tables_named_for(&node.name).into_iter().filter(|_| holds_rows) {
+            for key in tables_named_for(&node.name)
+                .into_iter()
+                .filter(|_| holds_rows)
+            {
                 let held = by_table.entry(key).or_default();
                 if !held.iter().any(|known| known.id == node.id) {
                     held.push(node);
@@ -2921,9 +3577,15 @@ impl<'a> Denoting<'a> {
             .filter(|node| node.kind == NodeKind::Module)
             .filter_map(|node| Some((node.file, node.project.as_deref()?)))
             .collect();
-        let kind_of = nodes.iter().map(|node| (node.id.as_str(), node.kind)).collect();
+        let kind_of = nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node.kind))
+            .collect();
         let mut members: HashMap<&str, u32> = HashMap::default();
-        for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::HasField | EdgeKind::HasMethod)) {
+        for edge in edges
+            .iter()
+            .filter(|edge| matches!(edge.kind, EdgeKind::HasField | EdgeKind::HasMethod))
+        {
             *members.entry(edge.source.as_str()).or_insert(0) += 1;
         }
         Denoting {
@@ -2947,16 +3609,23 @@ impl<'a> Denoting<'a> {
     }
 
     fn spoken_alike(&self, site: u32, node: &IndexNode) -> bool {
-        let Some(site) = self.files.get(site as usize) else { return true };
+        let Some(site) = self.files.get(site as usize) else {
+            return true;
+        };
         if a_schema(site) {
             return true;
         }
-        let declared = self.files.get(node.file as usize).and_then(|path| written_in(path));
+        let declared = self
+            .files
+            .get(node.file as usize)
+            .and_then(|path| written_in(path));
         written_in(site) == declared
     }
 
     fn pick(&self, candidates: Option<&Vec<&'a IndexNode>>, site: u32) -> Vec<&'a str> {
-        let Some(candidates) = candidates else { return Vec::new() };
+        let Some(candidates) = candidates else {
+            return Vec::new();
+        };
         let spoken: Vec<&'a IndexNode> = candidates
             .iter()
             .copied()
@@ -3003,9 +3672,12 @@ impl<'a> Denoting<'a> {
         }
         let candidates = &once;
         let from = self.project_of_file.get(&site).copied();
-        let ids = |held: Vec<&&'a IndexNode>| held.into_iter().map(|node| node.id.as_str()).collect();
-        let alongside: Vec<&&IndexNode> =
-            candidates.iter().filter(|node| node.project.as_deref() == from).collect();
+        let ids =
+            |held: Vec<&&'a IndexNode>| held.into_iter().map(|node| node.id.as_str()).collect();
+        let alongside: Vec<&&IndexNode> = candidates
+            .iter()
+            .filter(|node| node.project.as_deref() == from)
+            .collect();
         if !alongside.is_empty() {
             return ids(alongside);
         }
@@ -3025,7 +3697,9 @@ impl<'a> Denoting<'a> {
 
 fn tables_named_for(name: &str) -> Vec<String> {
     let named = name.to_ascii_lowercase();
-    let spoken: String = crate::names::spoken_as(name).to_ascii_lowercase().replace(' ', "_");
+    let spoken: String = crate::names::spoken_as(name)
+        .to_ascii_lowercase()
+        .replace(' ', "_");
     let mut held: Vec<String> = [named.clone(), spoken.clone()]
         .iter()
         .flat_map(|held: &String| [held.clone(), format!("{held}s"), format!("{held}es")])
@@ -3056,7 +3730,10 @@ fn entities(
     let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::default();
     let mut extending: HashMap<&str, Vec<&str>> = HashMap::default();
     for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Extends) {
-        extending.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+        extending
+            .entry(edge.source.as_str())
+            .or_default()
+            .push(edge.target.as_str());
     }
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
@@ -3098,20 +3775,29 @@ fn entities(
         }
     }
     for call in calls {
-        let Some(caller) = call.caller.as_deref().and_then(|id| node_of.get(id)) else { continue };
-        let Some(owner) = caller.parent.as_deref().and_then(|id| node_of.get(id)) else { continue };
-        let Some(named) = call.literals.first() else { continue };
+        let Some(caller) = call.caller.as_deref().and_then(|id| node_of.get(id)) else {
+            continue;
+        };
+        let Some(owner) = caller.parent.as_deref().and_then(|id| node_of.get(id)) else {
+            continue;
+        };
+        let Some(named) = call.literals.first() else {
+            continue;
+        };
         if !owner.kind.is_type() || caller.name.is_empty() {
             continue;
         }
         let many = call.callee.to_ascii_lowercase().contains("many");
         for held in naming(named) {
-            pointing.entry(owner.id.as_str()).or_default().push(Reference {
-                field: caller.name.clone(),
-                entity: held.to_string(),
-                many,
-                declared_by: "call",
-            });
+            pointing
+                .entry(owner.id.as_str())
+                .or_default()
+                .push(Reference {
+                    field: caller.name.clone(),
+                    entity: held.to_string(),
+                    many,
+                    declared_by: "call",
+                });
         }
     }
 
@@ -3136,7 +3822,11 @@ fn entities(
     let handled: Vec<(&str, u32, &str)> = nodes
         .iter()
         .filter_map(|node| {
-            Some((held_by_a_handle(node.type_annotation.as_deref()?)?, node.file, node.name.as_str()))
+            Some((
+                held_by_a_handle(node.type_annotation.as_deref()?)?,
+                node.file,
+                node.name.as_str(),
+            ))
         })
         .collect();
     let modelled_names: HashSet<&str> = nodes
@@ -3146,7 +3836,10 @@ fn entities(
         .collect();
     let mut created: BTreeMap<String, Table> = BTreeMap::new();
     for table in declared_tables {
-        if files.get(table.file as usize).is_some_and(|path| crate::paths::is_test(path)) {
+        if files
+            .get(table.file as usize)
+            .is_some_and(|path| crate::paths::is_test(path))
+        {
             continue;
         }
         let key = table.named.to_ascii_lowercase();
@@ -3170,25 +3863,47 @@ fn entities(
     }
     let mut files_in: HashMap<&str, u32> = HashMap::default();
     for path in files {
-        *files_in.entry(path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or("")).or_insert(0) += 1;
+        *files_in
+            .entry(
+                path.rsplit_once('/')
+                    .map(|(directory, _)| directory)
+                    .unwrap_or(""),
+            )
+            .or_insert(0) += 1;
     }
     let mut making_tables: HashMap<&str, HashSet<u32>> = HashMap::default();
-    for table in declared_tables.iter().filter(|table| table.declared_by.is_none()) {
-        let Some(path) = files.get(table.file as usize).filter(|path| !a_schema(path)) else { continue };
+    for table in declared_tables
+        .iter()
+        .filter(|table| table.declared_by.is_none())
+    {
+        let Some(path) = files
+            .get(table.file as usize)
+            .filter(|path| !a_schema(path))
+        else {
+            continue;
+        };
         making_tables
-            .entry(path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or(""))
+            .entry(
+                path.rsplit_once('/')
+                    .map(|(directory, _)| directory)
+                    .unwrap_or(""),
+            )
             .or_default()
             .insert(table.file);
     }
     let where_tables_are_made: HashSet<&str> = making_tables
         .into_iter()
         .filter(|(directory, making)| {
-            making.len() * HISTORY_SHARE_OF_FILES >= files_in.get(directory).copied().unwrap_or(0) as usize
+            making.len() * HISTORY_SHARE_OF_FILES
+                >= files_in.get(directory).copied().unwrap_or(0) as usize
         })
         .map(|(directory, _)| directory)
         .collect();
     let directory_of = |path: &'_ str| -> String {
-        path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or("").to_string()
+        path.rsplit_once('/')
+            .map(|(directory, _)| directory)
+            .unwrap_or("")
+            .to_string()
     };
     let declaring_types: HashSet<String> = nodes
         .iter()
@@ -3206,13 +3921,18 @@ fn entities(
         .collect();
     let in_the_history = |path: &str| {
         history.iter().any(|root| {
-            path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
+            path.strip_prefix(root.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
         })
     };
     let declared_names: HashSet<String> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !declares_no_records(path)))
+        .filter(|node| {
+            files
+                .get(node.file as usize)
+                .is_none_or(|path| !declares_no_records(path))
+        })
         .map(|node| node.name.to_ascii_lowercase())
         .chain(created.keys().cloned())
         .collect();
@@ -3233,7 +3953,9 @@ fn entities(
                         .map(|declared| unquoted(declared).to_string()),
                 }
             })
-            .or_else(|| addressed(receiver_of(exit), &modelled_names, &declared_names).map(str::to_string))
+            .or_else(|| {
+                addressed(receiver_of(exit), &modelled_names, &declared_names).map(str::to_string)
+            })
         else {
             continue;
         };
@@ -3243,7 +3965,9 @@ fn entities(
         if managed {
             stored_at.push((named.to_ascii_lowercase(), exit.file));
         }
-        kept_file.entry(named.to_ascii_lowercase()).or_insert(exit.file);
+        kept_file
+            .entry(named.to_ascii_lowercase())
+            .or_insert(exit.file);
         let held = kept.entry(named.to_ascii_lowercase()).or_default();
         held.2 += 1;
         let reaching = match changes(exit) {
@@ -3269,7 +3993,10 @@ fn entities(
         if !matches!(edge.kind, EdgeKind::Instantiates | EdgeKind::Calls) {
             continue;
         }
-        let holder = holder_of.get(edge.target.as_str()).copied().unwrap_or(edge.target.as_str());
+        let holder = holder_of
+            .get(edge.target.as_str())
+            .copied()
+            .unwrap_or(edge.target.as_str());
         let held = match storing.contains(edge.source.as_str()) {
             true => written.entry(holder).or_default(),
             false => read.entry(holder).or_default(),
@@ -3281,9 +4008,21 @@ fn entities(
     let candidates: Vec<&IndexNode> = nodes
         .iter()
         .filter(|node| node.kind.is_type() && node.kind != NodeKind::Enum)
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !declares_no_records(path)))
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !in_the_history(path)))
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !crate::paths::is_test(path)))
+        .filter(|node| {
+            files
+                .get(node.file as usize)
+                .is_none_or(|path| !declares_no_records(path))
+        })
+        .filter(|node| {
+            files
+                .get(node.file as usize)
+                .is_none_or(|path| !in_the_history(path))
+        })
+        .filter(|node| {
+            files
+                .get(node.file as usize)
+                .is_none_or(|path| !crate::paths::is_test(path))
+        })
         .collect();
     let denoting = Denoting::new(&candidates, nodes, edges, files);
     let claimed: HashSet<String> = declared_tables
@@ -3295,9 +4034,15 @@ fn entities(
     admitted.extend(
         candidates
             .iter()
-            .filter(|node| files.get(node.file as usize).is_some_and(|path| a_schema(path)))
             .filter(|node| {
-                files.get(node.file as usize).is_some_and(|path| !path.to_ascii_lowercase().ends_with(".sql"))
+                files
+                    .get(node.file as usize)
+                    .is_some_and(|path| a_schema(path))
+            })
+            .filter(|node| {
+                files
+                    .get(node.file as usize)
+                    .is_some_and(|path| !path.to_ascii_lowercase().ends_with(".sql"))
                     || (created.contains_key(&unquoted(&node.name).to_ascii_lowercase())
                         && !claimed.contains(&unquoted(&node.name).to_ascii_lowercase()))
             })
@@ -3307,7 +4052,9 @@ fn entities(
     for (named, site, handle) in &handled {
         let denoted = denoting.named(named, *site);
         if let [only] = denoted.as_slice() {
-            handled_as.entry(handle.to_ascii_lowercase()).or_insert(only);
+            handled_as
+                .entry(handle.to_ascii_lowercase())
+                .or_insert(only);
         }
         admitted.extend(denoted);
     }
@@ -3324,7 +4071,9 @@ fn entities(
     let candidate_ids: HashSet<&str> = candidates.iter().map(|node| node.id.as_str()).collect();
     let mut declaring: HashMap<&str, Vec<&str>> = HashMap::default();
     for table in declared_tables {
-        let Some(by) = table.declared_by.as_deref() else { continue };
+        let Some(by) = table.declared_by.as_deref() else {
+            continue;
+        };
         let by = match node_of.get(by) {
             Some(inner) if inner.name == "Meta" => inner.parent.as_deref().unwrap_or(by),
             _ => by,
@@ -3360,9 +4109,20 @@ fn entities(
             file_project.entry(node.file).or_insert(project);
         }
     }
-    let sources = crate::entities::Sources { nodes, edges, calls, locals, exit_points, entry_points };
+    let sources = crate::entities::Sources {
+        nodes,
+        edges,
+        calls,
+        locals,
+        exit_points,
+        entry_points,
+    };
     let sightings = crate::entities::gather(&sources, &|named, site| {
-        denoting.named(named, site).into_iter().map(str::to_string).collect()
+        denoting
+            .named(named, site)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     });
     let methods: HashMap<&str, u32> = {
         let mut counted: HashMap<&str, u32> = HashMap::default();
@@ -3373,21 +4133,29 @@ fn entities(
     };
     let mut denoting_every: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_type()) {
-        denoting_every.entry(node.name.as_str()).or_default().push(node);
+        denoting_every
+            .entry(node.name.as_str())
+            .or_default()
+            .push(node);
     }
     let data_fields = |id: &str| fields.get(id).copied().unwrap_or(0);
     let behaves = |id: &str| {
         methods.get(id).copied().unwrap_or(0) > 0
-            && node_of.get(id).is_some_and(|node| !node.decorators.iter().any(over_a_wire))
+            && node_of
+                .get(id)
+                .is_some_and(|node| !node.decorators.iter().any(over_a_wire))
     };
     let holds_behaviour = |id: &str| {
-        let Some(node) = node_of.get(id) else { return false };
+        let Some(node) = node_of.get(id) else {
+            return false;
+        };
         named_fields.get(id).into_iter().flatten().any(|field| {
             crate::entities::tokens(field.declared_as.as_deref().unwrap_or_default())
                 .into_iter()
                 .any(|word| {
                     denoting_every.get(word).into_iter().flatten().any(|other| {
-                        (other.file == node.file || other.project == node.project) && behaves(other.id.as_str())
+                        (other.file == node.file || other.project == node.project)
+                            && behaves(other.id.as_str())
                     })
                 })
         })
@@ -3423,37 +4191,56 @@ fn entities(
         .iter()
         .filter(|node| admitted.contains(node.id.as_str()))
         .map(|node| node.project.as_deref())
-        .chain(declared_tables.iter().map(|table| file_project.get(&table.file).copied()))
+        .chain(
+            declared_tables
+                .iter()
+                .map(|table| file_project.get(&table.file).copied()),
+        )
         .collect();
     let modelled_around = |id: &str| {
-        let Some(node) = node_of.get(id) else { return false };
+        let Some(node) = node_of.get(id) else {
+            return false;
+        };
         let project = node.project.as_deref();
-        declared_by_a_model.iter().any(|held| match (project, *held) {
-            (Some(project), Some(held)) => project == held || denoting.reaches.contains(&(project, held)),
-            (None, None) => true,
-            _ => false,
-        })
+        declared_by_a_model
+            .iter()
+            .any(|held| match (project, *held) {
+                (Some(project), Some(held)) => {
+                    project == held || denoting.reaches.contains(&(project, held))
+                }
+                (None, None) => true,
+                _ => false,
+            })
     };
     let mut keeping = crate::entities::Keeping::default();
     let mut document_ids: HashSet<&str> = HashSet::default();
     for root in round_trips {
-        let Some(node) = node_of.get(root) else { continue };
+        let Some(node) = node_of.get(root) else {
+            continue;
+        };
         let mut children: Vec<&str> = Vec::new();
         for field in named_fields.get(root).into_iter().flatten() {
-            let Some((word, true)) = field.declared_as.as_deref().and_then(points_at) else { continue };
+            let Some((word, true)) = field.declared_as.as_deref().and_then(points_at) else {
+                continue;
+            };
             for id in denoting.named(&word, node.file) {
                 if id != root && data_fields(id) >= 1 && !children.contains(&id) {
                     children.push(id);
                 }
             }
         }
-        let a_container = children.len() >= 2 && children.len() * 10 >= data_fields(root) as usize * 6;
+        let a_container =
+            children.len() >= 2 && children.len() * 10 >= data_fields(root) as usize * 6;
         match a_container {
             true => {
                 admitted.extend(children.iter().copied());
                 keeping.documents.insert(
                     unquoted(&node.name).to_string(),
-                    children.iter().filter_map(|id| node_of.get(id)).map(|child| unquoted(&child.name).to_string()).collect(),
+                    children
+                        .iter()
+                        .filter_map(|id| node_of.get(id))
+                        .map(|child| unquoted(&child.name).to_string())
+                        .collect(),
                 );
                 document_ids.insert(root);
             }
@@ -3462,8 +4249,17 @@ fn entities(
             }
         }
     }
-    let wire_marked = |id: &str| node_of.get(id).is_some_and(|node| node.decorators.iter().any(over_a_wire));
-    for sighting in sightings.carried.iter().chain(sightings.stored.iter().filter(|sighting| matches!(sighting.place, "api" | "message" | "network"))) {
+    let wire_marked = |id: &str| {
+        node_of
+            .get(id)
+            .is_some_and(|node| node.decorators.iter().any(over_a_wire))
+    };
+    for sighting in sightings.carried.iter().chain(
+        sightings
+            .stored
+            .iter()
+            .filter(|sighting| matches!(sighting.place, "api" | "message" | "network")),
+    ) {
         let id = sighting.node.as_str();
         let exchanged = match sighting.place {
             "api" | "network" => wire_marked(id),
@@ -3500,15 +4296,24 @@ fn entities(
         for sighting in sightings {
             let (writing, reading) = match (writing, reading) {
                 (Some(writing), Some(reading)) => (writing, reading),
-                _ => (sighting.place == "request_changing", matches!(sighting.place, "request" | "response")),
+                _ => (
+                    sighting.place == "request_changing",
+                    matches!(sighting.place, "request" | "response"),
+                ),
             };
-            let Some(node) = node_of.get(sighting.node.as_str()).copied() else { continue };
+            let Some(node) = node_of.get(sighting.node.as_str()).copied() else {
+                continue;
+            };
             if !admitted.contains(node.id.as_str()) && !document_ids.contains(node.id.as_str()) {
                 continue;
             }
             *sighted.entry(node.id.as_str()).or_insert(0) += 1;
             let named = unquoted(&node.name).to_string();
-            let places: [(bool, &mut HashMap<String, Vec<String>>, &mut HashMap<String, Vec<String>>); 2] = [
+            let places: [(
+                bool,
+                &mut HashMap<String, Vec<String>>,
+                &mut HashMap<String, Vec<String>>,
+            ); 2] = [
                 (writing, &mut keeping.stored, &mut keeping.document_stored),
                 (reading, &mut keeping.loaded, &mut keeping.document_loaded),
             ];
@@ -3543,7 +4348,10 @@ fn entities(
     keeping.index();
     let mut stored_by_name = by_name(&keeping.stored);
     let mut loaded_by_name = by_name(&keeping.loaded);
-    for units in stored_by_name.values_mut().chain(loaded_by_name.values_mut()) {
+    for units in stored_by_name
+        .values_mut()
+        .chain(loaded_by_name.values_mut())
+    {
         units.sort();
     }
     let entities: Vec<Entity> = candidates
@@ -3567,13 +4375,21 @@ fn entities(
                 written.get(node.id.as_str()),
                 stored_by_name.get(unquoted(&node.name)),
             ),
-            read_by: units_for(read.get(node.id.as_str()), loaded_by_name.get(unquoted(&node.name))),
+            read_by: units_for(
+                read.get(node.id.as_str()),
+                loaded_by_name.get(unquoted(&node.name)),
+            ),
             written_in: Vec::new(),
             read_in: Vec::new(),
             references: {
                 let mut held = pointing.remove(node.id.as_str()).unwrap_or_default();
-                held.sort_by(|left, right| (left.field.as_str(), left.entity.as_str()).cmp(&(right.field.as_str(), right.entity.as_str())));
-                held.dedup_by(|left, right| left.field == right.field && left.entity == right.entity);
+                held.sort_by(|left, right| {
+                    (left.field.as_str(), left.entity.as_str())
+                        .cmp(&(right.field.as_str(), right.entity.as_str()))
+                });
+                held.dedup_by(|left, right| {
+                    left.field == right.field && left.entity == right.entity
+                });
                 held
             },
             project: node.project.clone(),
@@ -3581,7 +4397,11 @@ fn entities(
             unshipped: None,
         })
         .map(|mut entity| {
-            let kept: HashSet<&str> = entity.named_fields.iter().map(|field| field.name.as_str()).collect();
+            let kept: HashSet<&str> = entity
+                .named_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect();
             let still: Vec<Reference> = std::mem::take(&mut entity.references)
                 .into_iter()
                 .filter(|reference| kept.contains(reference.field.as_str()))
@@ -3592,7 +4412,10 @@ fn entities(
         .collect();
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
     for entity in entities {
-        let key = (entity.project.clone().unwrap_or_default(), same_record(&entity.declared_as));
+        let key = (
+            entity.project.clone().unwrap_or_default(),
+            same_record(&entity.declared_as),
+        );
         match richest.entry(key) {
             std::collections::btree_map::Entry::Vacant(held) => {
                 held.insert(entity);
@@ -3600,11 +4423,14 @@ fn entities(
             std::collections::btree_map::Entry::Occupied(mut held) => {
                 let in_sql = |entity: &Entity| {
                     entity.declared_in.as_deref().is_some_and(|at| {
-                        at.split(':').next().is_some_and(|path| path.to_ascii_lowercase().ends_with(".sql"))
+                        at.split(':')
+                            .next()
+                            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".sql"))
                     })
                 };
                 let plainer = in_sql(held.get()) && !in_sql(&entity);
-                let fuller = in_sql(held.get()) == in_sql(&entity) && entity.fields > held.get().fields;
+                let fuller =
+                    in_sql(held.get()) == in_sql(&entity) && entity.fields > held.get().fields;
                 if plainer || fuller {
                     let named_as = held.get().declared_as.clone();
                     let mut entity = entity;
@@ -3612,28 +4438,39 @@ fn entities(
                         entity.declared_as = named_as;
                     }
                     held.insert(entity);
-                } else if tabled_name(&held.get().declared_as) && !tabled_name(&entity.declared_as) {
+                } else if tabled_name(&held.get().declared_as) && !tabled_name(&entity.declared_as)
+                {
                     held.get_mut().declared_as = entity.declared_as;
                 }
             }
         }
     }
     let mut entities: Vec<Entity> = richest.into_values().collect();
-    let written_down: HashSet<String> = entities.iter().map(|entity| same_record(&entity.declared_as)).collect();
+    let written_down: HashSet<String> = entities
+        .iter()
+        .map(|entity| same_record(&entity.declared_as))
+        .collect();
     let bound_as: HashMap<&str, &str> = tabled
         .iter()
         .map(|(by, key)| (key.as_str(), *by))
         .chain(handled_as.iter().map(|(handle, by)| (handle.as_str(), *by)))
         .collect();
     for entity in entities.iter_mut() {
-        let Some(at) = entity.declared_in.as_deref() else { continue };
+        let Some(at) = entity.declared_in.as_deref() else {
+            continue;
+        };
         for (addressed, by) in &bound_as {
             if *by != at {
                 continue;
             }
-            let Some((written_by, read_by, addressed_by)) = kept.remove(*addressed) else { continue };
+            let Some((written_by, read_by, addressed_by)) = kept.remove(*addressed) else {
+                continue;
+            };
             entity.addressed_by += addressed_by;
-            for (held, more) in [(&mut entity.written_by, written_by), (&mut entity.read_by, read_by)] {
+            for (held, more) in [
+                (&mut entity.written_by, written_by),
+                (&mut entity.read_by, read_by),
+            ] {
                 for source in more {
                     if held.len() < 8 && !held.contains(&source) {
                         held.push(source);
@@ -3644,13 +4481,24 @@ fn entities(
         let Some(key) = entity.declared_in.as_deref().and_then(|at| tabled.get(at)) else {
             continue;
         };
-        let Some(table) = created.remove(key) else { continue };
+        let Some(table) = created.remove(key) else {
+            continue;
+        };
         if entity.named_fields.is_empty() {
             entity.fields = table.columns.len() as u32;
             entity.named_fields = table.columns.into_iter().map(Field::from).collect();
         } else {
-            let spelled = |name: &str| name.chars().filter(|letter| *letter != '_').flat_map(char::to_lowercase).collect::<String>();
-            let held: HashSet<String> = entity.named_fields.iter().map(|field| spelled(&field.name)).collect();
+            let spelled = |name: &str| {
+                name.chars()
+                    .filter(|letter| *letter != '_')
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>()
+            };
+            let held: HashSet<String> = entity
+                .named_fields
+                .iter()
+                .map(|field| spelled(&field.name))
+                .collect();
             for column in table.columns {
                 let named = spelled(&column.named);
                 let a_key_of_a_field = held.iter().any(|field| named == format!("{field}id"));
@@ -3660,12 +4508,17 @@ fn entities(
                 }
             }
         }
-        entity.references.extend(table.points_at.into_iter().map(|(field, pointed)| Reference {
-            field,
-            entity: pointed,
-            many: false,
-            declared_by: "foreign key",
-        }));
+        entity.references.extend(
+            table
+                .points_at
+                .into_iter()
+                .map(|(field, pointed)| Reference {
+                    field,
+                    entity: pointed,
+                    many: false,
+                    declared_by: "foreign key",
+                }),
+        );
     }
     created.retain(|key, table| {
         !accounted.contains(key)
@@ -3679,7 +4532,10 @@ fn entities(
             continue;
         }
         let named_lower = named.clone();
-        let columns = created.remove(&named).map(|table| table.columns).unwrap_or_default();
+        let columns = created
+            .remove(&named)
+            .map(|table| table.columns)
+            .unwrap_or_default();
         entities.push(Entity {
             id: format!("record:{named}"),
             fields: columns.len() as u32,
@@ -3718,7 +4574,9 @@ fn entities(
             read_by: Vec::new(),
             written_in: Vec::new(),
             read_in: Vec::new(),
-            project: file_project.get(&table.file).map(|project| (*project).to_string()),
+            project: file_project
+                .get(&table.file)
+                .map(|project| (*project).to_string()),
             references: table
                 .points_at
                 .into_iter()
@@ -3735,7 +4593,12 @@ fn entities(
     }
     let known: HashMap<String, String> = entities
         .iter()
-        .map(|entity| (entity.declared_as.to_ascii_lowercase(), entity.declared_as.clone()))
+        .map(|entity| {
+            (
+                entity.declared_as.to_ascii_lowercase(),
+                entity.declared_as.clone(),
+            )
+        })
         .collect();
     for entity in entities.iter_mut() {
         entity.references.retain_mut(|reference| {
@@ -3745,8 +4608,12 @@ fn entities(
             reference.entity = declared.clone();
             true
         });
-        entity.references.sort_by(|left, right| left.field.cmp(&right.field));
-        entity.references.dedup_by(|left, right| left.field == right.field);
+        entity
+            .references
+            .sort_by(|left, right| left.field.cmp(&right.field));
+        entity
+            .references
+            .dedup_by(|left, right| left.field == right.field);
     }
     entities.sort_by(|left, right| {
         right
@@ -3791,6 +4658,8 @@ mod tests {
             description: None,
             grounding: None,
             standing: super::PUBLISHED,
+            level: crate::capabilities::PART,
+            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
@@ -3803,11 +4672,15 @@ mod tests {
 
     #[test]
     fn capabilities_are_scored_from_their_flows_and_lowered_when_unsettled_or_parent_originated() {
-        let confidence_of: super::HashMap<&str, f64> = super::HashMap::from_iter([("flow:a", 1.0), ("flow:b", 0.6)]);
+        let confidence_of: super::HashMap<&str, f64> =
+            super::HashMap::from_iter([("flow:a", 1.0), ("flow:b", 0.6)]);
         let mut unsettled = capability_of(&["flow:a", "flow:b"]);
         unsettled.unsettled = Some(crate::confidence::AI_UNANSWERED);
         let mut orphan = capability_of(&["flow:a", "flow:b"]);
-        orphan.parent_originated = Some(crate::parent::Originated { kind: "orphan", evidence: vec!["flow:a".into()] });
+        orphan.parent_originated = Some(crate::parent::Originated {
+            kind: "orphan",
+            evidence: vec!["flow:a".into()],
+        });
         let mut capabilities = vec![capability_of(&["flow:a", "flow:b"]), unsettled, orphan];
         super::score_capabilities(&mut capabilities, &confidence_of);
         assert_eq!(capabilities[0].confidence, Some(0.61));
@@ -3825,7 +4698,9 @@ mod tests {
     #[test]
     fn a_type_crosses_a_wire_whichever_codec_encodes_it() {
         use super::over_a_wire;
-        assert!(over_a_wire(&derived(&["Debug", "Clone", "Encode", "Decode"])));
+        assert!(over_a_wire(&derived(&[
+            "Debug", "Clone", "Encode", "Decode"
+        ])));
         assert!(over_a_wire(&derived(&["Serialize", "Deserialize"])));
         assert!(over_a_wire(&derived(&["serde::Serialize"])));
         assert!(!over_a_wire(&derived(&["Debug", "Clone", "Default"])));
@@ -3891,9 +4766,18 @@ mod tests {
     fn a_route_is_matched_by_its_shape_not_its_spelling() {
         use super::{route_shape, same_shape};
         let served = route_shape("/assets/:assetId/history");
-        assert!(same_shape(&route_shape("/assets/${assetId}/history?limit=${limit}"), &served));
-        assert!(same_shape(&route_shape("https://host.example/assets/42/history"), &served));
-        assert!(same_shape(&route_shape("/assets/{asset_id}/history"), &served));
+        assert!(same_shape(
+            &route_shape("/assets/${assetId}/history?limit=${limit}"),
+            &served
+        ));
+        assert!(same_shape(
+            &route_shape("https://host.example/assets/42/history"),
+            &served
+        ));
+        assert!(same_shape(
+            &route_shape("/assets/{asset_id}/history"),
+            &served
+        ));
         assert!(!same_shape(&route_shape("/assets/42/prices"), &served));
         assert!(!same_shape(&route_shape("/"), &route_shape("/")));
     }
@@ -3902,9 +4786,18 @@ mod tests {
     fn a_route_can_be_served_under_a_prefix_the_caller_names() {
         use super::{mounted_under, route_shape};
         let served = route_shape("/opportunity-candidates/:id/evaluate");
-        assert!(mounted_under(&route_shape("/api/v2/capital/opportunity-candidates/7/evaluate"), &served));
-        assert!(!mounted_under(&route_shape("/search.json"), &route_shape("/price/address/:address")));
-        assert!(!mounted_under(&route_shape("/api/users/7"), &route_shape("/users/:id")));
+        assert!(mounted_under(
+            &route_shape("/api/v2/capital/opportunity-candidates/7/evaluate"),
+            &served
+        ));
+        assert!(!mounted_under(
+            &route_shape("/search.json"),
+            &route_shape("/price/address/:address")
+        ));
+        assert!(!mounted_under(
+            &route_shape("/api/users/7"),
+            &route_shape("/users/:id")
+        ));
     }
 
     #[test]
@@ -3964,14 +4857,23 @@ mod tests {
         assert_eq!(points_at("User?"), Some(("User".to_string(), false)));
         assert_eq!(points_at("Post[]"), Some(("Post".to_string(), true)));
         assert_eq!(points_at("List<User>"), Some(("User".to_string(), true)));
-        assert_eq!(points_at("Vec<Episode>"), Some(("Episode".to_string(), true)));
+        assert_eq!(
+            points_at("Vec<Episode>"),
+            Some(("Episode".to_string(), true))
+        );
         assert_eq!(points_at("Option<User>"), Some(("User".to_string(), false)));
-        assert_eq!(points_at("Map<String, Album>"), Some(("Album".to_string(), true)));
+        assert_eq!(
+            points_at("Map<String, Album>"),
+            Some(("Album".to_string(), true))
+        );
         assert_eq!(
             points_at("java.util.List<com.tivi.Show>"),
             Some(("Show".to_string(), true))
         );
-        assert_eq!(points_at("Flow<List<Season>>"), Some(("Season".to_string(), true)));
+        assert_eq!(
+            points_at("Flow<List<Season>>"),
+            Some(("Season".to_string(), true))
+        );
     }
 
     use super::*;
@@ -3987,22 +4889,46 @@ mod tests {
     fn a_database_call_names_the_record_it_addresses() {
         let modelled = HashSet::from_iter(["Booking"]);
         let declared = HashSet::from_iter(["booking".to_string()]);
-        assert_eq!(addressed("prisma.booking", &modelled, &declared), Some("booking"));
-        assert_eq!(addressed("this.prisma.booking", &modelled, &declared), Some("booking"));
-        assert_eq!(addressed("Booking.objects", &modelled, &declared), Some("Booking"));
+        assert_eq!(
+            addressed("prisma.booking", &modelled, &declared),
+            Some("booking")
+        );
+        assert_eq!(
+            addressed("this.prisma.booking", &modelled, &declared),
+            Some("booking")
+        );
+        assert_eq!(
+            addressed("Booking.objects", &modelled, &declared),
+            Some("Booking")
+        );
         assert_eq!(addressed("db.session", &modelled, &declared), None);
         assert_eq!(addressed("session", &modelled, &declared), None);
-        assert_eq!(addressed("queryHistoryApi.endpoints.editorQueries", &modelled, &declared), None);
-        assert_eq!(addressed("request(app.getHttpServer())", &modelled, &declared), None);
+        assert_eq!(
+            addressed(
+                "queryHistoryApi.endpoints.editorQueries",
+                &modelled,
+                &declared
+            ),
+            None
+        );
+        assert_eq!(
+            addressed("request(app.getHttpServer())", &modelled, &declared),
+            None
+        );
     }
 
     #[test]
     fn a_persistence_handle_names_what_it_holds() {
-        assert_eq!(held_by_a_handle("DbSet<AccessSchedule>"), Some("AccessSchedule"));
-        assert_eq!(held_by_a_handle("Microsoft.EntityFrameworkCore.DbSet<User>"), Some("User"));
+        assert_eq!(
+            held_by_a_handle("DbSet<AccessSchedule>"),
+            Some("AccessSchedule")
+        );
+        assert_eq!(
+            held_by_a_handle("Microsoft.EntityFrameworkCore.DbSet<User>"),
+            Some("User")
+        );
         assert_eq!(held_by_a_handle("Dictionary<string, User>"), None);
         assert_eq!(held_by_a_handle("DbSet<List<User>>"), None);
         assert_eq!(held_by_a_handle("User"), None);
     }
 }
-
