@@ -189,7 +189,7 @@ fn angular_components<'a>(root: &Path, paths: &[String], nodes: &'a [IndexNode])
                 let url = property_text(object, "templateUrl")?;
                 let here = paths.get(node.file as usize)?;
                 let directory = Path::new(here).parent().unwrap_or(Path::new(""));
-                std::fs::read(root.join(directory).join(url.trim_start_matches("./"))).ok()
+                crate::paths::read_bytes_inside(root, directory.join(url.trim_start_matches("./")))
             });
             Some(Declared { class: node, selectors, template })
         })
@@ -252,7 +252,7 @@ fn auto_imported(root: &Path, paths: &[String]) -> Vec<(String, String)> {
     }
     let mut found = Vec::new();
     for path in paths.iter().filter(|path| is_a_page(path)) {
-        let Ok(source) = std::fs::read(root.join(path)) else { continue };
+        let Some(source) = crate::paths::read_bytes_inside(root, path) else { continue };
         let mut seen: HashSet<String> = HashSet::default();
         for (tag, _) in tags(&source) {
             let component = tag.starts_with(char::is_uppercase) || tag.contains('-');

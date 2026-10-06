@@ -208,7 +208,7 @@ fn read_sdl(text: &str, file: u32, whole: bool, into: &mut Sdl) {
 }
 
 fn read_text(root: &Path, path: &str) -> Option<String> {
-    let absolute = root.join(path);
+    let absolute = crate::paths::kept_inside(root, Path::new(path))?;
     if std::fs::metadata(&absolute).ok()?.len() > LARGEST_SOURCE {
         return None;
     }
@@ -489,7 +489,7 @@ pub fn lift(
         .enumerate()
         .filter(|(_, file)| file.kind == crate::discovery::FileKind::Source && file.language.is_some_and(crate::typescript::reads))
         .filter_map(|(at, file)| {
-            let mut source = std::fs::read(root.join(&file.path)).ok()?;
+            let mut source = crate::paths::read_bytes_inside(root, &file.path)?;
             if source.len() as u64 > LARGEST_SOURCE || !mentions_a_resolver_map(&source, &root_names) {
                 return None;
             }

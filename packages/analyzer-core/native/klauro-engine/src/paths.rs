@@ -8,6 +8,10 @@ pub fn read_inside(root: &std::path::Path, path: impl AsRef<std::path::Path>) ->
     std::fs::read_to_string(kept_inside(root, path.as_ref())?).ok()
 }
 
+pub fn read_bytes_inside(root: &std::path::Path, path: impl AsRef<std::path::Path>) -> Option<Vec<u8>> {
+    std::fs::read(kept_inside(root, path.as_ref())?).ok()
+}
+
 pub fn directory_of(path: &str) -> &str {
     match path.rfind('/') {
         Some(at) => &path[..at],
