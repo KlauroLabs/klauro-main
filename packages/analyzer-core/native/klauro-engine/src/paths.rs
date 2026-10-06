@@ -55,8 +55,18 @@ pub fn join(root: &str, relative: &str) -> String {
     }
 }
 
+static TEST_DIRECTORIES: &[&str] =
+    &["__mocks__", "__tests__", "e2e", "mocks", "spec", "specs", "test", "testing", "tests"];
+
 fn in_a_test_directory(path: &str) -> bool {
-    path.contains("test/") || path.contains("tests/") || path.contains("spec/") || path.contains("e2e/")
+    let Some((directories, _)) = path.rsplit_once('/') else { return false };
+    directories.split('/').any(|directory| {
+        TEST_DIRECTORIES.contains(&directory.to_ascii_lowercase().as_str())
+            || directory.ends_with("Tests")
+            || directory.ends_with(".tests")
+            || directory.ends_with(".test")
+            || directory.ends_with("Test") && directory.len() > 4
+    })
 }
 
 fn marked_as_a_test_file(path: &str) -> bool {
@@ -67,7 +77,11 @@ fn marked_as_a_test_file(path: &str) -> bool {
 fn named_like_a_test_by_convention_alone(path: &str) -> bool {
     let name = basename(path);
     let stem = name.split('.').next().unwrap_or(name);
-    stem.starts_with("test_") || stem.ends_with("_test") || stem.ends_with("_spec")
+    stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with("_spec")
+        || stem.ends_with("Tests")
+        || (stem.ends_with("Test") && stem.len() > 4)
 }
 
 pub fn is_test(path: &str) -> bool {
@@ -192,4 +206,27 @@ pub fn is_continuous_integration(path: &str) -> bool {
     DIRECTORIES.iter().any(|directory| {
         path.starts_with(directory) || path.contains(&format!("/{directory}"))
     }) || path.starts_with(".gitlab-ci")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_capitalised_tests_directory_holds_tests() {
+        assert!(is_test("Tests/AppTests/RoutesTests.swift"));
+        assert!(is_test("src/Jellyfin.Api.Tests/Controllers/ItemsTests.cs"));
+    }
+
+    #[test]
+    fn a_module_merely_named_for_testing_in_its_name_holds_shipped_code() {
+        assert!(!is_test("dropwizard-e2e/src/main/java/App.java"));
+        assert!(!is_test("src/latest/handler.ts"));
+    }
+
+    #[test]
+    fn mocks_and_testing_support_directories_hold_tests() {
+        assert!(is_test("src/mocks/handlers.ts"));
+        assert!(is_test("app/javascript/testing/api.ts"));
+    }
 }

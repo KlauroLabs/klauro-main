@@ -51,3 +51,43 @@ fn a_phoenix_scope_prefixes_the_routes_written_inside_it_however_it_nests() {
     assert!(serves(&found, "GET", "/api/health", "health"), "{found:?}");
     assert!(serves(&found, "GET", "/", "home"), "{found:?}");
 }
+
+#[test]
+fn a_call_on_the_result_of_a_client_factory_is_no_served_route() {
+    let found = routes("client_calls");
+    assert!(!found.iter().any(|(_, path, _)| path.contains("/accounts/")), "{found:?}");
+}
+
+#[test]
+fn a_route_on_the_app_is_still_served() {
+    let found = routes("client_calls");
+    assert!(found.iter().any(|(method, path, _)| method == "GET" && path == "/health"), "{found:?}");
+}
+
+#[test]
+fn routes_in_mock_handlers_and_capitalised_test_directories_are_not_served() {
+    let found = routes("client_calls");
+    assert!(!found.iter().any(|(_, path, _)| path == "/api/v1/mocked" || path == "/hello"), "{found:?}");
+}
+
+#[test]
+fn ktor_routes_nest_their_paths_through_route_blocks() {
+    let found = routes("ktor_routes");
+    let served: Vec<(&str, &str)> = found.iter().map(|(method, path, _)| (method.as_str(), path.as_str())).collect();
+    assert!(served.contains(&("GET", "/health")), "{found:?}");
+    assert!(served.contains(&("GET", "/api/orders")), "a verb without a path serves its enclosing route: {found:?}");
+    assert!(served.contains(&("POST", "/api/orders/{id}")), "{found:?}");
+}
+
+#[test]
+fn a_route_function_extending_route_serves_its_verbs() {
+    let found = routes("ktor_routes");
+    assert!(found.iter().any(|(method, path, _)| method == "DELETE" && path == "/orders/{id}"), "{found:?}");
+}
+
+#[test]
+fn a_get_on_a_map_is_no_ktor_route() {
+    let found = routes("ktor_routes");
+    assert!(!found.iter().any(|(_, path, _)| path.contains("key")), "{found:?}");
+    assert_eq!(found.len(), 4, "{found:?}");
+}

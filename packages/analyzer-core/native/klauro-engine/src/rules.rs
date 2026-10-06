@@ -128,6 +128,9 @@ fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>, i
             if path.is_empty() {
                 return through_receiver && on_a_router;
             }
+            if through_receiver && !on_a_router && !serves_through_its_receiver(registrar) {
+                return false;
+            }
             let addresses_a_path = match through_receiver {
                 true => on_a_router || path.contains('/'),
                 false => in_a_routing_dsl || path.contains('/'),
@@ -135,6 +138,19 @@ fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>, i
             route(held) && addresses_a_path && spells_a_path(&path)
         }
     }
+}
+
+static CHAINS_A_ROUTER: &[&str] = &[
+    "app", "controller", "domain", "express", "group", "middleware", "mount", "name", "namespace", "prefix",
+    "route", "router", "routes", "scope", "server", "use", "where",
+];
+
+fn serves_through_its_receiver(registrar: &str) -> bool {
+    let receiver = registrar.rfind('.').map_or("", |at| &registrar[..at]);
+    !receiver.contains('(')
+        || receiver
+            .split(|letter: char| !letter.is_alphanumeric() && letter != '_')
+            .any(|word| CHAINS_A_ROUTER.binary_search(&word.to_ascii_lowercase().as_str()).is_ok())
 }
 
 fn spells_a_path(path: &str) -> bool {
@@ -233,4 +249,27 @@ pub fn queue_calls() -> &'static [QueueCall] {
             })
             .collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_words_that_chain_a_router_are_sorted() {
+        assert!(CHAINS_A_ROUTER.is_sorted());
+    }
+
+    #[test]
+    fn the_result_of_a_client_factory_is_no_router() {
+        assert!(!serves_through_its_receiver("api().post"));
+        assert!(!serves_through_its_receiver("Request.new(provider).post"));
+    }
+
+    #[test]
+    fn a_router_chain_still_serves_its_routes() {
+        assert!(serves_through_its_receiver("Route::middleware('auth').get"));
+        assert!(serves_through_its_receiver("app.route('/x').get"));
+        assert!(serves_through_its_receiver("app.get"));
+    }
 }

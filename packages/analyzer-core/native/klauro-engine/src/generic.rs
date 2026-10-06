@@ -6,6 +6,7 @@ use crate::language::LanguageSpec;
 use crate::model::*;
 
 mod bounds;
+mod ktor_routes;
 mod lambdas;
 mod messages;
 mod phoenix_scopes;
@@ -2906,6 +2907,11 @@ impl<'a> Extractor<'a> {
                 None => callee.clone(),
             };
             self.labelled.insert(closure.id(), (registrar, "/".to_string()));
+        }
+        if let Some((label, block)) = self.ktor_route(node, &callee)
+            && let Some(closure) = self.handled_inline(block)
+        {
+            self.labelled.insert(closure.id(), (callee.clone(), label));
         }
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
