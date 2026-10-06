@@ -260,8 +260,8 @@ async function isSafeInternalFirstPartyDocumentSymlink(
 ): Promise<boolean> {
   if (!isFirstPartyRootDocument(relativePath)) return false;
   try {
-    const resolved = await fs.realpath(absolutePath);
-    const relativeTarget = normalizeRelativePath(path.relative(root, resolved));
+    const [resolvedRoot, resolved] = await Promise.all([fs.realpath(root), fs.realpath(absolutePath)]);
+    const relativeTarget = normalizeRelativePath(path.relative(resolvedRoot, resolved));
     if (!relativeTarget || relativeTarget.startsWith('../') || path.isAbsolute(relativeTarget)) return false;
     return (await fs.stat(resolved)).isFile();
   } catch {
