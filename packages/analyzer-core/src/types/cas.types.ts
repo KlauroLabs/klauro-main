@@ -42,6 +42,7 @@ export interface CASOutput extends CASSourceInputCatalog {
   system: CASSystem;
   analysis_phases?: CASAnalysisPhase[];
   timings?: CASAnalysisTimings;
+  extraction?: { files: number; read_afresh: number; changed: string[] };
   architecture_summary?: CASArchitectureSummary;
   route_table?: CASRouteTableEntry[];
   database_schema?: CASDatabaseSchema;

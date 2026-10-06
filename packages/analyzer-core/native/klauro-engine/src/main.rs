@@ -120,8 +120,16 @@ pub struct IndexedFile {
 }
 
 #[derive(Serialize)]
+struct Extraction {
+    files: usize,
+    read_afresh: usize,
+    changed: Vec<String>,
+}
+
+#[derive(Serialize)]
 struct Index {
     root: String,
+    extraction: Extraction,
     files: Vec<IndexedFile>,
     nodes: Vec<model::IndexNode>,
     edges: Vec<model::IndexEdge>,
@@ -478,6 +486,10 @@ fn read_it() {
         })
         .collect();
     let recomputed = fresh.len();
+    let changed: Vec<String> = match recomputed < reads.len() {
+        true => fresh.iter().map(|(path, _)| path.clone()).collect(),
+        false => Vec::new(),
+    };
     let present: rustc_hash::FxHashSet<&str> = found.files.iter().map(|file| file.path.as_str()).collect();
     remembered.keep(fresh, &present);
     let mut generated_files = rustc_hash::FxHashSet::default();
@@ -496,6 +508,7 @@ fn read_it() {
 
     let mut index = Index {
         root: root.to_string_lossy().to_string(),
+        extraction: Extraction { files: facts.len(), read_afresh: recomputed, changed },
         files: found
             .files
             .iter()

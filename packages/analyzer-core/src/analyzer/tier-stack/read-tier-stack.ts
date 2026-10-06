@@ -350,6 +350,7 @@ export interface TierStackFileHistory {
 
 export interface TierStackIndex {
   root: string;
+  extraction?: { files: number; read_afresh: number; changed: string[] };
   files: Array<{ path: string; kind: string; language?: string; extracted?: boolean; generated?: boolean }>;
   nodes: TierStackNode[];
   edges: TierStackEdge[];

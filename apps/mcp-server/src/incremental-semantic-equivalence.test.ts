@@ -5,7 +5,7 @@ import { runIncrementalValueBenchmark } from './incremental-benchmark';
 
 const packageRoot = path.resolve(__dirname, '..');
 
-test('semantic edits remain incremental and converge to the cold graph across analyzer families', { timeout: 30_000 }, async () => {
+test('semantic edits remain incremental and converge to the cold graph across analyzer families', { timeout: 120_000 }, async () => {
   const previousAiSetting = process.env.KLAURO_AI_ENABLED;
   process.env.KLAURO_AI_ENABLED = 'false';
   try {

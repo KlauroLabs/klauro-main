@@ -22,6 +22,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   system: { mode: 'identity' },
   analysis_phases: { mode: 'inherit' },
   timings: { mode: 'inherit' },
+  extraction: { mode: 'inherit' },
   architecture_summary: { mode: 'inherit' },
   route_table: { mode: 'inherit' },
   database_schema: { mode: 'inherit' },

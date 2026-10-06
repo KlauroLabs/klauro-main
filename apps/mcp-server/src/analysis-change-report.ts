@@ -1,4 +1,4 @@
-import type { CASEdge, CASNode, CASOutput, ChangeReport, ImpactAnalysis } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASEdge, CASNode, CASOutput, ChangeExecutionLocality, ChangeReport, ImpactAnalysis } from '../../../packages/analyzer-core/src/types/cas.types';
 
 type Placed = { id: string; name: string; type: string; file: string };
 
@@ -38,6 +38,22 @@ function impact(cas: CASOutput, added: number, deleted: number): ImpactAnalysis 
   };
 }
 
+function localityOf(current: CASOutput): ChangeExecutionLocality | undefined {
+  const extraction = current.extraction;
+  if (!extraction) return undefined;
+  const reused = extraction.files - extraction.read_afresh;
+  const strategy = reused <= 0 ? 'full-rebuild' : extraction.read_afresh === 0 ? 'no-change' : 'derived-layer-rebuild';
+  return {
+    strategy,
+    directChangedFiles: extraction.changed.length,
+    graphAffectedFiles: 0,
+    analyzedFiles: extraction.read_afresh,
+    trackedFiles: extraction.files,
+    reusedFiles: Math.max(reused, 0),
+    reuseRatio: extraction.files > 0 ? Math.max(reused, 0) / extraction.files : 0,
+  };
+}
+
 export function changesBetween(previous: CASOutput | null, current: CASOutput): ChangeReport {
   const before = new Map((previous?.nodes ?? []).map(node => [node.id, placed(node)]));
   const after = new Map(current.nodes.map(node => [node.id, placed(node)]));
@@ -52,6 +68,7 @@ export function changesBetween(previous: CASOutput | null, current: CASOutput): 
   const deletedEdges = missing(beforeEdges, afterEdges);
   const addedFiles = [...afterFiles].filter(file => !beforeFiles.has(file));
   const deletedFiles = [...beforeFiles].filter(file => !afterFiles.has(file));
+  const modifiedFiles = (current.extraction?.changed ?? []).filter(file => beforeFiles.has(file) && afterFiles.has(file));
 
   return {
     timestamp: current.analysis_timestamp,
@@ -59,7 +76,7 @@ export function changesBetween(previous: CASOutput | null, current: CASOutput): 
     currentAnalysis: current.analysis_id,
     summary: {
       filesAdded: addedFiles.length,
-      filesModified: 0,
+      filesModified: modifiedFiles.length,
       filesDeleted: deletedFiles.length,
       nodesAdded: addedNodes.length,
       nodesModified: 0,
@@ -69,6 +86,7 @@ export function changesBetween(previous: CASOutput | null, current: CASOutput): 
       edgesDeleted: deletedEdges.length,
     },
     impact: impact(current, addedNodes.length, deletedNodes.length),
+    locality: localityOf(current),
     details: {
       addedNodes,
       modifiedNodes: [],

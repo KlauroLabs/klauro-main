@@ -17,6 +17,7 @@ export async function analyzeWithTierStack(
   const engineMs = Date.now() - startedAt;
   const cas = tierStackToCas(index, displayName);
   cas.timings = { total_ms: Date.now() - startedAt, stages: { engine: engineMs } };
+  if (index.extraction) cas.extraction = index.extraction;
   cas.analyzer_build = getBuildIdentity().version;
   return cas;
 }

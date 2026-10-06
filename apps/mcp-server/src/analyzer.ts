@@ -918,10 +918,13 @@ export async function analyzeProjectIncremental(
   const output = rebuilding && version
     ? await recordingRebuild(projectPath, version, analyze)
     : await analyze();
+  const reused = output.extraction ? output.extraction.files - output.extraction.read_afresh : 0;
+  const incremental = previous !== null && !rebuilding && reused > 0;
   return {
     output,
     changeReport: changesBetween(previous, output),
-    wasFullRebuild: true,
+    wasFullRebuild: !incremental,
+    ...(incremental ? {} : { fullRebuildReason: previous === null ? 'no-previous-analysis' : rebuilding ? 'analyzer-version-change' : 'no-reusable-extraction' }),
     previousCasVersion,
   };
 }
