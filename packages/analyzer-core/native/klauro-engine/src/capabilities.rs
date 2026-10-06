@@ -500,8 +500,33 @@ fn consolidate_purposes(said: &str, held: Vec<Held>) -> Vec<Held> {
     kept
 }
 
+const BUCKET_WORDS: [&str; 14] = [
+    "unassigned", "unplaced", "unclaimed", "uncategorized", "unclassified", "plumbing", "none", "other", "miscellaneous",
+    "misc", "remaining", "leftover", "rest", "n/a",
+];
+const BUCKET_FILLER: [&str; 6] = ["outcome", "flow", "family", "item", "thing", "all"];
+
 fn is_unassigned_word(said: &str) -> bool {
-    matches!(said.trim().to_ascii_lowercase().as_str(), "unassigned" | "plumbing" | "none")
+    let key = name_key(said);
+    let mut named_a_bucket = false;
+    for word in key.split(' ').filter(|word| !word.is_empty()) {
+        match (BUCKET_WORDS.contains(&word), BUCKET_FILLER.contains(&word)) {
+            (true, _) => named_a_bucket = true,
+            (false, true) => {}
+            (false, false) => return false,
+        }
+    }
+    named_a_bucket
+}
+
+fn set_aside_buckets(held: &mut Vec<Held>, unassigned: &mut BTreeSet<String>) {
+    held.retain_mut(|other| {
+        if !is_unassigned_word(&other.name) {
+            return true;
+        }
+        unassigned.extend(std::mem::take(&mut other.families));
+        false
+    });
 }
 
 fn place(
@@ -780,6 +805,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         }
     };
     held.retain(|other| !other.families.is_empty());
+    set_aside_buckets(&mut held, &mut unassigned);
     merge_same_named(&mut held);
     let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
     held = split_the_broad(said, &told, &lane_flows, &key_of, held, &mut unassigned);
@@ -1549,6 +1575,57 @@ pub(crate) fn the_same_among(
         .collect()
 }
 
+const FILLER_WORDS: [&str; 12] = ["with", "and", "of", "for", "to", "in", "on", "by", "from", "into", "or", "via"];
+const NEAR_EXTRA_WORDS: usize = 2;
+const NEAR_FLOW_SHARE: f64 = 0.6;
+
+fn content_words(name: &str) -> BTreeSet<String> {
+    name_key(name).split(' ').filter(|word| !word.is_empty() && !FILLER_WORDS.contains(word)).map(str::to_string).collect()
+}
+
+fn near_in_name(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
+    let (shorter, longer) = if left.len() <= right.len() { (left, right) } else { (right, left) };
+    shorter.len() >= 2 && shorter.is_subset(longer) && longer.len() - shorter.len() <= NEAR_EXTRA_WORDS
+}
+
+fn near_in_flows(left: &[String], right: &[String]) -> bool {
+    let shared = left.iter().filter(|flow| right.contains(flow)).count();
+    let smaller = left.len().min(right.len());
+    smaller >= 2 && shared as f64 >= NEAR_FLOW_SHARE * smaller as f64
+}
+
+fn near_duplicates(capabilities: &[Capability]) -> Vec<usize> {
+    let words: Vec<BTreeSet<String>> =
+        capabilities.iter().map(|capability| content_words(capability.name.as_deref().unwrap_or(""))).collect();
+    let mut near: BTreeSet<usize> = BTreeSet::new();
+    for first in 0..capabilities.len() {
+        for second in first + 1..capabilities.len() {
+            if near_in_name(&words[first], &words[second]) || near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
+                near.insert(first);
+                near.insert(second);
+            }
+        }
+    }
+    near.into_iter().collect()
+}
+
+fn united(groups: Vec<Joined>) -> Vec<Joined> {
+    let mut united: Vec<Joined> = Vec::new();
+    for group in groups {
+        let mut group = group;
+        while let Some(at) = united.iter().position(|held| held.members.iter().any(|member| group.members.contains(member))) {
+            let held = united.remove(at);
+            let (keeper, other) = if held.members.len() >= group.members.len() { (held, group) } else { (group, held) };
+            let mut members = keeper.members.clone();
+            members.extend(other.members.iter().copied().filter(|member| !keeper.members.contains(member)));
+            members.sort_unstable();
+            group = Joined { members, ..keeper };
+        }
+        united.push(group);
+    }
+    united
+}
+
 pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
     one_of_each_asking(capabilities, |offered| crate::author::same_capability(said, offered));
 }
@@ -1566,7 +1643,16 @@ fn one_of_each_asking(
             (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
         })
         .collect();
-    let groups = the_same_among(&listed, ask);
+    let mut groups = the_same_among(&listed, &ask);
+    let near = near_duplicates(capabilities);
+    if near.len() > 1 {
+        let narrowed: Vec<(String, String)> = near.iter().map(|at| listed[*at].clone()).collect();
+        let again = the_same_among(&narrowed, &ask).into_iter().map(|joined| Joined {
+            members: joined.members.into_iter().map(|at| near[at]).collect(),
+            ..joined
+        });
+        groups = united(groups.into_iter().chain(again).collect());
+    }
     if groups.is_empty() {
         return;
     }
@@ -1958,6 +2044,72 @@ mod command_family_tests {
             description: String::new(),
             audience: String::new(),
         }]
+    }
+
+    fn same_only_when_few_are_offered(offered: &BTreeMap<String, String>) -> Vec<crate::author::Same> {
+        match offered.len() {
+            2 => all_one(offered),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn names_that_differ_only_by_a_trailing_qualifier_are_put_to_the_ask_on_their_own() {
+        let mut capabilities = vec![
+            capability_of("Correlate runtime behavior with code", 4),
+            capability_of("Correlate runtime behavior with code analysis", 3),
+            capability_of("Send invoices", 3),
+            capability_of("Track deliveries", 3),
+            capability_of("Reset a password", 2),
+            capability_of("Export a report", 2),
+        ];
+        one_of_each_asking(&mut capabilities, same_only_when_few_are_offered);
+        let names: Vec<String> = capabilities.iter().filter_map(|capability| capability.name.clone()).collect();
+        assert_eq!(names.len(), 5, "{names:?}");
+        assert_eq!(names.iter().filter(|name| name.starts_with("Correlate")).count() + names.iter().filter(|name| *name == "Do it all").count(), 1);
+    }
+
+    #[test]
+    fn unrelated_names_and_disjoint_flows_are_not_near_duplicates() {
+        let capabilities = vec![capability_of("Send invoices", 3), capability_of("Track deliveries", 3), capability_of("Reset a password", 2)];
+        assert!(near_duplicates(&capabilities).is_empty());
+    }
+
+    #[test]
+    fn capabilities_that_mostly_share_their_flows_are_near_duplicates() {
+        let flows = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
+        assert!(near_in_flows(&flows(&["a", "b", "c"]), &flows(&["b", "c", "d", "e"])));
+        assert!(!near_in_flows(&flows(&["a", "b", "c"]), &flows(&["c", "d", "e"])));
+        assert!(!near_in_flows(&flows(&["a"]), &flows(&["a"])));
+    }
+
+    #[test]
+    fn a_group_found_twice_is_united_with_the_larger_naming_it() {
+        let group = |members: &[usize], name: &str| Joined {
+            members: members.to_vec(),
+            name: name.to_string(),
+            description: String::new(),
+            audience: String::new(),
+        };
+        let united = united(vec![group(&[0, 1], "Pair"), group(&[1, 2, 3], "Trio"), group(&[5, 6], "Apart")]);
+        assert_eq!(united.len(), 2);
+        let trio = united.iter().find(|held| held.name == "Trio").unwrap();
+        assert_eq!(trio.members, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_bucket_label_is_never_a_capability() {
+        for label in ["Unassigned outcomes", "unassigned", "Plumbing", "Other outcomes", "Remaining flows", "Uncategorized"] {
+            assert!(is_unassigned_word(label), "{label}");
+        }
+        for label in ["Other currencies", "Assign tasks", "Track outcomes of experiments", ""] {
+            assert!(!is_unassigned_word(label), "{label}");
+        }
+        let mut held = vec![held_of("Unassigned outcomes", &["f1", "f2"]), held_of("Place a trade", &["f0"])];
+        let mut unassigned = BTreeSet::new();
+        set_aside_buckets(&mut held, &mut unassigned);
+        assert_eq!(held.len(), 1);
+        assert_eq!(unassigned, BTreeSet::from(["f1".to_string(), "f2".to_string()]));
     }
 
     #[test]

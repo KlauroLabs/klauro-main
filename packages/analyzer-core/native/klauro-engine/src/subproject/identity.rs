@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use crate::comprehend::{Capability, Product};
 use crate::entry_exit::{EntryPoint, ExitPoint};
-use crate::paths::{contains, file_of, is_test};
+use crate::paths::{contains, file_of, is_scaffolding, is_test};
 use crate::subproject::{Partition, SubProject};
 
 const SERVING_KINDS: &[&str] = &["http", "rpc", "graphql", "tool", "cli"];
@@ -40,6 +40,8 @@ struct Tally<'a> {
     languages: BTreeMap<&'static str, usize>,
     presentation_files: usize,
     code_files: usize,
+    files_seen: usize,
+    harness_files: usize,
     screen_events: usize,
     shipped_elsewhere: bool,
 }
@@ -61,6 +63,10 @@ impl Tally<'_> {
         kinds.iter().map(|kind| self.exits.get(kind).copied().unwrap_or(0)).sum()
     }
 
+    fn is_harness(&self) -> bool {
+        self.files_seen > 0 && share(self.harness_files, self.files_seen) >= SET_ASIDE_SHARE
+    }
+
     fn leading_language(&self) -> Option<&'static str> {
         self.languages.iter().max_by(|left, right| left.1.cmp(right.1).then(right.0.cmp(left.0))).map(|(language, _)| *language)
     }
@@ -77,6 +83,9 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
     let entered = tally.entered();
     if entered > 0 && share(tally.set_aside, entered) >= SET_ASIDE_SHARE {
         return ("tooling", format!("{} of its {entered} entry points are set aside as programs nothing ships", tally.set_aside));
+    }
+    if tally.is_harness() {
+        return ("tooling", format!("{} of its {} files are tests or test harness code and nothing in it serves anyone", tally.harness_files, tally.files_seen));
     }
     if project.declared_by == "repository-residue" {
         return ("tooling", "it holds the files that sit outside every declared part".to_string());
@@ -209,6 +218,9 @@ fn capitalised(word: &str) -> String {
 
 fn plain_summary(role: &str, tally: &Tally, project: &SubProject) -> String {
     let language = tally.leading_language().map(|language| format!("{} ", capitalised(language))).unwrap_or_default();
+    if tally.is_harness() {
+        return format!("{language}test and harness code of {} files", tally.files_seen);
+    }
     let surfaces = surfaces_told(tally);
     match surfaces.is_empty() {
         true => format!("{language}{} of {} files", role_noun(role), project.files),
@@ -282,6 +294,10 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
     let mut tallies: Vec<Tally> = partition.sub_projects.iter().map(|_| Tally { shipped_elsewhere, ..Tally::default() }).collect();
     for (path, language) in &facts.files {
         let Some(at) = deepest(path) else { continue };
+        tallies[at].files_seen += 1;
+        if is_scaffolding(path) {
+            tallies[at].harness_files += 1;
+        }
         if is_test(path) {
             continue;
         }
@@ -435,6 +451,30 @@ mod tests {
         let mut held = tally(&[("lifecycle", 10)]);
         held.set_aside = 9;
         assert_eq!(role_of(&project("scripts", "scripts", "module"), &held).0, "tooling");
+    }
+
+    #[test]
+    fn a_part_made_only_of_test_files_is_tooling_with_a_summary_that_says_so() {
+        let mut held = tally(&[("export", 3)]);
+        held.files_seen = 16;
+        held.harness_files = 16;
+        let mut remote = project("e2e/remote", "remote-e2e", "library");
+        remote.files = 16;
+        remote.consumed_by = vec!["subproject:app".to_string()];
+        let (role, basis) = role_of(&remote, &held);
+        assert_eq!(role, "tooling");
+        assert!(basis.contains("16 of its 16 files"), "{basis}");
+        assert_eq!(plain_summary(role, &held, &remote), "test and harness code of 16 files");
+    }
+
+    #[test]
+    fn a_part_with_mostly_product_files_is_not_a_harness() {
+        let mut held = tally(&[("export", 3)]);
+        held.files_seen = 16;
+        held.harness_files = 4;
+        let mut library = project("packages/sdk", "sdk", "library");
+        library.consumed_by = vec!["subproject:app".to_string()];
+        assert_eq!(role_of(&library, &held).0, "library");
     }
 
     #[test]
