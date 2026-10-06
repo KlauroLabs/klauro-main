@@ -101,9 +101,16 @@ pub fn went_unanswered() -> u64 {
     UNANSWERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn declined() -> bool {
+    DECLINED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
         && std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !key.is_empty())
+        && !declined()
 }
 
 pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {
@@ -158,7 +165,7 @@ pub fn decide_at(state: &str, questions: BTreeMap<String, Question>, urgency: u8
                             held = Some(answered);
                             break;
                         }
-                        Reply::Refused => break,
+                        Reply::Refused | Reply::Declined => break,
                         Reply::Missed => {
                             let pause = crate::reach::pause_after(missed);
                             std::thread::sleep(pause);
@@ -169,6 +176,7 @@ pub fn decide_at(state: &str, questions: BTreeMap<String, Question>, urgency: u8
                 }
                 match held {
                     Some(answered) => answered.answers,
+                    None if declined() => BTreeMap::new(),
                     None => {
                         UNANSWERED.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
                         eprintln!(
@@ -192,6 +200,7 @@ enum Reply {
     Answered(Answered),
     Missed,
     Refused,
+    Declined,
 }
 
 fn ask(request: &str, urgency: u64) -> Reply {
@@ -200,11 +209,20 @@ fn ask(request: &str, urgency: u64) -> Reply {
     {
         return Reply::Answered(answered);
     }
+    if declined() {
+        return Reply::Declined;
+    }
     let Ok(key) = std::env::var("TYPESAFE_API_KEY") else { return Reply::Refused };
     let started = std::time::Instant::now();
     let text = match crate::reach::asking(ENDPOINT, &key, request, urgency) {
         crate::reach::Answer::Held(text) => text,
         crate::reach::Answer::Refused => return Reply::Refused,
+        crate::reach::Answer::Unauthorized => {
+            if !DECLINED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("  jev not asked: its backend does not accept TYPESAFE_API_KEY");
+            }
+            return Reply::Declined;
+        }
         crate::reach::Answer::Missed => return Reply::Missed,
     };
     if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {

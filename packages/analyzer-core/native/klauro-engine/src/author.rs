@@ -1545,7 +1545,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                     std::thread::sleep(std::time::Duration::from_millis(500 << rejected.min(4)));
                     rejected += 1;
                 }
-                crate::reach::Answer::Refused => break,
+                crate::reach::Answer::Refused | crate::reach::Answer::Unauthorized => break,
                 crate::reach::Answer::Missed => {
                     let pause = crate::reach::pause_after(missed);
                     std::thread::sleep(pause);
@@ -1787,6 +1787,33 @@ mod shapes {
             let required = shape["required"].as_array().cloned().unwrap_or_default();
             assert!(required.iter().any(|held| held == key), "{key} is asked for but shaped as {shape}");
         }
+    }
+}
+
+#[cfg(test)]
+mod carving {
+    use super::*;
+
+    const ANSWER: &str = "{\"capabilities\":[{\"name\":\"Manage\"}]}";
+
+    #[test]
+    fn a_fenced_or_bare_answer_is_read_to_the_same_json() {
+        for told in [
+            ANSWER.to_string(),
+            format!("```json\n{ANSWER}\n```"),
+            format!("```\n{ANSWER}\n```"),
+            format!("Here it is:\n```json\n{ANSWER}\n```\n"),
+        ] {
+            assert_eq!(carved(&told), ANSWER, "{told}");
+        }
+    }
+
+    #[test]
+    fn a_chat_reply_carries_its_fenced_json_in_the_message_content() {
+        let reply = serde_json::json!({"message": {"role": "assistant", "content": format!("```json\n{ANSWER}\n```")}});
+        let content = reply["message"]["content"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(carved(content)).unwrap();
+        assert_eq!(value["capabilities"][0]["name"], "Manage");
     }
 }
 

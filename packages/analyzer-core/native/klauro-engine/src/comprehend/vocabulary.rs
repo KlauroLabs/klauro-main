@@ -117,7 +117,8 @@ pub fn keep_readable(capabilities: &mut [Capability], vocabulary: &Vocabulary, s
     });
     for (at, _) in failing {
         let capability = &mut capabilities[at];
-        if let Some((name, description)) = named.get(&capability.id) {
+        let answered = named.get(&capability.id).cloned();
+        if let Some((name, description)) = &answered {
             capability.id = format!("capability:{}", super::carved_name(name));
             capability.name = Some(name.clone());
             if !description.is_empty() {
@@ -125,8 +126,10 @@ pub fn keep_readable(capabilities: &mut [Capability], vocabulary: &Vocabulary, s
             }
         }
         if !vocabulary.mechanism_in(capability.name.as_deref().unwrap_or_default()).is_empty() {
-            capability.unsettled = Some(crate::confidence::AI_UNANSWERED);
             capability.standing = PROVISIONAL;
+            if answered.is_none() && crate::author::asked() {
+                capability.unsettled = Some(crate::confidence::AI_UNANSWERED);
+            }
         }
     }
 }
@@ -160,6 +163,17 @@ mod tests {
     fn words_in_neither_vocabulary_pass_without_any_word_list() {
         let held = vocabulary(&["react"], &["Order"]);
         assert!(held.mechanism_in("Track a delivery").is_empty());
+    }
+
+    #[test]
+    fn a_name_still_carrying_mechanism_words_is_provisional_but_never_marked_unanswered_when_nothing_was_asked() {
+        let held = vocabulary(&["telemetry"], &["Order"]);
+        let mut capability = super::super::tests::capability_of(&["flow:a"]);
+        capability.name = Some("Emit telemetry".to_string());
+        let mut capabilities = vec![capability];
+        keep_readable(&mut capabilities, &held, "a system");
+        assert_eq!(capabilities[0].standing, PROVISIONAL);
+        assert_eq!(capabilities[0].unsettled, None);
     }
 
     #[test]

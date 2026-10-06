@@ -4700,7 +4700,7 @@ mod tests {
         }
     }
 
-    fn capability_of(flows: &[&str]) -> super::Capability {
+    pub(super) fn capability_of(flows: &[&str]) -> super::Capability {
         super::Capability {
             id: "capability:place-an-order".to_string(),
             audience: None,

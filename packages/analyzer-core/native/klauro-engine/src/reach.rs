@@ -74,6 +74,7 @@ pub fn pause_after(missed: u32) -> Duration {
 pub enum Answer {
     Held(String),
     Refused,
+    Unauthorized,
     Missed,
 }
 
@@ -196,6 +197,7 @@ fn sent(endpoint: &str, key: &str, request: &str, urgency: u64) -> Answer {
             Ok(text) => Answer::Held(text),
             Err(_) => Answer::Missed,
         },
+        Err(ureq::Error::StatusCode(401 | 403)) => Answer::Unauthorized,
         Err(ureq::Error::StatusCode(status)) if (400..500).contains(&status) && status != 429 => {
             Answer::Refused
         }
@@ -205,5 +207,64 @@ fn sent(endpoint: &str, key: &str, request: &str, urgency: u64) -> Answer {
             }
             Answer::Missed
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    use super::*;
+
+    fn serving(status: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten().take(8) {
+                let mut stream = stream;
+                let mut held = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    held.extend_from_slice(&chunk[..read]);
+                    let text = String::from_utf8_lossy(&held);
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
+                    let length = head
+                        .lines()
+                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:")?.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break;
+                    }
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        format!("http://{at}/ask")
+    }
+
+    #[test]
+    fn a_credential_the_backend_rejects_is_told_apart_from_a_bad_request() {
+        assert!(matches!(asking(&serving("401 Unauthorized", ""), "k", "q", 0), Answer::Unauthorized));
+        assert!(matches!(asking(&serving("403 Forbidden", ""), "k", "q", 0), Answer::Unauthorized));
+        assert!(matches!(asking(&serving("400 Bad Request", ""), "k", "q", 0), Answer::Refused));
+    }
+
+    #[test]
+    fn asks_in_flight_together_are_kept_apart_by_their_request() {
+        let endpoint = serving("200 OK", "answer");
+        let answers: Vec<Answer> = std::thread::scope(|scope| {
+            let first = scope.spawn(|| asking(&endpoint, "k", "first", 0));
+            let second = scope.spawn(|| asking(&endpoint, "k", "second", 0));
+            vec![first.join().unwrap(), second.join().unwrap()]
+        });
+        assert!(answers.iter().all(|answer| matches!(answer, Answer::Held(text) if text == "answer")));
     }
 }
