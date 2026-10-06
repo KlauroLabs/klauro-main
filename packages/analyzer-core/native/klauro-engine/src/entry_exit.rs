@@ -689,6 +689,7 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("CoroutineWorker", "background", WORK_MEMBERS),
     base("Fragment", "lifecycle", &[]),
     base("IHostedService", "background", &["StartAsync"]),
+    base("IScheduledTask", "background", &["ExecuteAsync"]),
     base("ListenableWorker", "background", WORK_MEMBERS),
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),

@@ -1,0 +1,8 @@
+{
+  "name": "@acme/format-utils",
+  "version": "1.0.0",
+  "description": "Formatting helpers shared across services",
+  "license": "MIT",
+  "main": "src/index.js",
+  "types": "src/index.d.ts"
+}

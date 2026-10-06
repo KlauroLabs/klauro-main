@@ -132,7 +132,7 @@ pub fn published(
         }
         let Some(at) = holds.get(node.file as usize).copied().flatten() else { continue };
         let path = &files[node.file as usize];
-        if is_test(path) || is_not_shipped(path) || BUILD_SCRIPTS.iter().any(|ending| path.ends_with(ending)) {
+        if is_test(path) || is_not_shipped(path) || is_a_declaration_file(path) || BUILD_SCRIPTS.iter().any(|ending| path.ends_with(ending)) {
             continue;
         }
         let owner = node.parent.as_deref().unwrap_or("");
@@ -192,6 +192,10 @@ pub fn published(
         }
     }
     found
+}
+
+fn is_a_declaration_file(path: &str) -> bool {
+    [".d.ts", ".d.mts", ".d.cts"].iter().any(|ending| path.ends_with(ending))
 }
 
 pub fn offered_from(path: &str) -> &str {

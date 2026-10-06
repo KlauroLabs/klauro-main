@@ -43,3 +43,17 @@ fn a_rust_crate_marked_publish_false_and_used_only_in_repo_offers_nothing() {
     let found = export_entries(&index);
     assert!(found.is_empty(), "publish = false means the crate is not a published surface: {found:?}");
 }
+
+#[test]
+fn a_type_declaration_file_is_not_a_second_export_surface() {
+    let index = common::read("exports_declarations");
+    let declared: Vec<&serde_json::Value> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "export")
+        .filter(|entry| entry["handler"].as_str().is_some_and(|handler| handler.contains(".d.ts")))
+        .collect();
+    assert!(declared.is_empty(), "declarations only describe what the implementation exports: {declared:?}");
+    assert!(export_entries(&index).contains(&"formatCurrency".to_string()));
+}

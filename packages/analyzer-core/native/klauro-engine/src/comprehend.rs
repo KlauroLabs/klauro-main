@@ -3213,7 +3213,7 @@ fn link_across_parts(flows: &mut [Flow], shared: &HashMap<String, Vec<Shared>>) 
     }
     if !by_family.is_empty() {
         eprintln!(
-            "seams {}",
+            "shared-name candidates {}",
             by_family
                 .iter()
                 .map(|(family, held)| format!("{family} {held}"))
