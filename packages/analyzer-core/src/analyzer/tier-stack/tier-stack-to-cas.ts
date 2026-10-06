@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import type { CASCausalJourney } from '../../types/causal-journey.types';
-import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
+import { databaseSchemaOf } from './tier-stack-schema';
+import { conformanceOf, namedPatternsOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
 import { seamsOf } from './tier-stack-seams';
 import { temporalStabilityOf } from './tier-stack-history';
@@ -576,14 +577,18 @@ function routesOf(index: TierStackIndex): CASRouteTableEntry[] {
   );
   return (index.entry_points ?? [])
     .filter(entry => entry.path !== undefined)
-    .map(entry => ({
-      method: entry.method ?? 'ANY',
-      path: entry.path as string,
-      controller: holder.get(entry.handler)?.parent ?? index.files[entry.file]?.path ?? '',
-      handler: holder.get(entry.handler)?.name ?? entry.handler,
-      auth: guarded.has(entry.handler),
-      source_node: entry.handler,
-    }));
+    .map(entry => {
+      const enforcing = (entry.guards ?? []).filter(guard => guard.kind !== 'open');
+      return {
+        method: entry.method ?? 'ANY',
+        path: entry.path as string,
+        controller: holder.get(entry.handler)?.parent ?? index.files[entry.file]?.path ?? '',
+        handler: holder.get(entry.handler)?.name ?? entry.handler,
+        auth: enforcing.length > 0 || guarded.has(entry.handler),
+        ...(enforcing.length > 0 ? { guards: enforcing.map(guard => guard.name) } : {}),
+        source_node: entry.handler,
+      };
+    });
 }
 
 const NOT_BUILT_WITH = new Set(['test', 'observability', 'standard']);
@@ -769,6 +774,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
 
   const exit_points = exitPointsOf(index);
   const entities = entitiesOf(index);
+  const database_schema = databaseSchemaOf(entities);
   const capabilities = capabilitiesOf(index, name);
   const causal_journeys = causalJourneysOf(index);
   const paradigm_conformance = conformanceOf(index);
@@ -788,6 +794,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
       technologies: technologiesOf(index, path.basename(index.root)),
     },
     architecture_summary: { ...architectureOf(index, nodes), architectural_patterns: patternsOf(index) },
+    patterns: namedPatternsOf(index),
     paradigm_conformance,
     principle_violations: violationsOf(index),
     route_table: routesOf(index),
@@ -796,6 +803,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     entry_points,
     exit_points,
     entities,
+    ...(database_schema === undefined ? {} : { database_schema }),
     capabilities,
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),

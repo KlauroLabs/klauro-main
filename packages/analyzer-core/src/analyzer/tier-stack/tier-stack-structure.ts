@@ -1,6 +1,7 @@
 import type {
   CASArchitecturalPatternSummary,
   CASParadigmConformance,
+  CASPattern,
   CASPrincipleViolation,
 } from '../../types/cas.types';
 import type { TierStackIndex } from './read-tier-stack';
@@ -61,6 +62,17 @@ export function patternsOf(index: TierStackIndex): CASArchitecturalPatternSummar
     evidence: [`${found.evidence} (${found.count})`, ...(found.examples ?? []).filter(Boolean)],
     node_ids: (found.examples ?? []).map(nodeIdOf).filter(id => id.includes(':')),
     guidance: found.evidence,
+  }));
+}
+
+export function namedPatternsOf(index: TierStackIndex): CASPattern[] {
+  return (index.patterns?.found ?? []).map(found => ({
+    id: `pattern:${found.pattern}`,
+    type: found.family === 'design' ? 'design-pattern' : 'architectural-pattern',
+    name: found.pattern,
+    description: found.evidence,
+    confidence: found.count >= WELL_EVIDENCED ? 0.9 : 0.6,
+    instances: (found.examples ?? []).map(nodeIdOf),
   }));
 }
 

@@ -97,6 +97,12 @@ export interface TierStackUnshipped {
   evidence: string;
 }
 
+export interface TierStackGuard {
+  name: string;
+  kind: string;
+  via: string;
+}
+
 export interface TierStackEntryPoint {
   id: string;
   kind: string;
@@ -107,6 +113,7 @@ export interface TierStackEntryPoint {
   file: number;
   line: number;
   registrar: string;
+  guards?: TierStackGuard[];
   unshipped?: TierStackUnshipped;
 }
 

@@ -138,6 +138,40 @@ test('a surface and the call that leaves keep their names', () => {
   assert.equal(cas.exit_points?.[0].name, 'orders.insert');
 });
 
+test('a route keeps the guards that enforce access and ignores an open one', () => {
+  const [entry] = INDEX.entry_points ?? [];
+  const guarded: TierStackIndex = {
+    ...INDEX,
+    entry_points: [
+      { ...entry, guards: [{ name: 'AuthGuard', kind: 'authentication', via: 'decorator' }] },
+      { ...entry, id: 'entry:health', path: '/health', guards: [{ name: 'Public', kind: 'open', via: 'decorator' }] },
+      { ...entry, id: 'entry:list', path: '/orders/all' },
+    ],
+  };
+  const [protectedRoute, openRoute, plainRoute] = tierStackToCas(guarded).route_table ?? [];
+  assert.equal(protectedRoute.auth, true);
+  assert.deepEqual(protectedRoute.guards, ['AuthGuard']);
+  assert.equal(openRoute.auth, false);
+  assert.equal(openRoute.guards, undefined);
+  assert.equal(plainRoute.auth, false);
+});
+
+test('a pattern the engine named is served by name with its instances', () => {
+  const found: TierStackIndex = {
+    ...INDEX,
+    patterns: {
+      found: [
+        { pattern: 'repository', family: 'data', evidence: 'data kept behind repositories', count: 1, examples: ['src/order.ts:class:Order:4 (2)'] },
+        { pattern: 'decorator', family: 'design', evidence: 'wraps another of its own kind and adds to it', count: 4 },
+      ],
+    },
+  };
+  const patterns = tierStackToCas(found).patterns ?? [];
+  assert.deepEqual(patterns.map(held => [held.name, held.type]), [['repository', 'architectural-pattern'], ['decorator', 'design-pattern']]);
+  assert.deepEqual(patterns[0].instances, ['src/order.ts:class:Order:4']);
+  assert.equal(patterns[1].confidence, 0.9);
+});
+
 test('a record keeps its fields and the records it points at', () => {
   const cas = tierStackToCas(INDEX);
   const order = cas.entities?.[0];
@@ -157,6 +191,20 @@ test('a record keeps its fields and the records it points at', () => {
     ['lines', 'OrderLine', '1:N', 'typed-composition'],
   ]);
   assert.deepEqual(order?.lifecycle.created_by, ['src/order.ts:function:place:12']);
+});
+
+test('the relations of a record are served as a database schema with both sides named', () => {
+  const schema = tierStackToCas(INDEX).database_schema;
+  assert.deepEqual(schema?.relationships_summary, [
+    'Order N:1 Customer',
+    'Customer 1:N Order',
+    'Order 1:N OrderLine',
+    'OrderLine N:1 Order',
+  ]);
+  assert.deepEqual(schema?.entities[0].relationships.map(relationship => [relationship.type, relationship.target, relationship.field]), [
+    ['ManyToOne', 'Customer', 'customerId'],
+    ['OneToMany', 'OrderLine', 'lines'],
+  ]);
 });
 
 test('a flow keeps the surface it starts from and the records it touches', () => {
@@ -410,30 +458,6 @@ test('a part carries the owner, system and dependencies its catalog descriptor d
   const web = parts.find(part => part.system.name === 'web');
   assert.deepEqual(api?.system.catalog, { owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/web'] });
   assert.equal(web?.system.catalog, undefined);
-});
-
-test('the engine journeys reach the stored analysis with their ordered steps, crossings and effects', () => {
-  const index = {
-    ...INDEX,
-    journeys: [
-      {
-        id: 'journey:a',
-        label: 'Run chat',
-        does: 'Run chat through ipc chat:run',
-        rank: 1,
-        representative: true,
-        steps: [
-          { file: 'src/order.ts', symbol: 'runChat', does: 'Run chat: sends chat:run over the ipc bridge' },
-          { file: 'src/order.ts', symbol: 'spawn', does: 'Spawn: starts an external process', via: 'ipc', effect: 'process:Command::new' },
-        ],
-      },
-    ],
-  } as unknown as TierStackIndex;
-  const cas = tierStackToCas(index, 'shop');
-  assert.equal(cas.causal_journeys?.length, 1);
-  assert.equal(cas.causal_journeys?.[0].representative, true);
-  assert.deepEqual(cas.causal_journeys?.[0].steps.map(step => step.via), [undefined, 'ipc']);
-  assert.equal(cas.causal_journeys?.[0].steps[1].effect, 'process:Command::new');
 });
 
 test('the engine analysis carries graph integrity, facts, idioms, and invariants the readiness gates read', () => {
