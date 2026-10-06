@@ -226,7 +226,7 @@ fn overridden_by_the_decorator(decorator: &Decorator) -> Option<String> {
 }
 
 fn speaks_a_routing_dsl(path: &str) -> bool {
-    path.ends_with(".rb") || path.ends_with(".ex") || path.ends_with(".exs")
+    [".rb", ".ex", ".exs", ".jl", ".pl", ".pm", ".cr"].iter().any(|extension| path.ends_with(extension))
 }
 
 fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sdk: bool, in_a_routing_dsl: bool) -> Option<&'static str> {
@@ -375,6 +375,60 @@ pub(crate) fn mapped_method(verb: &str) -> Option<String> {
         .binary_search(&lowered.as_str())
         .is_ok()
         .then(|| lowered.to_ascii_uppercase())
+}
+
+struct VariableMounts<'a> {
+    parents: HashMap<(u32, &'a str), Vec<(&'a str, &'a str)>>,
+}
+
+impl<'a> VariableMounts<'a> {
+    fn of(registrations: &'a [RegistrationFact], files: &[String]) -> Self {
+        let receivers: HashSet<(u32, &str)> = registrations
+            .iter()
+            .filter_map(|registration| {
+                registration.registrar.rfind('.').map(|at| (registration.file, names::root(&registration.registrar[..at])))
+            })
+            .collect();
+        let mut parents: HashMap<(u32, &str), Vec<(&str, &str)>> = HashMap::default();
+        for registration in registrations {
+            let Some(at) = registration.registrar.rfind('.') else { continue };
+            if names::leaf(&registration.registrar) != "mount"
+                || files[registration.file as usize].ends_with(".rs")
+                || !receivers.contains(&(registration.file, registration.handler.as_str()))
+            {
+                continue;
+            }
+            parents
+                .entry((registration.file, registration.handler.as_str()))
+                .or_default()
+                .push((names::root(&registration.registrar[..at]), registration.label.as_str()));
+        }
+        Self { parents }
+    }
+
+    fn prefix(&self, file: u32, registrar: &str) -> Option<String> {
+        let at = registrar.rfind('.')?;
+        self.prefix_of(file, names::root(&registrar[..at]), 0)
+    }
+
+    fn prefix_of(&self, file: u32, variable: &str, depth: u8) -> Option<String> {
+        let mounts = self.parents.get(&(file, variable))?;
+        let [(parent, label)] = mounts.as_slice() else { return None };
+        if depth >= 8 {
+            return None;
+        }
+        Some(match self.prefix_of(file, parent, depth + 1) {
+            Some(above) => join_paths(&above, label),
+            None => join_paths("", label),
+        })
+    }
+}
+
+static VERB_ALIASES: &[(&str, &str)] = &[("del", "DELETE")];
+
+fn aliased_method(verb: &str) -> Option<String> {
+    let lowered = verb.to_ascii_lowercase();
+    VERB_ALIASES.iter().find(|(alias, _)| *alias == lowered).map(|(_, method)| (*method).to_string())
 }
 
 pub(crate) fn looks_like_route(value: &str) -> bool {
@@ -2074,8 +2128,8 @@ fn words_of(written: &str) -> Vec<String> {
 }
 
 static SAYS_WHO_YOU_ARE: &[&str] = &[
-    "auth", "authed", "authenticate", "authenticated", "authentication", "authorize", "authorized", "jwt",
-    "login", "oauth", "signin",
+    "auth", "authed", "authenticate", "authenticated", "authentication", "authenticator", "authenticators",
+    "authorize", "authorized", "jwt", "login", "oauth", "signin",
 ];
 static SAYS_WHAT_YOU_MAY_DO: &[&str] = &[
     "acl", "admin", "authorization", "granted", "permission", "permissions", "policies", "policy",
@@ -2091,7 +2145,7 @@ pub(crate) fn guarding(written: &str) -> Option<&'static str> {
     if has(SAYS_WHAT_YOU_MAY_DO) {
         return Some("authorization");
     }
-    if has(SAYS_WHO_YOU_ARE) || pair("current", "user") || pair("logged", "in") || pair("signed", "in") {
+    if has(SAYS_WHO_YOU_ARE) || pair("current", "user") || pair("guard", "middleware") || pair("logged", "in") || pair("signed", "in") {
         return Some("authentication");
     }
     if has(SAYS_HOW_OFTEN) || pair("rate", "limit") {
@@ -2595,7 +2649,7 @@ pub fn derive(
                     kind,
                     name: spoken,
                     method: if kind == "http" {
-                        Some(mapped_method(verb).unwrap_or_else(|| verb.to_ascii_uppercase()))
+                        Some(mapped_method(verb).or_else(|| aliased_method(verb)).unwrap_or_else(|| verb.to_ascii_uppercase()))
                     } else {
                         None
                     },
@@ -2904,6 +2958,7 @@ pub fn derive(
     }
     let mut registered: HashSet<(u32, u32, String)> = HashSet::default();
     let mut mounted_at: HashMap<&str, Vec<String>> = HashMap::default();
+    let variable_mounts = VariableMounts::of(registrations, files);
     for registration in registrations {
         if rails_drew && crate::rails_routes::draws_routes(&files[registration.file as usize]) {
             continue;
@@ -2992,6 +3047,10 @@ pub fn derive(
             Some(base) => join_paths(&base, &path),
             None => path,
         };
+        let path = match variable_mounts.prefix(registration.file, &registration.registrar) {
+            Some(base) => join_paths(&base, &path),
+            None => path,
+        };
         if kind == "http"
             && let Some(operations) = resource_operations(verb)
             && let Some(owned) = members.get(handler.as_str())
@@ -3024,6 +3083,7 @@ pub fn derive(
         let method = match kind == "http" {
             true => label_method
                 .or_else(|| mapped_method(verb))
+                .or_else(|| aliased_method(verb))
                 .or_else(|| {
                     HTTP_METHODS
                         .binary_search(&verb.to_ascii_lowercase().as_str())
