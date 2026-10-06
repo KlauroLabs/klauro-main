@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::author::{Placed, Proposal, Proposed, Serving};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
+mod supporting;
+
 const FAMILIES_PER_PROPOSAL: usize = 20;
 const PLACING_ROUNDS: usize = 2;
+const PLACED_AT_ONCE: usize = 10;
 const READINGS: usize = 3;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
@@ -346,10 +349,15 @@ fn only_relays_a_signal(flows: &[&Flow]) -> bool {
 const ONLY_PASSES_A_SIGNAL: &str =
     "; its paths only pass a signal on or hand what arrives to another part, and change, call and keep nothing themselves";
 
+fn returns_to_its_consumer(flow: &Flow) -> bool {
+    flow.steps.iter().any(|step| step.kind == "respond" && step.object.is_some())
+}
+
 pub(crate) fn terminality_of(family: &Family, flows: &[&Flow]) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
         "asks" if only_relays_a_signal(flows) => "proximal",
         "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" => "terminal",
+        _ if flows.iter().any(|flow| flow.kind == "export" && returns_to_its_consumer(flow)) => "terminal",
         _ => "proximal",
     }
 }
@@ -502,6 +510,17 @@ fn unseated<'a>(known: impl Iterator<Item = &'a String>, held: &[Held]) -> Vec<S
     known.filter(|id| !seated.contains(id)).cloned().collect()
 }
 
+fn placed_among(said: &str, standing: &[(String, String)], chunk: &[(String, String)]) -> Vec<Placed> {
+    let answers = crate::author::place_families(said, standing, chunk);
+    if !answers.is_empty() || chunk.len() < 2 {
+        return answers;
+    }
+    let (first, second) = chunk.split_at(chunk.len() / 2);
+    let mut together = placed_among(said, standing, first);
+    together.extend(placed_among(said, standing, second));
+    together
+}
+
 fn place(
     said: &str,
     told: &BTreeMap<String, String>,
@@ -520,11 +539,15 @@ fn place(
     let weight = crate::author::weight();
     let answers: Vec<Placed> = crate::author::asking(|| {
         unplaced
-            .par_chunks(FAMILIES_PER_PROPOSAL)
-            .flat_map(|chunk| crate::author::weighing(weight, || crate::author::place_families(said, &standing, chunk)))
+            .par_chunks(PLACED_AT_ONCE)
+            .flat_map(|chunk| crate::author::weighing(weight, || placed_among(said, &standing, chunk)))
             .collect()
     });
     let answered = !answers.is_empty();
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        let aside = answers.iter().filter(|answer| name_key(&answer.capability) == name_key(crate::author::UNASSIGNED)).count();
+        eprintln!("  placing: asked about {} groups, {} answers, {} left unassigned by the AI", unplaced.len(), answers.len(), aside);
+    }
     for Placed { family, capability, description, audience, role, why } in answers {
         if !told.contains_key(&family) || placed.contains(&family) {
             continue;
@@ -862,8 +885,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             },
         );
     }
-    let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
+    let mut lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
+    let related: BTreeSet<&str> = lanes.values().flat_map(|(_, lane)| lane.iter().map(|flow| flow.id.as_str())).collect();
+    let supporting = supporting::relate(said, flows, &related, &lanes, &mut held, fields);
+    for lane in &supporting.lanes {
+        lanes.insert(lane.id.as_str(), (&lane.family, &lane.flows));
+    }
     let unanswered: BTreeSet<&str> = known
         .iter()
         .map(String::as_str)
@@ -873,10 +901,12 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .iter()
         .filter_map(|id| lanes.get(id))
         .flat_map(|(_, lane)| lane.iter().map(|flow| flow.id.clone()))
+        .chain(supporting.unplaced.iter().map(|flow| flow.id.clone()))
         .collect();
     let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
-    let state = match (unanswered.is_empty(), formed.is_empty()) {
+    let unanswered_count = unanswered.len() + supporting.unplaced.len();
+    let state = match (unanswered_count == 0, formed.is_empty()) {
         (true, false) => PartState { capabilities: SETTLED, reason: None },
         (true, true) => PartState {
             capabilities: PENDING,
@@ -884,7 +914,12 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         },
         (false, _) => PartState {
             capabilities: PENDING,
-            reason: Some(format!("the AI left {} of {} outcomes unanswered", unanswered.len(), known.len())),
+            reason: Some(format!(
+                "the AI left {} of {} outcomes unanswered, and {} flows it was asked to relate to a capability",
+                unanswered.len(),
+                known.len(),
+                supporting.unplaced.len()
+            )),
         },
     };
     OfAPart { capabilities: formed, state, pending }
@@ -978,6 +1013,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
                         "terminal" | "proximal" => "primary",
                         _ => "supporting",
                     }),
+                unshipped: flow.unshipped.clone().filter(|tag| crate::unshipped::is_set_aside(Some(tag))),
                 rationale: match serving.map(|serving| serving.why.as_str()).filter(|why| !why.is_empty()) {
                     Some(why) => why.to_string(),
                     None => format!("{} belongs here by {}", flow.operation, family.basis),

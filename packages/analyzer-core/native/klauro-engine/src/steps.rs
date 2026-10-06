@@ -618,7 +618,7 @@ impl<'a> Reader<'a> {
             }
         }
         self.walk(start, 0, "always", &mut visited, &mut actions);
-        if matches!(entry.kind, "http" | "rpc" | "graphql") {
+        if matches!(entry.kind, "http" | "rpc" | "graphql" | "export") {
             let returned = self.nodes[start as usize]
                 .signature
                 .as_ref()

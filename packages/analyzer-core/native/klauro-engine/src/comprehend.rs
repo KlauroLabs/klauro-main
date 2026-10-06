@@ -143,6 +143,8 @@ pub struct Delivery {
     pub flow: String,
     pub role: &'static str,
     pub rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unshipped: Option<crate::entry_exit::Unshipped>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1746,13 +1748,19 @@ pub fn author(
                     .filter(|flow| flow.kind == "export")
                     .map(|flow| flow.id.as_str())
                     .collect();
+                let set_aside: std::collections::BTreeSet<&str> = held
+                    .flows
+                    .iter()
+                    .filter(|flow| crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
+                    .map(|flow| flow.id.as_str())
+                    .collect();
                 let served: Vec<Capability> = capabilities
                     .iter()
                     .filter(|capability| {
                         capability
                             .flows
                             .iter()
-                            .any(|flow| !offered_only.contains(flow.as_str()))
+                            .any(|flow| !offered_only.contains(flow.as_str()) && !set_aside.contains(flow.as_str()))
                     })
                     .cloned()
                     .collect();

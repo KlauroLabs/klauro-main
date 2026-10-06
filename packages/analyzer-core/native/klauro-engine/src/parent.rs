@@ -702,7 +702,7 @@ mod tests {
             audience: Some("shoppers".to_string()),
             delivered: flows
                 .iter()
-                .map(|flow| Delivery { flow: flow.to_string(), role: "primary", rationale: String::new() })
+                .map(|flow| Delivery { flow: flow.to_string(), role: "primary", rationale: String::new(), unshipped: None })
                 .collect(),
             records: Vec::new(),
             changes: Vec::new(),
