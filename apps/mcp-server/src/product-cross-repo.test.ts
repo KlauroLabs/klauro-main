@@ -195,9 +195,8 @@ test('single-segment routes require independent domain evidence in both reposito
   assert.equal(links.filter(link => link.type === 'api').length, 1);
 });
 
-test('an exact ubiquitous single-segment route is not linked without independent domain evidence', () => {
+test('an exact route served by two providers is reported ambiguous and linked to neither', () => {
   const consumer = frontendCas({
-    domain_concepts: [],
     exit_points: [{
       id: 'exit-records',
       type: 'api',
@@ -207,10 +206,9 @@ test('an exact ubiquitous single-segment route is not linked without independent
       operation: { method: 'GET' },
     }],
   });
-  const producer = backendCas({
-    domain_concepts: [],
+  const provider = (name: string) => backendCas({
     entry_points: [{
-      id: 'entry-records',
+      id: `entry-records-${name}`,
       type: 'http',
       name: 'GET /api/v1/records',
       source_node: 'node-things-handler',
@@ -218,8 +216,41 @@ test('an exact ubiquitous single-segment route is not linked without independent
     }],
   });
 
-  const links = buildCrossRepositoryLinks([repo('consumer', consumer), repo('producer', producer)]).links;
-  assert.equal(links.filter(link => link.type === 'api').length, 0);
+  const result = buildCrossRepositoryLinks([repo('consumer', consumer), repo('billing', provider('billing')), repo('catalog', provider('catalog'))]);
+  assert.equal(result.links.filter(link => link.type === 'api').length, 0);
+  const ambiguous = result.conflicts.filter(conflict => conflict.id.startsWith('api-ambiguous'));
+  assert.equal(ambiguous.length, 1);
+  assert.equal(ambiguous[0].link_ids.length, 2);
+  assert.match(ambiguous[0].reason, /billing, catalog/);
+});
+
+test('an origin that names one of the providers settles an otherwise ambiguous route', () => {
+  const consumer = frontendCas({
+    exit_points: [{
+      id: 'exit-records',
+      type: 'api',
+      name: 'loadRecords',
+      source_node: 'node-things-service-method',
+      target: { endpoint: '/api/v1/records' },
+      operation: { method: 'GET' },
+      metadata: { origin: 'http://catalog:8080' },
+    }],
+  });
+  const provider = (name: string) => backendCas({
+    entry_points: [{
+      id: `entry-records-${name}`,
+      type: 'http',
+      name: 'GET /api/v1/records',
+      source_node: 'node-things-handler',
+      trigger: { method: 'GET', path: '/api/v1/records' },
+    }],
+  });
+
+  const result = buildCrossRepositoryLinks([repo('consumer', consumer), repo('billing', provider('billing')), repo('catalog', provider('catalog'))]);
+  const links = result.links.filter(link => link.type === 'api');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].target_repository?.path, '/tmp/catalog');
+  assert.equal(result.conflicts.filter(conflict => conflict.id.startsWith('api-ambiguous')).length, 0);
 });
 
 test('provider domain evidence resolves a single-segment seam without client-side concepts', () => {

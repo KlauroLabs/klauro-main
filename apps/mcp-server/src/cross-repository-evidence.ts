@@ -2,37 +2,6 @@ import type { CASNode, CASOutput } from '../../../packages/analyzer-core/src/typ
 
 const ENTITY_NODE_TYPES = new Set(['class', 'interface', 'type', 'enum', 'model', 'entity', 'dto']);
 
-export function hasRouteDomainContractEvidence(cas: CASOutput, route: string): boolean {
-  if (route.includes(':param')) return true;
-  const routeTerms = route
-    .toLowerCase()
-    .split('/')
-    .filter(term => term && term !== 'api' && !/^v\d+$/.test(term) && term !== ':param')
-    .map(normalizeDomainTerm);
-  if (routeTerms.length !== 1) return true;
-  const expected = routeTerms[0];
-  const evidenceNames = [
-    ...(cas.domain_concepts || []).map(concept => concept.name),
-    ...(cas.entities || []).map(entity => entity.name),
-    ...(cas.database_schema?.entities || []).map(entity => entity.name),
-  ];
-  return evidenceNames.some(name =>
-    String(name)
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean)
-      .map(normalizeDomainTerm)
-      .includes(expected)
-  );
-}
-
-function normalizeDomainTerm(value: string): string {
-  if (/ies$/.test(value)) return `${value.slice(0, -3)}y`;
-  if (/(?:ches|shes|xes|zes)$/.test(value)) return value.slice(0, -2);
-  if (/s$/.test(value) && !/ss$/.test(value)) return value.slice(0, -1);
-  return value;
-}
-
 export interface EntityContractEvidence {
   name: string;
   nodeIds: string[];

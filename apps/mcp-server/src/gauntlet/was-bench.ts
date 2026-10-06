@@ -20,12 +20,14 @@ import { buildCrossRepositoryLinks } from '../product';
 import { validateWin } from './win-validator';
 import type { ArmResult } from './report-schema';
 
-interface WasTruth { task: 'cross-repo-links'; expected_links: string[]; }
+interface WasTruth { task: 'cross-repo-links'; expected_links: string[]; expected_ambiguous?: string[]; }
 
 export interface WasBenchResult {
   fixture: string;
   arms: ArmResult[];
   verdict: ReturnType<typeof validateWin>;
+  ambiguous: string[];
+  expected_ambiguous: string[];
   detail: Array<{ arm: string; links: string[]; f1: number; bytes: number; can_answer: boolean }>;
 }
 
@@ -63,7 +65,7 @@ async function sourceBytes(dir: string): Promise<number> {
 }
 
 
-async function klauroLinks(dir: string): Promise<{ links: string[]; bytes: number; time_ms: number }> {
+async function klauroLinks(dir: string): Promise<{ links: string[]; ambiguous: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const dirs = await repoDirs(dir);
   const repos = [];
@@ -77,7 +79,8 @@ async function klauroLinks(dir: string): Promise<{ links: string[]; bytes: numbe
       .filter((l: any) => l.type === 'api')
       .map((l: any) => `${l.source_repository?.path} -> ${l.target_repository?.path} ${(l.connection?.method || '').toUpperCase()} ${l.connection?.endpoint}`)
   )];
-  return { links, bytes: Buffer.byteLength(links.join('\n'), 'utf8'), time_ms: Date.now() - t0 };
+  const ambiguous = result.conflicts.filter(conflict => conflict.id.startsWith('api-ambiguous')).map(conflict => conflict.reason);
+  return { links, ambiguous, bytes: Buffer.byteLength(links.join('\n'), 'utf8'), time_ms: Date.now() - t0 };
 }
 
 export async function runWasCrossRepoBench(fixtureDir: string): Promise<WasBenchResult> {
@@ -105,5 +108,5 @@ export async function runWasCrossRepoBench(fixtureDir: string): Promise<WasBench
     'buildCrossRepositoryLinks fuses a client fetch in one repo to the server route in another (ui -> api), the cross-repo product graph; single-repo indexers (scip, stack-graphs, embeddings) cannot see across repos and codebase-memory has no fetch↔route fusion.',
   );
 
-  return { fixture: path.basename(fixtureDir), arms, verdict, detail };
+  return { fixture: path.basename(fixtureDir), arms, verdict, detail, ambiguous: kl.ambiguous, expected_ambiguous: truth.expected_ambiguous ?? [] };
 }

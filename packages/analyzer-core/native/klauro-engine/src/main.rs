@@ -40,6 +40,7 @@ mod fixes;
 mod file_routes;
 mod history;
 mod jev;
+mod links;
 mod gomod;
 mod generic;
 mod externals;
@@ -458,6 +459,10 @@ fn main() {
 }
 
 fn read_it() {
+    if std::env::args().nth(1).as_deref() == Some("--link") {
+        links::run();
+        return;
+    }
     let root = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let started = Instant::now();
     let found = discovery::discover(&root);

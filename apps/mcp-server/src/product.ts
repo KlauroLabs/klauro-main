@@ -1,3 +1,5 @@
+import * as path from 'path';
+import { linkRepositories } from '../../../packages/analyzer-core/src/analyzer/tier-stack/engine-links';
 import type {
   CASCallChain,
   CASCrossRepositoryLink,
@@ -33,7 +35,6 @@ import {
   entityShapesCompatible,
   entityTypeNodes,
   entityVocabulary,
-  hasRouteDomainContractEvidence,
   isNonRuntimeSourceFile,
   type EntityContractEvidence,
 } from './cross-repository-evidence';
@@ -583,14 +584,15 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
   }>;
 } {
   const links: CASCrossRepositoryLink[] = [];
+  const { grouped: apiLinks, ambiguous: apiAmbiguities } = engineApiLinks(repositories);
 
   for (let leftIndex = 0; leftIndex < repositories.length; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < repositories.length; rightIndex++) {
       const left = repositories[leftIndex];
       const right = repositories[rightIndex];
       const directLinks = [
-        ...detectApiLinks(left, right),
-        ...detectApiLinks(right, left),
+        ...(apiLinks.get(`${left.path}\u0000${right.path}`) ?? []),
+        ...(apiLinks.get(`${right.path}\u0000${left.path}`) ?? []),
         ...detectSharedDatabaseLinks(left, right),
         ...detectMessageLinks(left, right),
         ...detectMessageLinks(right, left),
@@ -614,7 +616,7 @@ export function buildCrossRepositoryLinks(repositories: Array<{ path: string; na
     counts[link.type] = (counts[link.type] || 0) + 1;
     return counts;
   }, {});
-  const conflicts = findCrossRepoLinkConflicts(deduped);
+  const conflicts = [...findCrossRepoLinkConflicts(deduped), ...apiAmbiguities];
   const certainty = deduped.reduce(
     (counts, link) => {
       const band = certaintyBand(link.metadata?.confidence || 0);
@@ -946,60 +948,68 @@ function fuzzySegmentLcs(leftParts: string[], rightParts: string[]): number {
   return table[leftParts.length][rightParts.length];
 }
 
-function detectApiLinks(
-  consumer: { path: string; name: string; cas: CASOutput },
-  producer: { path: string; name: string; cas: CASOutput }
-): CASCrossRepositoryLink[] {
-  const links: CASCrossRepositoryLink[] = [];
-  const apiExits = (consumer.cas.exit_points || []).filter(exitPoint => exitPoint.type === 'api' || exitPoint.type === 'webhook');
-  const entries = (producer.cas.entry_points || []).filter(entryPoint => isApiProviderEntry(producer.cas, entryPoint));
-
-  for (const exitPoint of apiExits) {
-    const rawExitTarget = exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name;
-    if (!looksLikeHttpPath(rawExitTarget)) continue;
-    const exitRoute = normalizeRoute(rawExitTarget);
-    if (!exitRoute || exitRoute === '/' || isExternalAbsoluteEndpoint(rawExitTarget)) continue;
-    const exitMethod = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action);
-
-    for (const entryPoint of entries) {
-      const entryRoute = normalizeRoute(entryPoint.trigger?.path || entryPoint.name);
-      if (!entryRoute || !routesCompatible(exitRoute, entryRoute)) continue;
-      const entryMethod = normalizeHttpMethod(entryPoint.trigger?.method);
-      const methodCompatible = !exitMethod || !entryMethod || exitMethod === 'FETCH' || entryMethod === 'ALL' || exitMethod === entryMethod;
-      if (!methodCompatible) continue;
-
-      if (!hasConcreteRouteAgreement(exitRoute, entryRoute)) continue;
-      if (!hasRouteDomainContractEvidence(consumer.cas, exitRoute) &&
-        !hasRouteDomainContractEvidence(producer.cas, entryRoute)) continue;
-
-      const routeScore = routeMatchScore(exitRoute, entryRoute);
-      const methodScore = !exitMethod || exitMethod === 'FETCH' || !entryMethod || entryMethod === 'ALL' ? 0.86 : 1;
-      const confidenceValue = Math.min(0.98, Math.round(routeScore * methodScore * 100) / 100);
-
-      links.push({
-        id: crossRepoId('api', consumer.name, exitPoint.id, producer.name, entryPoint.id),
-        type: 'api',
-        source_repository: { path: consumer.path, node_ids: [exitPoint.source_node] },
-        target_repository: { path: producer.path, node_ids: [entryPoint.source_node] },
-        connection: {
-          protocol: 'http',
-          endpoint: entryPoint.trigger?.path || exitPoint.target?.endpoint,
-          method: entryPoint.trigger?.method || exitPoint.operation?.method,
-        },
-        metadata: {
-          verified: confidenceValue >= 0.9,
-          last_sync: new Date().toISOString(),
-          confidence: confidenceValue,
-          evidence: [
-            { kind: 'graph', source: `${consumer.name}:${exitPoint.id}`, confidence: 0.85 },
-            { kind: 'route', source: `${producer.name}:${entryPoint.id}`, file: entryPoint.handler?.file, line: entryPoint.handler?.line, confidence: 0.9 },
-          ],
-        },
-      });
-    }
+function engineApiLinks(
+  repositories: Array<{ path: string; name: string; cas: CASOutput }>
+): { grouped: Map<string, CASCrossRepositoryLink[]>; ambiguous: Array<{ id: string; link_ids: string[]; reason: string }> } {
+  const byId = new Map(repositories.map(repository => [repository.path, repository]));
+  const linked = linkRepositories(repositories.map(repository => ({
+    name: repository.name,
+    path: repository.path,
+    hosts: [
+      path.basename(repository.path),
+      ...(repository.cas.product_map?.runtime_topology?.deployables ?? []).map(deployable => deployable.name),
+    ],
+    provides: (repository.cas.entry_points || [])
+      .filter(entryPoint => entryPoint.type === 'http' && entryPoint.trigger?.path)
+      .map(entryPoint => ({
+        id: entryPoint.id,
+        node: entryPoint.source_node,
+        method: entryPoint.trigger?.method,
+        path: entryPoint.trigger!.path!,
+        file: entryPoint.handler?.file,
+        line: entryPoint.handler?.line,
+      })),
+    calls: (repository.cas.exit_points || [])
+      .filter(exitPoint => (exitPoint.type === 'api' || exitPoint.type === 'webhook') && exitPoint.target?.endpoint)
+      .map(exitPoint => ({
+        id: exitPoint.id,
+        node: exitPoint.source_node,
+        method: exitPoint.operation?.method,
+        path: exitPoint.target!.endpoint!,
+        origin: typeof exitPoint.metadata?.origin === 'string' ? exitPoint.metadata.origin : undefined,
+      })),
+  })));
+  const grouped = new Map<string, CASCrossRepositoryLink[]>();
+  for (const link of linked.links) {
+    const consumer = byId.get(link.consumer.path);
+    const provider = byId.get(link.provider.path);
+    if (!consumer || !provider) continue;
+    const key = `${link.consumer.path}\u0000${link.provider.path}`;
+    const held = grouped.get(key) ?? [];
+    held.push({
+      id: crossRepoId('api', consumer.name, link.call, provider.name, link.route),
+      type: 'api',
+      source_repository: { path: consumer.path, node_ids: [link.call_node] },
+      target_repository: { path: provider.path, node_ids: [link.route_node] },
+      connection: { protocol: 'http', endpoint: link.endpoint, method: link.method ?? link.call_method },
+      metadata: {
+        verified: link.confidence >= 0.9,
+        last_sync: new Date().toISOString(),
+        confidence: link.confidence,
+        evidence: [
+          { kind: 'graph', source: `${consumer.name}:${link.call}`, confidence: link.confidence },
+          { kind: 'route', source: `${provider.name}:${link.route}`, file: link.file, line: link.line, confidence: link.confidence },
+        ],
+      },
+    });
+    grouped.set(key, held);
   }
-
-  return links;
+  const ambiguous = linked.ambiguous.map(held => ({
+    id: crossRepoId('api-ambiguous', held.consumer.name, held.call, held.endpoint, held.candidates.length.toString()),
+    link_ids: held.candidates.map(candidate => crossRepoId('api', held.consumer.name, held.call, candidate.provider.name, candidate.route)),
+    reason: `${held.method ?? 'ANY'} ${held.endpoint} from ${held.consumer.name} is served by ${held.candidates.map(candidate => candidate.provider.name).join(', ')}: ${held.reason}`,
+  }));
+  return { grouped, ambiguous };
 }
 
 function isApiProviderEntry(cas: CASOutput, entryPoint: CASEntryPoint): boolean {
@@ -1036,23 +1046,6 @@ function isFrontendRouteFile(file: string): boolean {
     file.endsWith('/src/app.jsx') ||
     file.endsWith('/src/app.ts') ||
     file.endsWith('/src/app.js');
-}
-
-function isExternalAbsoluteEndpoint(value: string): boolean {
-  if (!/^https?:\/\//i.test(value)) return false;
-  try {
-    const parsed = new URL(value);
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) return false;
-    return normalizeRoute(value) === '/' || !value.includes('/api/');
-  } catch {
-    return false;
-  }
-}
-
-function hasConcreteRouteAgreement(left: string, right: string): boolean {
-  const leftLiterals = new Set(routeSegments(left).filter(part => part !== ':param'));
-  return routeSegments(right).some(part => part !== ':param' && leftLiterals.has(part));
 }
 
 function detectSharedDatabaseLinks(
@@ -2427,26 +2420,6 @@ function parameterizedSuffixMatch(shorterParts: string[], longerParts: string[])
   const compatible = shorterParts.every((part, index) => part === tail[index] || part === ':param' || tail[index] === ':param');
   const sharedLiteral = shorterParts.some((part, index) => part !== ':param' && part === tail[index]);
   return compatible && sharedLiteral;
-}
-
-function routeMatchScore(left: string, right: string): number {
-  if (left === right) return 0.98;
-  const leftParts = routeSegments(left);
-  const rightParts = routeSegments(right);
-  if (leftParts.length === 0 && rightParts.length === 0) return 0.98;
-  if (leftParts.length === rightParts.length) {
-    const matches = leftParts.filter((part, index) =>
-      part === rightParts[index] || part === ':param' || rightParts[index] === ':param'
-    ).length;
-    return Math.max(0.65, Math.round((matches / leftParts.length) * 100) / 100);
-  }
-  if (parameterizedSuffixMatch(leftParts, rightParts) || parameterizedSuffixMatch(rightParts, leftParts)) {
-    const wildcardParts = leftParts.length < rightParts.length ? leftParts : rightParts;
-    const literalSuffix = wildcardParts.filter(part => part !== ':param').length;
-    return literalSuffix >= 2 ? 0.82 : 0.74;
-  }
-  if (left.endsWith(right) || right.endsWith(left)) return 0.78;
-  return 0.55;
 }
 
 function normalizeHttpMethod(value?: string): string | undefined {

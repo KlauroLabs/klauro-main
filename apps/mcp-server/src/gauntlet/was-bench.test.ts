@@ -19,6 +19,9 @@ for (const fixture of fixtures) {
 
     assert.equal(klauro.f1, 1, `[${fixture}] Klauro must emit the exact cross-repo link set, got ${JSON.stringify(klauro.links)}`);
     assert.equal(klauro.can_answer, true);
+    for (const expected of r.expected_ambiguous) {
+      assert.ok(r.ambiguous.some(reason => reason.includes(expected)), `[${fixture}] ${expected} must be reported as ambiguous, got ${JSON.stringify(r.ambiguous)}`);
+    }
 
     const competitors = r.detail.filter(d => d.arm !== 'klauro');
     assert.ok(competitors.length > 0, 'must compare against real competitors');
