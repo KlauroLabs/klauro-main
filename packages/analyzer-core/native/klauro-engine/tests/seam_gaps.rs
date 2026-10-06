@@ -146,3 +146,10 @@ fn every_call_that_reached_a_route_counts_as_linked() {
         .expect("web has link coverage");
     assert_eq!(web["http"]["detected"], web["http"]["linked"], "{web}");
 }
+
+#[test]
+fn a_program_started_through_a_path_built_from_its_name_is_a_process_seam() {
+    let found = seams("seam-built-binary", "process");
+    assert!(mentions(&found, "subproject:host", "subproject:native/index-engine", "engine-core"), "{found:?}");
+    assert!(found.iter().all(|(_, _, evidence)| evidence.iter().all(|line| !line.contains(" ls"))), "{found:?}");
+}

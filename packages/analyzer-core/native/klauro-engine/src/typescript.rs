@@ -18,6 +18,7 @@ pub struct Extractor<'a> {
     facts: FileFacts,
     metrics: rustc_hash::FxHashMap<String, UnitMetrics>,
     remembered: rustc_hash::FxHashMap<String, String>,
+    option_bags: rustc_hash::FxHashSet<String>,
     placed: Option<Placed>,
     speaks_the_mcp_sdk: bool,
     roots: rustc_hash::FxHashSet<String>,
@@ -101,6 +102,7 @@ impl<'a> Extractor<'a> {
             facts: FileFacts::default(),
             metrics: rustc_hash::FxHashMap::default(),
             remembered: rustc_hash::FxHashMap::default(),
+            option_bags: rustc_hash::FxHashSet::default(),
             placed: None,
             speaks_the_mcp_sdk: false,
             roots: rustc_hash::FxHashSet::default(),
@@ -1395,6 +1397,9 @@ impl<'a> Extractor<'a> {
                     self.remember_a_table_of_paths(&name, value, line_of(declarator));
                 }
             }
+            if name_node.kind() == "identifier" && value.is_some_and(|value| unwrap_value(value).kind() == "object") {
+                self.option_bags.insert(name.clone());
+            }
             let written_here = value.and_then(|value| self.constant_value(value));
             if let Some(written) = written_here.clone() {
                 self.remembered.insert(name.clone(), written);
@@ -1796,6 +1801,7 @@ impl<'a> Extractor<'a> {
             for argument in children.iter() {
                 if !matches!(argument.kind(), "identifier" | "member_expression")
                     || Some(argument.id()) == label_argument_id
+                    || self.option_bags.contains(self.text(*argument))
                 {
                     continue;
                 }
@@ -1938,7 +1944,8 @@ impl<'a> Extractor<'a> {
     }
 
     fn reads_the_global_fetch(&self, expression: Node) -> bool {
-        match unwrap_value(expression).kind() {
+        let expression = unwrap_value(expression);
+        match expression.kind() {
             "identifier" => self.text(expression).trim() == crate::entry_exit::FETCH_FUNCTION,
             "member_expression" => {
                 let object = expression.child_by_field_name("object").map(|held| self.text(held).trim());
@@ -1953,7 +1960,6 @@ impl<'a> Extractor<'a> {
                         .flatten()
                         .any(|operand| self.reads_the_global_fetch(operand))
             }
-            "parenthesized_expression" => expression.named_child(0).is_some_and(|inner| self.reads_the_global_fetch(inner)),
             _ => false,
         }
     }

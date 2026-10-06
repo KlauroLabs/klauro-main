@@ -27,6 +27,10 @@ fn names_code(text: &str) -> bool {
 static REQUEST_METHODS: &[&str] =
     &["delete", "get", "head", "options", "patch", "post", "put", "trace"];
 
+static ATTACHES_A_HANDLER: &[&str] = &["handler", "handlerfunc"];
+static NAMES_A_PATH: &[&str] = &["path", "pathprefix"];
+static NAMES_A_METHOD: &[&str] = &["method", "methods"];
+
 const REFERENCE_DEPTH: u8 = 3;
 const REFERENCE_WIDTH: usize = 4;
 
@@ -259,6 +263,53 @@ impl<'a> Extractor<'a> {
             .named_children(&mut cursor)
             .find(|argument| argument.kind().contains("string"))
             .map(|argument| trim_quotes(self.text(argument)).to_string())
+    }
+
+    fn call_receiver<'t>(&self, call: Node<'t>) -> Option<Node<'t>> {
+        let function = call.child_by_field_name("function")?;
+        self.spec.calls.receiver_fields.iter().find_map(|field| function.child_by_field_name(field))
+    }
+
+    fn chained_route(&self, node: Node, callee: &str) -> Option<String> {
+        if !ATTACHES_A_HANDLER.contains(&callee.to_ascii_lowercase().as_str()) {
+            return None;
+        }
+        let mut held = self.call_receiver(node);
+        let mut path: Option<String> = None;
+        let mut method: Option<String> = None;
+        while let Some(call) = held.filter(|call| self.spec.calls.kinds.contains(&call.kind())) {
+            let named = call
+                .child_by_field_name("function")
+                .map(|function| crate::names::leaf(self.text(function)).to_ascii_lowercase())
+                .unwrap_or_default();
+            let arguments: Vec<Node> = call
+                .child_by_field_name("arguments")
+                .map(|arguments| {
+                    let mut cursor = arguments.walk();
+                    arguments.named_children(&mut cursor).collect()
+                })
+                .unwrap_or_default();
+            if NAMES_A_PATH.contains(&named.as_str()) && path.is_none() {
+                path = arguments
+                    .iter()
+                    .filter(|argument| argument.kind().contains("string"))
+                    .map(|argument| trim_quotes(self.text(*argument)).to_string())
+                    .find(|written| written.starts_with('/'));
+            }
+            if NAMES_A_METHOD.contains(&named.as_str()) && method.is_none() {
+                method = arguments.iter().find_map(|argument| {
+                    let written = trim_quotes(self.text(*argument)).rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+                    let verb = written.strip_prefix("method").unwrap_or(&written);
+                    REQUEST_METHODS.binary_search(&verb).is_ok().then(|| verb.to_ascii_uppercase())
+                });
+            }
+            held = self.call_receiver(call);
+        }
+        let path = path?;
+        Some(match method {
+            Some(method) => format!("{method} {path}"),
+            None => path,
+        })
     }
 
     fn mounted_route(&self, node: Node) -> Option<String> {
@@ -1788,6 +1839,19 @@ impl<'a> Extractor<'a> {
                 default_import: false,
             });
         }
+        if self.spec.id == "python"
+            && text.trim_start().starts_with("import ")
+            && let Some((root, _)) = specifier.split_once('.')
+            && !root.is_empty()
+            && !names.iter().any(|name| name.local == root)
+        {
+            names.push(ImportSpecifier {
+                local: root.to_string(),
+                imported: None,
+                namespace: true,
+                default_import: false,
+            });
+        }
         let bound = binding_of(&specifier);
         if !bound.is_empty() && !names.iter().any(|name| name.local == bound) {
             names.push(ImportSpecifier {
@@ -2864,7 +2928,7 @@ impl<'a> Extractor<'a> {
                     Some(method) if path.starts_with('/') => format!("{method} {path}"),
                     _ => path,
                 }),
-                None => nested.clone(),
+                None => nested.clone().or_else(|| self.chained_route(node, &callee)),
             };
             if let Some(label) = label {
                 let registrar = match &receiver {

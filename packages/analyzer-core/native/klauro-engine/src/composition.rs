@@ -9,6 +9,7 @@ use crate::crossings::Crossing;
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::history::{self, History};
 use crate::model::{CallFact, EdgeKind, IndexEdge, LocalBinding};
+use crate::names;
 use crate::paths::{basename, is_test};
 use crate::scope::Deployable;
 use crate::subproject::{Partition, SubProject};
@@ -638,6 +639,8 @@ fn reached_through_a_path<'a>(
     }
 }
 
+const PATH_BUILDERS: &[&str] = &["join", "joinpath", "resolve"];
+
 fn process_seams(
     files: &[String],
     exit_points: &[ExitPoint],
@@ -663,6 +666,12 @@ fn process_seams(
             .or_default()
             .extend(call.literals.iter().map(String::as_str));
     }
+    let mut built: HashMap<u32, Vec<&str>> = HashMap::default();
+    for call in calls.iter().filter(|call| PATH_BUILDERS.contains(&names::leaf(&call.callee))) {
+        if let Some(last) = call.literals.last() {
+            built.entry(call.file).or_default().push(last.as_str());
+        }
+    }
     let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "process") {
         let Some(file) = files.get(exit.file as usize) else { continue };
@@ -678,6 +687,17 @@ fn process_seams(
                     Some((target, word))
                 })
                 .or_else(|| reached_through_a_path(&spelled, rooted, caller))
+        });
+        let reached = reached.or_else(|| {
+            if !literals.is_empty() {
+                return None;
+            }
+            built.get(&exit.file)?.iter().find_map(|leaf| {
+                command_words(leaf).into_iter().find_map(|word| {
+                    let target = names.get(&word)?.as_deref()?;
+                    Some((target, word))
+                })
+            })
         });
         let Some((target, word)) = reached else { continue };
         linked.insert((exit.file, exit.line));

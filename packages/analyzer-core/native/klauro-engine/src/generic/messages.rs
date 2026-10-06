@@ -49,6 +49,15 @@ impl Extractor<'_> {
         false
     }
 
+    fn returned_as_a_frame(&self, value: Node) -> bool {
+        let Some(block) = value.parent().filter(|parent| parent.kind() == "block") else { return false };
+        let last = {
+            let mut cursor = block.walk();
+            block.named_children(&mut cursor).last()
+        };
+        last.is_some_and(|held| held.id() == value.id()) && block.parent().is_some_and(|parent| parent.kind() == "function_item")
+    }
+
     pub(super) fn note_rust_messages(&mut self, node: Node, scope: &Scope) {
         let Some(unit) = scope.callable.clone() else { return };
         match node.kind() {
@@ -56,7 +65,7 @@ impl Extractor<'_> {
                 let named_json = node
                     .child_by_field_name("macro")
                     .is_some_and(|name| self.text(name).trim().rsplit("::").next() == Some("json"));
-                if !named_json || !self.handed_to_a_delivery(node) {
+                if !named_json || !(self.handed_to_a_delivery(node) || self.returned_as_a_frame(node)) {
                     return;
                 }
                 if let Some(tag) = tag_told_in(self.text(node)) {

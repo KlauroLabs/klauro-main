@@ -705,7 +705,7 @@ static FILE_OPERATIONS: &[&str] = &[
 static NETWORK_OPERATIONS: &[&str] = &[
     "connect", "data", "datatask", "delete", "deleteasync", "do", "execute", "fetch", "get",
     "get_async", "getasync", "head", "newrequest", "patch", "patchasync", "post", "postasync",
-    "postform", "put", "putasync", "request", "send", "send_async", "sendasync",
+    "postform", "put", "putasync", "request", "send", "send_async", "sendasync", "urlopen",
 ];
 static DATABASE_OPERATIONS: &[&str] = &[
     "aggregate", "begin", "begintx", "createquerybuilder", "deletefrom", "deletemany",
@@ -718,7 +718,7 @@ static MESSAGE_OPERATIONS: &[&str] = &[
     "broadcast", "emit", "produce", "publish", "sendmessage",
 ];
 static PROCESS_OPERATIONS: &[&str] = &[
-    "check_call", "check_output", "command", "communicate", "exec", "execfile", "execsync",
+    "check_call", "check_output", "command", "communicate", "exec", "execfile", "execfilesync", "execsync",
     "execute", "fork", "popen", "run", "spawn", "spawnsync", "start", "system", "waitpid",
 ];
 
@@ -2754,7 +2754,7 @@ pub fn derive(
             return (found, reach);
         };
         let binding = names::root(receiver);
-        if receiver.contains('.') && reads_a_data_member(receiver) {
+        if receiver.contains('.') && reads_a_data_member(receiver) && !modules.contains_key(&(call.file, binding.to_string())) {
             return (found, reach);
         }
         if let Some(kind) = manager_exit(receiver, names::leaf(&call.callee))
