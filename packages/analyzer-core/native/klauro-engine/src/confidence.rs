@@ -32,7 +32,6 @@ pub struct Reach {
 pub struct Backing<'a> {
     pub grounding: Option<&'a Grounding>,
     pub flows: &'a [f64],
-    pub stages: usize,
     pub parent_originated_alone: bool,
     pub unsettled: bool,
 }
@@ -85,7 +84,7 @@ pub fn of_capability(backing: &Backing) -> f64 {
         true => NO_FLOW_EVIDENCE,
         false => backing.flows.iter().sum::<f64>() / backing.flows.len() as f64,
     };
-    let members = saturating(backing.flows.len().max(backing.stages) as f64, MEMBER_COUNT_HALF_AT);
+    let members = saturating(backing.flows.len() as f64, MEMBER_COUNT_HALF_AT);
     let graded = backing.grounding.filter(|grounding| grounding.graded);
     let grounding = graded.map_or(UNGRADED_GROUNDING, Grounding::confidence);
     let mut score = GROUNDING_SHARE * grounding + MEMBER_FLOWS_SHARE * flows + MEMBER_COUNT_SHARE * members;
@@ -124,7 +123,7 @@ mod tests {
     }
 
     fn backing<'a>(grounding: Option<&'a Grounding>, flows: &'a [f64]) -> Backing<'a> {
-        Backing { grounding, flows, stages: 0, parent_originated_alone: false, unsettled: false }
+        Backing { grounding, flows, parent_originated_alone: false, unsettled: false }
     }
 
     #[test]

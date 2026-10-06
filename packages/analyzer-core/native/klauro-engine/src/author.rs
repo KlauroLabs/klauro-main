@@ -538,15 +538,17 @@ purpose running, such as scheduled and background work; administrative: it confi
 it undoes, retries, restores or repairs; observability: it reports on it, such as status, logs, metrics or audit; \
 compliance: consent, retention or other obligations; maintenance: upkeep, clean-up or migration.";
 
-pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-4";
+pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-5";
+
+pub const UNASSIGNED: &str = "unassigned";
 
 pub const OUTCOME_NAMES: &str = "A capability is named for the result someone ends up with, in the product's own domain, \
 never for an operation the code performs on the way to it: hashing, encoding, parsing, serialising, validating, \
 formatting, reading or writing a file, calling a service and the like are steps inside outcomes, never a purpose. \
 When the only thing an outcome shows is such an operation, it serves the purpose that operation is in aid of, or is \
 left unassigned; it is never named as a capability. Never name one with a filler verb such as handle, manage, process \
-or support followed by a topic: say what comes out of it, like \"Index a codebase's structure\" or \"Find where \
-requests enter and what they change\".";
+or support followed by a topic: say what comes out of it, like \"Schedule a delivery\" or \"Find a nearby \
+shop\".";
 
 pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
 history or whether it is still maintained; what the software does is read from the code below, and that decides. \
@@ -777,8 +779,8 @@ pub fn name_a_part(facts: &str) -> Option<PartNamed> {
         "These are the facts read from one part of a software system.\n\n{facts}\n\n\
          Give the part a plain display name of 1-4 words that a person on the team would say aloud, \
          never the package name, never a path, never prefixed with the repository's name, and one line of \
-         at most 14 words saying what the part is and what it is for, such as \"Tauri backend: engine host, \
-         IPC commands, remote server\". Say only what the facts show. Never name a product, vendor or \
+         at most 14 words saying what the part is and what it is for, such as \"Storefront service: catalogue, \
+         carts, checkout\". Say only what the facts show. Never name a product, vendor or \
          technology the facts do not name.\n\n\
          Return JSON only: {{\"name\":\"...\",\"summary\":\"...\"}}"
     );
@@ -787,24 +789,22 @@ pub fn name_a_part(facts: &str) -> Option<PartNamed> {
     (!name.is_empty() && !summary.is_empty()).then_some(PartNamed { name, summary })
 }
 
-pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)], at_least: usize) -> Proposal {
+pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)]) -> Proposal {
     if !asked() || families.len() < 2 {
         return Proposal::default();
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
          One capability was read from it as \"{name}\", described as: {description}\n\
-         It holds {} of the outcomes below, far more than one purpose in a product's own description \
-         holds, so it is two or more things that were read as one: the reason someone comes for them differs, \
-         or the person who comes differs.\n\n{PURPOSE}\n\n\
-         Split it into the purposes it contains, each one something the product's description would list on \
-         its own. Split by what someone comes for and who comes, never by the way in, the technology or the \
-         kind of path. A purpose that would need a list of unrelated things to name its members is not one \
-         purpose. When the outcomes are the stages one program carries out, each distinct result the program \
-         gives someone, what it finds, connects, groups, explains or keeps, is a purpose, not each module that \
-         does a share of the work, and a product that does one thing overall still gives several results. \
-         Return at least {at_least} capabilities, each holding a handful of the outcomes, and never one \
-         capability holding most of them.\n\n\
+         It holds {} of the outcomes below, which is many for one purpose in a product's own description, so it \
+         may be two or more things that were read as one: the reason someone comes for them differs, or the \
+         person who comes differs.\n\n{PURPOSE}\n\n\
+         Read the outcomes carefully. If they really are one purpose, return it as a single capability holding \
+         all of them. If they are several, split it into the purposes it contains, each one something the \
+         product's description would list on its own. Split by what someone comes for and who comes, never by \
+         the way in, the technology or the kind of path. A purpose that would need a list of unrelated things \
+         to name its members is not one purpose. The number of capabilities is whatever the outcomes show, \
+         never a target.\n\n\
          Rules for what counts:\n{RULES}\n\n\
          For each capability list every outcome that serves it, each with a role: {ROLES_TOLD} Give each a few \
          words on why. An outcome that serves no purpose the product states is listed as unassigned. Give each \
@@ -860,14 +860,15 @@ pub fn place_families(
          For each, say which capability above it serves, by its exact name, with a role ({ROLES_TOLD}) and a few \
          words on why; or give a new capability name of 2-6 words — a verb and what it is for, like \"Share posts with followers\", never a bare topic like \"Posting\" — with one \
          sentence saying what someone gets and its audience, only when the product's description would list that \
-         purpose and none above fits; or say unassigned when it serves no purpose the product states, which is an \
+         purpose and none above fits; or say {unassigned} when it serves no purpose the product states, which is an \
          honest answer. Work the system does by itself — on a timer, in the background, or when a message arrives — \
          serves the purpose it moves forward. By these rules:\n{RULES}\n\n\
          Echo each group id back exactly as given.\n\
          Return JSON only: {{\"assigned\":[{{\"family\":\"...\",\"capability\":\"...\",\"role\":\"primary\",\"why\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The groups:\n{}",
         standing.iter().map(|(name, told)| format!("- {name}: {told}")).collect::<Vec<_>>().join("\n"),
-        unplaced.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+        unplaced.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
+        unassigned = UNASSIGNED
     );
     let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "assigned", 1, PROPOSING)
     else {
@@ -883,11 +884,11 @@ pub fn place_families(
 }
 
 pub const RULES: &str = "A capability is a purpose of the system: something someone gets from it that the \
-product's own description would list. It is judged by two tests. The audience test, which is audience-relative: \
-would this product's own audience recognise it as something they came for? Not would a passer-by nod — that rejects \
-every correct capability of a developer library. Identify the audience first, then apply the test to them; the \
-audience binds to the capability, not to the system, so one product may serve an end user, an \
-operator, a developer and an analyst at once. The universality test: would this be true of most \
+product's own description would list. It is judged by two tests. The audience test, the same at every level from \
+one part to the whole: could a non-technical reader, such as a product manager, a designer or a marketer, read the \
+name and know what someone gets, with no engineering vocabulary needed? A name that gives a protocol, a vendor or a \
+library is wrong however real the mechanism is: mechanism belongs in the behavior beneath a capability, never in \
+its name. The universality test: would this be true of most \
 codebases? Then it is infrastructure, not a capability. Supporting concepts — connecting a wallet, \
 authenticating users, recording telemetry — are not capabilities unless the product itself is that \
 kind of product. Count is an output, not a target: a focused tool legitimately has one, and a large product has as \
@@ -1070,6 +1071,56 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             },
         ),
     ])
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Renamed {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+pub fn name_the_outcome(spoken: &str, held: &[(String, String)]) -> Vec<Renamed> {
+    if !asked() || held.is_empty() {
+        return Vec::new();
+    }
+    let weight = weight();
+    asking(|| {
+        held.par_chunks(CLAIMS_PER_ASK)
+            .flat_map(|chunk| weighing(weight, || {
+                let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
+                let prompt = format!(
+                    "A software system describes itself like this:\n{spoken}\n\n\
+                     Each item below is a capability whose name carries words that the code only uses as the \
+                     building blocks it is made from: they appear among the libraries, packages and types the code \
+                     imports, and nowhere among the records and responses the product keeps and gives people. A \
+                     capability is named for what someone gets, in words a non-technical reader such as a product \
+                     manager, a designer or a marketer understands with no engineering vocabulary. For each item give \
+                     a name of 2-6 words, a verb and what it is for, that says the outcome without the listed words, \
+                     and one sentence saying what someone gets. Say only what the item's facts show.\n\
+                     {outcome_names}\n\
+                     Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
+                     The items:\n{}",
+                    listed.join("\n"),
+                    outcome_names = OUTCOME_NAMES
+                );
+                answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", 1, TIGHTENING)
+                    .map(|held| {
+                        held["items"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| serde_json::from_value::<Renamed>(item.clone()).ok())
+                            .filter(|item| !item.name.trim().is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            }))
+            .collect()
+    })
 }
 
 #[derive(Debug, Deserialize)]

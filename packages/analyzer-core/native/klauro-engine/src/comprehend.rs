@@ -9,6 +9,7 @@ use crate::model::*;
 use crate::tables::{Column, Table};
 
 mod stages;
+mod vocabulary;
 
 pub use stages::Stage;
 
@@ -166,8 +167,6 @@ pub struct Capability {
     pub grounding: Option<crate::author::Grounding>,
     pub standing: &'static str,
     pub level: &'static str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub stages: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub touches: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -885,7 +884,6 @@ fn score_capabilities(capabilities: &mut [Capability], confidence_of: &HashMap<&
             &crate::confidence::Backing {
                 grounding: capability.grounding.as_ref(),
                 flows: &flows,
-                stages: capability.stages.len(),
                 parent_originated_alone: capability.parent_originated.is_some()
                     && capability.composition_provenance.is_empty(),
                 unsettled: capability.unsettled.is_some(),
@@ -1523,6 +1521,7 @@ pub fn author(
         .collect();
     crate::author::began();
     let paths = crate::told_paths::Paths::new(&spoken);
+    let vocabulary = vocabulary::Vocabulary::of(nodes, &held.entities, &held.flows, &told.frameworks);
     let started = std::time::Instant::now();
     let reaching = rayon::ThreadPoolBuilder::new()
         .num_threads(crate::author::reaching_at_once(REACHING_AT_ONCE))
@@ -1534,6 +1533,10 @@ pub fn author(
             std::collections::BTreeMap<String, crate::author::Grounding>,
         )>> = std::sync::Mutex::new(None);
         let mut formed_whole = None;
+        let part_states: std::sync::Mutex<std::collections::BTreeMap<Option<String>, crate::capabilities::PartState>> =
+            std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let pending_flows: std::sync::Mutex<std::collections::BTreeSet<String>> =
+            std::sync::Mutex::new(std::collections::BTreeSet::new());
         let mut parts: Vec<Option<String>> =
             held.flows.iter().map(|flow| flow.project.clone()).collect();
         parts.sort();
@@ -1570,8 +1573,13 @@ pub fn author(
                     let remembered_as =
                         format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let label = part.as_deref().unwrap_or("root").to_string();
-                    let mut found =
+                    let of_the_part =
                         crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
+                    if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
+                        kept.insert(part.clone(), of_the_part.state);
+                        waiting.extend(of_the_part.pending);
+                    }
+                    let mut found = of_the_part.capabilities;
                     crate::author::mark(&format!("{label} placed"));
                     test_capabilities(
                         &mut found,
@@ -1583,6 +1591,7 @@ pub fn author(
                         },
                         &excerpt,
                     );
+                    vocabulary::keep_readable(&mut found, &vocabulary, &said);
                     crate::author::mark(&format!("{label} tested"));
                     let (places, same) = rayon::join(
                         || what_each_is_for(&found, &said),
@@ -1679,6 +1688,7 @@ pub fn author(
                         (whole, None, std::collections::BTreeMap::new())
                     }
                 };
+                vocabulary::keep_readable(&mut whole, &vocabulary, &spoken);
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
                 eprintln!(
                     "  author read {} capabilities across the parts into {} for the whole",
@@ -1724,7 +1734,7 @@ pub fn author(
                 scope.spawn(move || paths_ref.tell_what_delivers(&delivering, flows_ref));
                 let summary = match (told.composition, listed_parts) {
                     (Some(composition), Some(_)) => {
-                        crate::parent::mark_parent_originated(&mut whole);
+                        crate::parent::keep_traceable(&mut whole, composition);
                         let every_part =
                             crate::parent::parts_within(composition, &capabilities);
                         Some(crate::parent::summarise(
@@ -1755,16 +1765,27 @@ pub fn author(
             });
         });
         let named = named_slot.into_inner().ok().flatten().unwrap_or_default();
-        (formed_whole.unwrap_or_default(), named)
+        (
+            formed_whole.unwrap_or_default(),
+            named,
+            part_states.into_inner().unwrap_or_default(),
+            pending_flows.into_inner().unwrap_or_default(),
+        )
     };
-    let ((capabilities, products, summary), (written, grounded)) = match &reaching {
+    let ((capabilities, products, summary), (written, grounded), part_states, pending_flows) = match &reaching {
         Some(pool) => pool.install(work),
         None => work(),
     };
     held.capabilities = capabilities;
+    for flow in held.flows.iter_mut().filter(|flow| pending_flows.contains(&flow.id)) {
+        flow.unsettled = Some(crate::confidence::AI_UNANSWERED);
+        flow.confidence = crate::confidence::left_unsettled(flow.confidence);
+    }
     held.semantic_coverage = Some(crate::capabilities::coverage_of(
         &held.flows,
         &held.capabilities,
+        &part_states,
+        &pending_flows,
     ));
     held.products = products;
     held.derivation = summary;
@@ -4696,7 +4717,6 @@ mod tests {
             grounding: None,
             standing: super::PUBLISHED,
             level: crate::capabilities::PART,
-            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,

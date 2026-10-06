@@ -529,19 +529,39 @@ pub fn lacking_provenance(whole: &[Capability]) -> Vec<&Capability> {
         .collect()
 }
 
-pub fn mark_parent_originated(whole: &mut [Capability]) {
+pub fn keep_traceable(whole: &mut Vec<Capability>, composition: &Composition) {
     let lacking: Vec<String> = lacking_provenance(whole).iter().map(|capability| capability.id.clone()).collect();
-    if lacking.is_empty() {
-        return;
-    }
-    eprintln!("  parent kept {} capabilities that trace to no child capability, marked as orphan source", lacking.len());
-    for capability in whole.iter_mut().filter(|capability| lacking.contains(&capability.id)) {
-        let evidence = match capability.flows.is_empty() {
-            true => vec![capability.id.clone()],
-            false => capability.flows.clone(),
-        };
-        capability.parent_originated = Some(Originated { kind: "orphan", evidence });
-    }
+    whole.retain_mut(|capability| {
+        if !lacking.contains(&capability.id) {
+            return true;
+        }
+        let in_orphan_source = capability
+            .project
+            .iter()
+            .chain(capability.also_in.iter())
+            .any(|project| is_residue(composition, project));
+        match (in_orphan_source, composition.orphan.as_ref()) {
+            (true, Some(orphan)) => {
+                capability.parent_originated = Some(Originated {
+                    kind: "orphan",
+                    evidence: vec![format!(
+                        "{}: {} files and {} declarations outside every child",
+                        bare(&orphan.project),
+                        orphan.files,
+                        orphan.declarations
+                    )],
+                });
+                true
+            }
+            _ => {
+                eprintln!(
+                    "  parent dropped '{}': it traces to no child capability, no seam and no orphan source",
+                    capability.name.as_deref().unwrap_or("")
+                );
+                false
+            }
+        }
+    });
 }
 
 pub fn summarise(
@@ -653,7 +673,6 @@ mod tests {
             grounding: None,
             standing: crate::comprehend::PUBLISHED,
             level: crate::capabilities::PART,
-            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
@@ -768,23 +787,33 @@ mod tests {
     }
 
     #[test]
-    fn the_invariant_check_names_a_capability_with_no_trace_and_marking_keeps_it_as_orphan_source() {
-        let mut orphan = capability("api", "Floating purpose", &["flow:z"]);
-        orphan.project = None;
+    fn a_whole_capability_with_no_child_trace_and_no_orphan_source_is_not_emitted_by_section_0_10() {
+        let mut floating = capability("api", "Floating purpose", &["flow:z"]);
+        floating.project = None;
         let mut traced = capability("api", "Traced purpose", &["flow:y"]);
         traced.project = None;
         traced.composition_provenance =
             vec![Source { source_child: "subproject:api".into(), source_capability_id: "x".into(), disposition: "promoted", weight: Some(1.0) }];
-        let mut whole = vec![orphan, traced];
+        let mut whole = vec![floating, traced];
         assert_eq!(lacking_provenance(&whole).len(), 1);
-        mark_parent_originated(&mut whole);
-        assert_eq!(whole.len(), 2);
+        keep_traceable(&mut whole, &world());
+        assert_eq!(whole.len(), 1);
         assert!(lacking_provenance(&whole).is_empty());
-        let marked = whole.iter().find(|held| held.id == "capability:floating-purpose").unwrap();
-        let origin = marked.parent_originated.as_ref().expect("marked");
+        assert_eq!(whole[0].id, "capability:traced-purpose");
+        assert!(whole[0].parent_originated.is_none());
+    }
+
+    #[test]
+    fn a_whole_capability_living_in_the_orphan_source_is_kept_marked_orphan_by_section_0_10() {
+        let mut residue = capability(".", "Release the product", &["flow:e1"]);
+        residue.project = None;
+        residue.also_in = vec!["subproject:.".to_string()];
+        let mut whole = vec![residue];
+        keep_traceable(&mut whole, &world());
+        assert_eq!(whole.len(), 1);
+        let origin = whole[0].parent_originated.as_ref().expect("marked");
         assert_eq!(origin.kind, "orphan");
-        assert_eq!(origin.evidence, vec!["flow:z"]);
-        assert!(whole.iter().find(|held| held.id == "capability:traced-purpose").unwrap().parent_originated.is_none());
+        assert!(origin.evidence[0].contains("3 files"), "{:?}", origin.evidence);
     }
 
     #[test]

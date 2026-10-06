@@ -90,8 +90,6 @@ pub(crate) type Fields = BTreeMap<String, String>;
 
 const RECORDS_DESCRIBED: usize = 4;
 
-static SERVED_KINDS: &[&str] = &["background", "cli", "event", "graphql", "http", "message", "rpc", "schedule", "websocket"];
-
 pub(crate) const PART: &str = "part";
 pub(crate) const WHOLE: &str = "whole";
 pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
@@ -212,69 +210,25 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     crate::comprehend::family_of(flow)
 }
 
-const WORKS_IN: &str = "within:";
-const STAGE: &str = "stage:";
 const FUNCTIONS_TOLD: usize = 14;
 const SPLIT_FROM_FLOWS: usize = 30;
-const REFUSE_MERGE_FROM_FLOWS: usize = 40;
-const SPLIT_FROM_STAGES: usize = 12;
 const SPLIT_OUTCOMES_SHOWN: usize = 80;
 const SPLIT_LINES_PER_OUTCOME: usize = 4;
-const OUTCOMES_PER_SPLIT: usize = 12;
-const STAGES_AT_LEAST: usize = 1;
-const STAGED_PART_FLOWS_AT_MOST: usize = 6;
-
-fn is_a_program_with_stages(flow: &Flow, flows_in_part: usize) -> bool {
-    matches!(flow.kind, "lifecycle" | "cli") && flow.stages.len() >= STAGES_AT_LEAST && flows_in_part <= STAGED_PART_FLOWS_AT_MOST
-}
-
-fn evidence_of_stage(flow: &Flow, module: &str) -> String {
-    let Some(stage) = flow.stages.iter().find(|stage| stage.module == module) else {
-        return format!("  outcome (proximal): {module}, which is the stage of its work done there");
-    };
-    format!(
-        "  outcome (terminal): the work {} does in {}, which is a stage of what it carries out\n  what its whole path does: {}\n  the functions it runs there: {}\n  it reaches out through: {}\n  units of its {} that run there: {}",
-        surface_of(flow),
-        stage.module,
-        told_steps(flow),
-        stage.names.join(", "),
-        match stage.leaves.is_empty() {
-            true => "nothing outside this program".to_string(),
-            false => stage.leaves.join(", "),
-        },
-        flow.units,
-        stage.units
-    )
-}
-
-fn module_of(flow: &Flow) -> &str {
-    let unit = flow.path.first().map(|step| step.unit.as_str()).unwrap_or(flow.entry_point.as_str());
-    unit.strip_prefix("entry:").unwrap_or(unit).split(':').next().unwrap_or_default()
-}
 
 fn is_only_a_trigger(family: &Family) -> bool {
     family.key.starts_with("trigger:")
+}
+
+pub(crate) fn is_caller_initiated(flow: &Flow) -> bool {
+    crate::entry_exit::USER_FACING.contains(&flow.kind)
 }
 
 pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows {
-        if is_a_program_with_stages(flow, flows.len()) {
-            for stage in &flow.stages {
-                let family = Family { key: format!("{STAGE}{}", stage.module), basis: "the stage of its work done in that module" };
-                grouped.entry(family).or_default().push(flow);
-            }
-            continue;
-        }
-        grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
-    }
-    if grouped.keys().any(|family| !is_only_a_trigger(family)) {
-        grouped.retain(|family, _| !is_only_a_trigger(family));
-    } else {
-        grouped = BTreeMap::new();
-        for flow in flows {
-            let family = Family { key: format!("{WORKS_IN}{}", module_of(flow)), basis: "the module it works in" };
+        let family = outcome_of(flow, &bookkeeping);
+        if !is_only_a_trigger(&family) {
             grouped.entry(family).or_default().push(flow);
         }
     }
@@ -354,15 +308,12 @@ const ONLY_PASSES_A_SIGNAL: &str =
 pub(crate) fn terminality_of(family: &Family, flows: &[&Flow]) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
         "asks" if only_relays_a_signal(flows) => "proximal",
-        "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" | "stage" => "terminal",
+        "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" => "terminal",
         _ => "proximal",
     }
 }
 
 fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
-    if let (Some(module), [flow]) = (family.key.strip_prefix(STAGE), flows) {
-        return evidence_of_stage(flow, module);
-    }
     let mut surfaces: Vec<String> = flows.iter().map(|flow| surface_of(flow)).collect();
     settle(&mut surfaces);
     let more = surfaces.len().saturating_sub(SURFACES_SHOWN);
@@ -393,7 +344,7 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
     };
     let (_, object) = family.key.split_once(':').unwrap_or(("", family.key.as_str()));
     let functions_run: Vec<&str> = match flows {
-        [flow] if matches!(flow.kind, "lifecycle" | "cli") => {
+        [flow] if flow.kind == "cli" => {
             flow.stages.iter().flat_map(|stage| stage.names.iter().map(String::as_str)).take(FUNCTIONS_TOLD).collect()
         }
         _ => Vec::new(),
@@ -506,35 +457,6 @@ fn consolidate_purposes(said: &str, held: Vec<Held>) -> Vec<Held> {
     kept
 }
 
-const BUCKET_WORDS: [&str; 14] = [
-    "unassigned", "unplaced", "unclaimed", "uncategorized", "unclassified", "plumbing", "none", "other", "miscellaneous",
-    "misc", "remaining", "leftover", "rest", "n/a",
-];
-const BUCKET_FILLER: [&str; 6] = ["outcome", "flow", "family", "item", "thing", "all"];
-
-fn is_unassigned_word(said: &str) -> bool {
-    let key = name_key(said);
-    let mut named_a_bucket = false;
-    for word in key.split(' ').filter(|word| !word.is_empty()) {
-        match (BUCKET_WORDS.contains(&word), BUCKET_FILLER.contains(&word)) {
-            (true, _) => named_a_bucket = true,
-            (false, true) => {}
-            (false, false) => return false,
-        }
-    }
-    named_a_bucket
-}
-
-fn set_aside_buckets(held: &mut Vec<Held>, unassigned: &mut BTreeSet<String>) {
-    held.retain_mut(|other| {
-        if !is_unassigned_word(&other.name) {
-            return true;
-        }
-        unassigned.extend(std::mem::take(&mut other.families));
-        false
-    });
-}
-
 fn place(
     said: &str,
     told: &BTreeMap<String, String>,
@@ -564,7 +486,7 @@ fn place(
         if !told.contains_key(&family) || placed.contains(&family) {
             continue;
         }
-        if is_unassigned_word(&capability) {
+        if name_key(&capability) == name_key(crate::author::UNASSIGNED) {
             unassigned.insert(family);
             continue;
         }
@@ -654,16 +576,11 @@ fn split_the_broad(
     said: &str,
     told: &BTreeMap<String, String>,
     lanes: &BTreeMap<&str, &Vec<&Flow>>,
-    key_of: &BTreeMap<&str, &str>,
     held: Vec<Held>,
     unassigned: &mut BTreeSet<String>,
 ) -> Vec<Held> {
-    let stages_held = |held: &Held| {
-        held.families.iter().filter(|id| key_of.get(id.as_str()).is_some_and(|key| key.starts_with(STAGE))).count()
-    };
-    let (broad, mut kept): (Vec<Held>, Vec<Held>) = held
-        .into_iter()
-        .partition(|other| flows_held(other, lanes) > SPLIT_FROM_FLOWS || stages_held(other) > SPLIT_FROM_STAGES);
+    let (broad, mut kept): (Vec<Held>, Vec<Held>) =
+        held.into_iter().partition(|other| flows_held(other, lanes) > SPLIT_FROM_FLOWS);
     if broad.is_empty() {
         return kept;
     }
@@ -682,13 +599,7 @@ fn split_the_broad(
                     })
                     .take(SPLIT_OUTCOMES_SHOWN)
                     .collect();
-                let proposal = crate::author::split_purpose(
-                    said,
-                    &wide.name,
-                    &wide.description,
-                    &listed,
-                    listed.len().div_ceil(OUTCOMES_PER_SPLIT).max(2),
-                );
+                let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed);
                 (listed.len(), proposal)
             }))
             .collect()
@@ -712,34 +623,53 @@ fn split_the_broad(
     kept
 }
 
-pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> Vec<Capability> {
-    if flows.is_empty() {
-        return Vec::new();
+pub(crate) const SETTLED: &str = "settled";
+pub(crate) const PENDING: &str = "pending";
+pub(crate) const ABSENT: &str = "none";
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PartState {
+    pub capabilities: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+pub(crate) struct OfAPart {
+    pub(crate) capabilities: Vec<Capability>,
+    pub(crate) state: PartState,
+    pub(crate) pending: BTreeSet<String>,
+}
+
+impl OfAPart {
+    fn without(state: &'static str, reason: &str) -> OfAPart {
+        OfAPart {
+            capabilities: Vec::new(),
+            state: PartState { capabilities: state, reason: Some(reason.to_string()) },
+            pending: BTreeSet::new(),
+        }
     }
-    let bookkeeping = kept_for_itself(flows);
-    let served = flows
-        .iter()
-        .any(|flow| SERVED_KINDS.contains(&flow.kind) && !is_only_a_trigger(&outcome_of(flow, &bookkeeping)));
-    let proposable: Vec<&Flow> = flows
+}
+
+pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> OfAPart {
+    let served = flows.iter().any(|flow| is_caller_initiated(flow));
+    let candidates: Vec<&Flow> = flows
         .iter()
         .copied()
-        .filter(|flow| !served || flow.kind != "export")
+        .filter(|flow| is_caller_initiated(flow) || (!served && flow.kind == "export"))
         .filter(|flow| is_proposable(flow))
         .collect();
-    let behaving: Vec<&Flow> = proposable.iter().copied().filter(|flow| !only_moves_the_screen(flow)).collect();
-    let kept = match behaving.is_empty() {
-        true => proposable,
-        false => behaving,
-    };
     if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
-        for family in outcomes_of(&kept).keys() {
+        for family in outcomes_of(&candidates).keys() {
             eprintln!("family[{remembered_as}]: {}", family.key);
         }
     }
-    if !crate::author::asked() {
-        return Vec::new();
+    let families = outcomes_of(&candidates);
+    if families.is_empty() {
+        return OfAPart::without(ABSENT, "no flow a caller starts in this part ends in an outcome");
     }
-    let families = outcomes_of(&kept);
+    if !crate::author::asked() {
+        return OfAPart::without(PENDING, "the AI was not asked");
+    }
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
         .iter()
         .enumerate()
@@ -832,10 +762,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         }
     };
     held.retain(|other| !other.families.is_empty());
-    set_aside_buckets(&mut held, &mut unassigned);
     merge_same_named(&mut held);
     let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
-    held = split_the_broad(said, &told, &lane_flows, &key_of, held, &mut unassigned);
+    held = split_the_broad(said, &told, &lane_flows, held, &mut unassigned);
     merge_same_named(&mut held);
     unassigned.retain(|id| known.contains(id) && !held.iter().any(|other| other.families.contains(id)));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
@@ -874,23 +803,26 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     }
     let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
-    let mut unanswered: Vec<Held> = known
+    let unanswered: BTreeSet<&str> = known
         .iter()
+        .map(String::as_str)
         .filter(|id| !unassigned.contains(*id) && !held.iter().any(|other| other.families.contains(*id)))
-        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with(WORKS_IN) || key.starts_with(STAGE)))
-        .map(|id| structural(id, &key_of))
         .collect();
-    merge_same_named(&mut unanswered);
+    let pending: BTreeSet<String> = unanswered
+        .iter()
+        .filter_map(|id| lanes.get(id))
+        .flat_map(|(_, lane)| lane.iter().map(|flow| flow.id.clone()))
+        .collect();
     let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
-    formed.extend(unanswered.into_iter().filter_map(|other| {
-        built(other, &lanes, fields).map(|capability| Capability {
-            unsettled: Some(crate::confidence::AI_UNANSWERED),
-            standing: crate::comprehend::PROVISIONAL,
-            ..capability
-        })
-    }));
     formed.sort_by(|left, right| left.id.cmp(&right.id));
-    formed
+    let state = match unanswered.is_empty() {
+        true => PartState { capabilities: SETTLED, reason: None },
+        false => PartState {
+            capabilities: PENDING,
+            reason: Some(format!("the AI left {} of {} outcomes unanswered", unanswered.len(), known.len())),
+        },
+    };
+    OfAPart { capabilities: formed, state, pending }
 }
 
 fn recollected(
@@ -941,25 +873,6 @@ pub(crate) fn is_a_screen_event(operation: &str) -> bool {
     SCREEN_EVENTS.contains(&operation.to_ascii_lowercase().as_str())
 }
 
-fn only_moves_the_screen(flow: &Flow) -> bool {
-    flow.kind == "event"
-        && is_a_screen_event(&flow.operation)
-        && flow.writes.is_empty()
-        && !flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise" | "change" | "create" | "remove"))
-}
-
-fn structural(family: &str, key_of: &BTreeMap<&str, &str>) -> Held {
-    let key = key_of.get(family).copied().unwrap_or(family);
-    let (_, object) = key.split_once(':').unwrap_or(("", key));
-    Held {
-        name: object.to_string(),
-        description: String::new(),
-        audience: String::new(),
-        families: BTreeSet::from([family.to_string()]),
-        roles: BTreeMap::new(),
-    }
-}
-
 fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> Option<Capability> {
     let name = held.name.trim().to_string();
     if name.is_empty() {
@@ -982,7 +895,6 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         grounding: None,
         standing: PUBLISHED,
         level: crate::capabilities::PART,
-        stages: Vec::new(),
         touches: Vec::new(),
         terminality: None,
         confidence: None,
@@ -998,9 +910,6 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
             capability.terminality = Some(terminality);
         }
         let serving = held.roles.get(family_id);
-        if let Some(module) = family.key.strip_prefix(STAGE) {
-            capability.stages.push(module.to_string());
-        }
         for flow in lane.iter() {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
             capability.delivered.push(Delivery {
@@ -1036,7 +945,6 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
     settle(&mut capability.records);
     settle(&mut capability.touches);
     settle(&mut capability.changes);
-    capability.stages.sort();
     Some(capability)
 }
 
@@ -1044,16 +952,21 @@ fn role_rank(role: &str) -> usize {
     crate::author::SERVING_ROLES.iter().position(|held| *held == role).unwrap_or(usize::MAX)
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone)]
 pub struct PartCoverage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     pub flows: u32,
     pub related: u32,
     pub unmapped: u32,
-    pub set_aside: u32,
-    pub inert: u32,
     pub flows_to_capabilities: f64,
+    pub capabilities: PartState,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Unmapped {
+    pub flow: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -1061,11 +974,9 @@ pub struct Coverage {
     pub flows: u32,
     pub related: u32,
     pub unmapped: u32,
-    pub set_aside: u32,
-    pub inert: u32,
     pub flows_to_capabilities: f64,
     pub parts: Vec<PartCoverage>,
-    pub unmapped_flows: Vec<String>,
+    pub unmapped_flows: Vec<Unmapped>,
 }
 
 fn share_of(related: u32, flows: u32) -> f64 {
@@ -1075,61 +986,64 @@ fn share_of(related: u32, flows: u32) -> f64 {
     }
 }
 
-pub(crate) fn delivers_nothing(flow: &Flow) -> bool {
-    matches!(flow.kind, "event" | "schedule" | "background")
-        && flow.writes.is_empty()
-        && flow.reads.is_empty()
-        && flow.reaches.is_empty()
-        && flow.changes.is_empty()
-        && flow.leads_into.is_empty()
-        && flow.steps.iter().all(|step| step.kind == "respond" && step.object.is_none())
+fn why_unmapped(flow: &Flow, pending: &BTreeSet<String>) -> String {
+    if let Some(tag) = flow.unshipped.as_ref().filter(|tag| crate::unshipped::is_set_aside(Some(tag))) {
+        return format!("set aside as not shipped: {} ({})", tag.role, tag.basis);
+    }
+    if !is_caller_initiated(flow) && flow.kind != "export" {
+        return format!("a {} entry is started by the runtime, not by a caller", flow.kind);
+    }
+    if pending.contains(&flow.id) {
+        return "the AI left its outcome unanswered".to_string();
+    }
+    if flow.writes.is_empty() && flow.reads.is_empty() && flow.changes.is_empty() && flow.reaches.is_empty() {
+        return "it reaches no domain entity and changes nothing outside the program".to_string();
+    }
+    "no capability the product states is served by it".to_string()
 }
 
-pub(crate) fn coverage_of(flows: &[Flow], capabilities: &[Capability]) -> Coverage {
+pub(crate) fn coverage_of(
+    flows: &[Flow],
+    capabilities: &[Capability],
+    states: &BTreeMap<Option<String>, PartState>,
+    pending: &BTreeSet<String>,
+) -> Coverage {
     let related: BTreeSet<&str> =
         capabilities.iter().flat_map(|capability| capability.flows.iter().map(String::as_str)).collect();
     let mut parts: BTreeMap<Option<&str>, PartCoverage> = BTreeMap::new();
-    let mut unmapped_flows: Vec<String> = Vec::new();
-    let mut count = 0u32;
+    let mut unmapped_flows: Vec<Unmapped> = Vec::new();
     let mut mapped = 0u32;
-    let mut set_aside = 0u32;
-    let mut inert = 0u32;
     for flow in flows {
-        let part = parts
-            .entry(flow.project.as_deref())
-            .or_insert_with(|| PartCoverage { project: flow.project.clone(), ..PartCoverage::default() });
-        if crate::unshipped::is_set_aside(flow.unshipped.as_ref()) {
-            part.set_aside += 1;
-            set_aside += 1;
-            continue;
-        }
-        let held = related.contains(flow.id.as_str());
-        if !held && delivers_nothing(flow) {
-            part.inert += 1;
-            inert += 1;
-            continue;
-        }
+        let part = parts.entry(flow.project.as_deref()).or_insert_with(|| PartCoverage {
+            project: flow.project.clone(),
+            flows: 0,
+            related: 0,
+            unmapped: 0,
+            flows_to_capabilities: 0.0,
+            capabilities: states
+                .get(&flow.project)
+                .cloned()
+                .unwrap_or(PartState { capabilities: ABSENT, reason: Some("no caller-initiated flow was read".to_string()) }),
+        });
         part.flows += 1;
-        count += 1;
-        if held {
+        if related.contains(flow.id.as_str()) {
             part.related += 1;
             mapped += 1;
         } else {
             part.unmapped += 1;
-            unmapped_flows.push(flow.id.clone());
+            unmapped_flows.push(Unmapped { flow: flow.id.clone(), reason: why_unmapped(flow, pending) });
         }
     }
     let mut parts: Vec<PartCoverage> = parts.into_values().collect();
     for part in parts.iter_mut() {
         part.flows_to_capabilities = share_of(part.related, part.flows);
     }
-    unmapped_flows.sort();
+    unmapped_flows.sort_by(|left, right| left.flow.cmp(&right.flow));
+    let count = flows.len() as u32;
     Coverage {
         flows: count,
         related: mapped,
         unmapped: count - mapped,
-        set_aside,
-        inert,
         flows_to_capabilities: share_of(mapped, count),
         parts,
         unmapped_flows,
@@ -1617,25 +1531,7 @@ pub(crate) fn the_same_among(
         .collect()
 }
 
-const FILLER_WORDS: [&str; 12] = ["with", "and", "of", "for", "to", "in", "on", "by", "from", "into", "or", "via"];
-const NEAR_EXTRA_WORDS: usize = 2;
 const NEAR_FLOW_SHARE: f64 = 0.5;
-const NEAR_WORD_SHARE: f64 = 0.6;
-
-fn content_words(name: &str) -> BTreeSet<String> {
-    name_key(name).split(' ').filter(|word| !word.is_empty() && !FILLER_WORDS.contains(word)).map(str::to_string).collect()
-}
-
-fn near_in_name(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
-    let (shorter, longer) = if left.len() <= right.len() { (left, right) } else { (right, left) };
-    let shared = shorter.intersection(longer).count();
-    let by_subset = shorter.len() >= 2 && shorter.is_subset(longer) && longer.len() - shorter.len() <= NEAR_EXTRA_WORDS;
-    by_subset || (shared >= 2 && shared as f64 >= NEAR_WORD_SHARE * shorter.len() as f64)
-}
-
-fn head_of(name: &str) -> Option<String> {
-    name_key(name).split(' ').find(|word| !word.is_empty() && !FILLER_WORDS.contains(word)).map(str::to_string)
-}
 
 fn near_in_flows(left: &[String], right: &[String]) -> bool {
     let shared = left.iter().filter(|flow| right.contains(flow)).count();
@@ -1644,15 +1540,10 @@ fn near_in_flows(left: &[String], right: &[String]) -> bool {
 }
 
 fn near_duplicates(capabilities: &[Capability]) -> Vec<usize> {
-    let words: Vec<BTreeSet<String>> =
-        capabilities.iter().map(|capability| content_words(capability.name.as_deref().unwrap_or(""))).collect();
-    let heads: Vec<Option<String>> =
-        capabilities.iter().map(|capability| head_of(capability.name.as_deref().unwrap_or(""))).collect();
     let mut near: BTreeSet<usize> = BTreeSet::new();
     for first in 0..capabilities.len() {
         for second in first + 1..capabilities.len() {
-            let same_head = heads[first].is_some() && heads[first] == heads[second];
-            if same_head || near_in_name(&words[first], &words[second]) || near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
+            if near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
                 near.insert(first);
                 near.insert(second);
             }
@@ -1750,26 +1641,9 @@ pub(crate) fn merge_the_same(capabilities: &mut Vec<Capability>, groups: Vec<Joi
     if groups.is_empty() {
         return;
     }
-    let every_flow: BTreeSet<String> =
-        capabilities.iter().flat_map(|held| held.flows.iter().cloned()).collect();
     let mut slots: Vec<Option<Capability>> = std::mem::take(capabilities).into_iter().map(Some).collect();
     let mut kept: Vec<Capability> = Vec::new();
     for group in groups {
-        let together_flows: BTreeSet<&str> = group
-            .members
-            .iter()
-            .filter_map(|at| slots[*at].as_ref())
-            .flat_map(|held| held.flows.iter().map(String::as_str))
-            .collect();
-        if together_flows.len() > REFUSE_MERGE_FROM_FLOWS && together_flows.len() * 2 > every_flow.len() {
-            eprintln!(
-                "  one of each: kept apart for holding {} of {} flows together: {}",
-                together_flows.len(),
-                every_flow.len(),
-                group.members.iter().filter_map(|at| slots[*at].as_ref()).map(|held| held.name.as_deref().unwrap_or("")).collect::<Vec<_>>().join(" | ")
-            );
-            continue;
-        }
         let keeper = group
             .members
             .iter()
@@ -1898,14 +1772,21 @@ mod command_family_tests {
     }
 
     #[test]
-    fn flows_that_only_trigger_are_grouped_by_the_module_they_work_in() {
+    fn flows_that_only_trigger_yield_no_candidate_by_section_0_7_1() {
         let accept = starting_in(flow("flow:6", "event", None, "click", &[], &[]), "site/consent.js:callback:accept");
         let reject = starting_in(flow("flow:7", "event", None, "click", &[], &[]), "site/consent.js:callback:reject");
-        let menu = starting_in(flow("flow:8", "event", None, "click", &[], &[]), "site/menu.js:callback:toggle");
-        let flows = vec![&accept, &reject, &menu];
-        let grouped = outcomes_of(&flows);
-        let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
-        assert_eq!(keys, BTreeSet::from(["within:site/consent.js", "within:site/menu.js"]));
+        let flows = vec![&accept, &reject];
+        assert!(outcomes_of(&flows).is_empty());
+    }
+
+    #[test]
+    fn only_a_flow_a_caller_starts_is_a_candidate_by_section_0_7_1() {
+        for kind in ["http", "cli", "tool", "ipc", "rpc", "graphql", "ui"] {
+            assert!(is_caller_initiated(&flow("flow:1", kind, None, "x", &[], &[])), "{kind}");
+        }
+        for kind in ["lifecycle", "schedule", "background", "event", "message", "export", "test"] {
+            assert!(!is_caller_initiated(&flow("flow:1", kind, None, "x", &[], &[])), "{kind}");
+        }
     }
 
     #[test]
@@ -2087,15 +1968,6 @@ mod command_family_tests {
     }
 
     #[test]
-    fn a_family_no_answer_covered_becomes_a_capability_named_for_what_it_handles() {
-        let key_of = BTreeMap::from([("f3", "records:Order,Item")]);
-        let held = structural("f3", &key_of);
-        assert_eq!(held.name, "Order,Item");
-        assert_eq!(held.families, BTreeSet::from(["f3".to_string()]));
-        assert!(held.description.is_empty());
-    }
-
-    #[test]
     fn capabilities_with_the_same_name_merge_at_any_level_without_asking() {
         let mut held = vec![
             held_of("Configure engine environment", &["f0"]),
@@ -2150,7 +2022,6 @@ mod command_family_tests {
             grounding: None,
             standing: PUBLISHED,
             level: crate::capabilities::PART,
-            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
@@ -2178,19 +2049,21 @@ mod command_family_tests {
     }
 
     #[test]
-    fn names_that_differ_only_by_a_trailing_qualifier_are_put_to_the_ask_on_their_own() {
+    fn capabilities_sharing_their_flows_are_put_to_the_ask_on_their_own() {
         let mut capabilities = vec![
             capability_of("Correlate runtime behavior with code", 4),
-            capability_of("Correlate runtime behavior with code analysis", 3),
             capability_of("Send invoices", 3),
             capability_of("Track deliveries", 3),
             capability_of("Reset a password", 2),
             capability_of("Export a report", 2),
         ];
+        let mut narrower = capability_of("Correlate runtime behavior with code analysis", 3);
+        narrower.flows = capabilities[0].flows[..3].to_vec();
+        capabilities.push(narrower);
         one_of_each_asking(&mut capabilities, same_only_when_few_are_offered);
         let names: Vec<String> = capabilities.iter().filter_map(|capability| capability.name.clone()).collect();
         assert_eq!(names.len(), 5, "{names:?}");
-        assert_eq!(names.iter().filter(|name| name.starts_with("Correlate")).count() + names.iter().filter(|name| *name == "Do it all").count(), 1);
+        assert!(names.iter().any(|name| name == "Do it all"), "{names:?}");
     }
 
     #[test]
@@ -2209,15 +2082,14 @@ mod command_family_tests {
     }
 
     #[test]
-    fn capabilities_that_open_with_the_same_verb_are_put_to_the_ask_together() {
+    fn names_alone_never_make_capabilities_near_duplicates_by_section_0_7_1() {
         let capabilities = vec![
             capability_of("Authenticate users", 3),
             capability_of("Authenticate and maintain sessions", 3),
-            capability_of("Reset a password", 2),
             capability_of("Access and inspect analysis results", 4),
             capability_of("Export and inspect analysis results", 4),
         ];
-        assert_eq!(near_duplicates(&capabilities), vec![0, 1, 3, 4]);
+        assert!(near_duplicates(&capabilities).is_empty());
     }
 
     #[test]
@@ -2254,50 +2126,6 @@ mod command_family_tests {
     }
 
     #[test]
-    fn a_bucket_label_is_never_a_capability() {
-        for label in ["Unassigned outcomes", "unassigned", "Plumbing", "Other outcomes", "Remaining flows", "Uncategorized"] {
-            assert!(is_unassigned_word(label), "{label}");
-        }
-        for label in ["Other currencies", "Assign tasks", "Track outcomes of experiments", ""] {
-            assert!(!is_unassigned_word(label), "{label}");
-        }
-        let mut held = vec![held_of("Unassigned outcomes", &["f1", "f2"]), held_of("Place a trade", &["f0"])];
-        let mut unassigned = BTreeSet::new();
-        set_aside_buckets(&mut held, &mut unassigned);
-        assert_eq!(held.len(), 1);
-        assert_eq!(unassigned, BTreeSet::from(["f1".to_string(), "f2".to_string()]));
-    }
-
-    #[test]
-    fn a_merge_that_would_make_one_capability_of_most_of_a_part_is_refused() {
-        let mut narrow = vec![capability_of("Share files", 6), capability_of("Send files", 5)];
-        one_of_each_asking(&mut narrow, all_one);
-        assert_eq!(narrow.len(), 1);
-        let mut broad = vec![capability_of("Share files", 25), capability_of("Send files", 25)];
-        one_of_each_asking(&mut broad, all_one);
-        assert_eq!(broad.len(), 2);
-    }
-
-    #[test]
-    fn a_small_part_with_one_program_that_runs_through_many_modules_is_read_stage_by_stage() {
-        let mut program = flow("flow:main", "lifecycle", None, "main", &[], &[]);
-        program.stages = (0..7)
-            .map(|at| crate::comprehend::Stage {
-                module: format!("src/stage{at}.rs"),
-                units: 9,
-                names: vec![format!("run{at}")],
-                leaves: Vec::new(),
-            })
-            .collect();
-        let families = outcomes_of(&[&program]);
-        assert_eq!(families.len(), 7);
-        assert!(families.keys().all(|family| family.key.starts_with("stage:src/stage")));
-        let first = families.iter().next().expect("a stage");
-        assert_eq!(terminality_of(first.0, first.1), "terminal");
-        assert!(evidence_of(first.1, first.0, &Fields::new()).contains("run0"));
-    }
-
-    #[test]
     fn product_surfaces_rank_before_programs_and_what_programs_alone_run() {
         let mut route = flow("flow:route", "http", Some("POST"), "/v1/analyze", &[], &[]);
         route.units = 10;
@@ -2321,16 +2149,23 @@ mod command_family_tests {
     }
 
     #[test]
-    fn coverage_leaves_out_flows_set_aside_and_runtime_hooks_that_deliver_nothing() {
+    fn coverage_withholds_no_flow_and_gives_each_unmapped_one_its_reason() {
         let served = flow("flow:1", "http", Some("GET"), "/a", &[], &[]);
         let hook = flow("flow:2", "event", None, "SIGTERM", &[], &[]);
         let mut tooling = flow("flow:3", "lifecycle", None, "main", &[], &[]);
         tooling.unshipped = Some(crate::entry_exit::Unshipped { role: "benchmark", basis: "shipping-evidence", evidence: String::new() });
-        let mut reading = flow("flow:4", "event", None, "data", &[], &["orders"]);
-        reading.project = None;
-        let covered = coverage_of(&[served, hook, tooling, reading], &[]);
-        assert_eq!((covered.flows, covered.set_aside, covered.inert), (2, 1, 1));
-        assert_eq!(covered.unmapped_flows, vec!["flow:1", "flow:4"]);
+        let reading = flow("flow:4", "event", None, "data", &[], &["orders"]);
+        let waiting = flow("flow:5", "http", Some("GET"), "/b", &[], &["orders"]);
+        let pending = BTreeSet::from(["flow:5".to_string()]);
+        let covered = coverage_of(&[served, hook, tooling, reading, waiting], &[], &BTreeMap::new(), &pending);
+        assert_eq!((covered.flows, covered.unmapped), (5, 5));
+        let ids: Vec<&str> = covered.unmapped_flows.iter().map(|held| held.flow.as_str()).collect();
+        assert_eq!(ids, vec!["flow:1", "flow:2", "flow:3", "flow:4", "flow:5"]);
+        let reason = |id: &str| covered.unmapped_flows.iter().find(|held| held.flow == id).map(|held| held.reason.clone()).unwrap_or_default();
+        assert!(reason("flow:1").contains("reaches no domain entity"));
+        assert!(reason("flow:2").contains("started by the runtime"));
+        assert!(reason("flow:3").contains("set aside"));
+        assert!(reason("flow:5").contains("unanswered"));
     }
 
     #[test]
@@ -2356,7 +2191,6 @@ mod command_family_tests {
             grounding: None,
             standing: PUBLISHED,
             level: crate::capabilities::PART,
-            stages: Vec::new(),
             touches: Vec::new(),
             terminality: None,
             confidence: None,
@@ -2365,10 +2199,10 @@ mod command_family_tests {
             parent_originated: None,
             evidence: String::new(),
         };
-        let covered = coverage_of(&[first, second, third], &[capability]);
+        let covered = coverage_of(&[first, second, third], &[capability], &BTreeMap::new(), &BTreeSet::new());
         assert_eq!((covered.flows, covered.related, covered.unmapped), (3, 2, 1));
         assert_eq!(covered.flows_to_capabilities, 0.667);
-        assert_eq!(covered.unmapped_flows, vec!["flow:2"]);
+        assert_eq!(covered.unmapped_flows.iter().map(|held| held.flow.as_str()).collect::<Vec<_>>(), vec!["flow:2"]);
         let web = covered.parts.iter().find(|part| part.project.as_deref() == Some("subproject:web")).expect("web part");
         assert_eq!((web.flows, web.related, web.unmapped), (2, 1, 1));
         let root = covered.parts.iter().find(|part| part.project.is_none()).expect("root part");
