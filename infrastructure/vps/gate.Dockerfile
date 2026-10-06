@@ -21,7 +21,8 @@ ARG BASE_IMAGE=klauro/api:alpha
 FROM ${BASE_IMAGE}
 
 ARG AST_GREP_VERSION=0.45.1
-ARG CODEBASE_MEMORY_VERSION=0.10.8
+ARG CODEBASE_MEMORY_VERSION=0.11.0
+ARG CODEBASE_MEMORY_SHA256=1f9e8293eb2bc5c05cfa27a7e8fc033da6d729ffad525ccfcdaa3fd606306683
 ARG SCIP_VERSION=0.9.0
 ARG SCIP_SHA256=fc2e7273e110be9f35924da1066000183791e8bfdb0391355de6eaaa070fec75
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
@@ -40,7 +41,12 @@ RUN apt-get update \
   && npm install --global \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
     "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
-    "codebase-memory-mcp@${CODEBASE_MEMORY_VERSION}" \
+  && curl -fsSL "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CODEBASE_MEMORY_VERSION}/codebase-memory-mcp-linux-amd64-portable.tar.gz" -o /tmp/cbm.tar.gz \
+  && echo "${CODEBASE_MEMORY_SHA256}  /tmp/cbm.tar.gz" | sha256sum --check --strict \
+  && tar -xzf /tmp/cbm.tar.gz -C /usr/local/bin codebase-memory-mcp \
+  && chmod 755 /usr/local/bin/codebase-memory-mcp \
+  && rm -f /tmp/cbm.tar.gz \
+  && codebase-memory-mcp --version \
   && curl -fsSL "https://github.com/scip-code/scip/releases/download/v${SCIP_VERSION}/scip-linux-amd64.tar.gz" -o /tmp/scip.tar.gz \
   && echo "${SCIP_SHA256}  /tmp/scip.tar.gz" | sha256sum --check --strict \
   && tar -xzf /tmp/scip.tar.gz -C /usr/local/bin scip \
