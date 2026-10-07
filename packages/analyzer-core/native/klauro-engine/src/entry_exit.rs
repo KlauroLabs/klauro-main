@@ -3165,8 +3165,12 @@ pub fn derive(
     }
 
     for node in nodes {
-        let named_main = matches!(node.kind, NodeKind::Function | NodeKind::Method)
-            && LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_ok();
+        let where_a_program_starts = match node.kind {
+            NodeKind::Method => node.modifiers.is_static,
+            NodeKind::Function => node.parent.as_deref().is_none_or(|parent| files.get(node.file as usize).is_some_and(|path| path == parent)),
+            _ => false,
+        };
+        let named_main = where_a_program_starts && LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_ok();
         let marked_main = node.kind.is_type() && node.decorators.iter().any(|held| held.name == "main");
         if !named_main && !marked_main {
             continue;

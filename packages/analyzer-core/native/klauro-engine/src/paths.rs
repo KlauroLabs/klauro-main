@@ -79,6 +79,8 @@ fn in_a_test_directory(path: &str) -> bool {
             || directory.ends_with("Tests")
             || directory.ends_with(".tests")
             || directory.ends_with(".test")
+            || directory.ends_with("_test")
+            || directory.ends_with("_tests")
             || directory.ends_with("Test") && directory.len() > 4
     })
 }
@@ -214,6 +216,13 @@ pub fn is_continuous_integration(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_directory_named_for_its_tests_holds_tests() {
+        assert!(is_test("mobile/integration_test/module_login/login_test.dart"));
+        assert!(is_test("mobile/integration_test/app_flow.dart"));
+        assert!(!is_test("mobile/lib/domain/services/timeline.service.dart"));
+    }
 
     #[test]
     fn a_file_reached_through_a_link_leaving_the_root_is_unreadable() {

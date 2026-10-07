@@ -542,9 +542,20 @@ impl<'a> Extractor<'a> {
         if depth >= REFERENCE_DEPTH {
             return Vec::new();
         }
+        let callee = self.spec.calls.kinds.contains(&node.kind()).then(|| node.child_by_field_name("function")).flatten();
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
-            .flat_map(|child| self.referenced_names(child, depth + 1))
+            .flat_map(|child| match callee.filter(|callee| callee.id() == child.id()) {
+                Some(callee) => self
+                    .spec
+                    .calls
+                    .receiver_fields
+                    .iter()
+                    .find_map(|field| callee.child_by_field_name(field))
+                    .map(|receiver| self.referenced_names(receiver, depth + 1))
+                    .unwrap_or_default(),
+                None => self.referenced_names(child, depth + 1),
+            })
             .take(REFERENCE_WIDTH)
             .collect()
     }
@@ -868,7 +879,14 @@ impl<'a> Extractor<'a> {
             }
             held => held == "public" || held == "open",
         });
-        Modifiers { exported: open, ..Modifiers::default() }
+        let mut cursor = node.walk();
+        let is_static = node.children(&mut cursor).any(|child| match child.kind() {
+            "modifiers" | "modifier" | "access_modifier" | "accessibility_modifier" | "member_modifiers" | "storage_class_specifier" => {
+                self.text(child).split_whitespace().any(|word| word == "static")
+            }
+            held => held == "static",
+        });
+        Modifiers { exported: open, is_static, ..Modifiers::default() }
     }
 
     pub fn run(mut self, tree: &Tree, path: &str, line_count: u32) -> FileFacts {
