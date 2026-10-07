@@ -676,6 +676,7 @@ fn decorator_entry(decorator: &Decorator, bare_verbs: bool) -> Option<(&'static 
         "command" | "consolecommand" => Some(("cli", lowered, None)),
         "fact" | "theory" | "test" | "testcase" | "testmethod" | "parameterizedtest"
         | "benchmark" => Some(("test", lowered, None)),
+        "routepage" => Some(("ui", lowered, None)),
         _ => None,
     }
 }
@@ -808,44 +809,30 @@ fn served_over_grpc(nodes: &[IndexNode], type_references: &[TypeReferenceFact], 
 struct EntryBase {
     base: &'static str,
     kind: &'static str,
-    members: &'static [&'static str],
+    members: Vec<&'static str>,
 }
 
-const fn base(base: &'static str, kind: &'static str, members: &'static [&'static str]) -> EntryBase {
-    EntryBase { base, kind, members }
+static ENTRY_BASE_ROWS: &str = include_str!("../data/entry_bases.tsv");
+
+fn entry_bases() -> &'static [EntryBase] {
+    static BASES: std::sync::OnceLock<Vec<EntryBase>> = std::sync::OnceLock::new();
+    BASES.get_or_init(|| {
+        ENTRY_BASE_ROWS
+            .lines()
+            .filter_map(|line| {
+                let [_, base, kind, members]: [&'static str; 4] = line.split('\t').collect::<Vec<_>>().try_into().ok()?;
+                let members = match members {
+                    "-" => Vec::new(),
+                    listed => listed.split(',').collect(),
+                };
+                Some(EntryBase { base, kind, members })
+            })
+            .collect()
+    })
 }
 
-static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_payload", "perform_mutation"];
-static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
-
-static CASE_MEMBERS: &[&str] = &["it_*", "should_*", "test*"];
-static WORK_MEMBERS: &[&str] = &["createWork", "doWork"];
-static JOB_MEMBERS: &[&str] = &["perform"];
 static MIXES_IN: &[&str] = &["extend", "include", "prepend"];
 
-static ENTRY_BASES: &[EntryBase] = &[
-    base("ActiveJob::Base", "background", JOB_MEMBERS),
-    base("AppCompatActivity", "lifecycle", &[]),
-    base("ApplicationJob", "background", JOB_MEMBERS),
-    base("Application", "lifecycle", &[]),
-    base("BackgroundService", "background", &["ExecuteAsync"]),
-    base("BaseCommand", "cli", COMMAND_MEMBERS),
-    base("BroadcastReceiver", "lifecycle", &[]),
-    base("ComponentActivity", "lifecycle", &[]),
-    base("CoroutineWorker", "background", WORK_MEMBERS),
-    base("Fragment", "lifecycle", &[]),
-    base("IHostedService", "background", &["StartAsync"]),
-    base("IScheduledTask", "background", &["ExecuteAsync"]),
-    base("ListenableWorker", "background", WORK_MEMBERS),
-    base("Mutation", "graphql", GRAPHQL_MEMBERS),
-    base("ObjectType", "graphql", GRAPHQL_MEMBERS),
-    base("RxWorker", "background", WORK_MEMBERS),
-    base("Sidekiq::Job", "background", JOB_MEMBERS),
-    base("Sidekiq::Worker", "background", JOB_MEMBERS),
-    base("Subscription", "graphql", GRAPHQL_MEMBERS),
-    base("TestCase", "test", CASE_MEMBERS),
-    base("Worker", "lifecycle", &[]),
-];
 
 fn matches_member(pattern: &str, name: &str) -> bool {
     match pattern.strip_suffix('*') {
@@ -856,11 +843,11 @@ fn matches_member(pattern: &str, name: &str) -> bool {
 
 fn entry_base(name: &str) -> Option<&'static EntryBase> {
     let written = name.trim().replace('=', "::");
-    if let Some(found) = ENTRY_BASES.iter().find(|entry| entry.base.contains("::") && entry.base == written) {
+    if let Some(found) = entry_bases().iter().find(|entry| entry.base.contains("::") && entry.base == written) {
         return Some(found);
     }
     let leaf = names::leaf(name);
-    ENTRY_BASES.iter().find(|entry| !entry.base.contains("::") && entry.base == leaf)
+    entry_bases().iter().find(|entry| !entry.base.contains("::") && entry.base == leaf)
 }
 
 static FILE_OPERATIONS: &[&str] = &[
@@ -2845,11 +2832,15 @@ pub fn derive(
             members.entry(parent).or_default().push(node);
         }
     }
+    let extended_here: HashSet<&str> = above.values().flatten().map(|name| names::leaf(name)).filter(|name| unique_type.contains_key(name)).collect();
     for node in nodes {
         if !node.kind.is_type() {
             continue;
         }
         let Some(found) = inherits(node) else { continue };
+        if found.members.is_empty() && extended_here.contains(node.name.as_str()) {
+            continue;
+        }
         if found.members.is_empty() {
             entry_points.push(EntryPoint {
                 id: format!("entry:{}", node.id),

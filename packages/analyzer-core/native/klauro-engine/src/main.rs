@@ -100,6 +100,7 @@ mod verify;
 mod visibility;
 mod vendored;
 mod wire;
+mod xaml;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -722,6 +723,8 @@ fn read_it() {
         resolution.no_caller
     );
 
+    let declared_in_markup = xaml::declared_bases(&root, &paths, &index.nodes);
+    index.type_references.extend(declared_in_markup);
     let derive_started = Instant::now();
     let derived = entry_exit::derive(
         &index.nodes,

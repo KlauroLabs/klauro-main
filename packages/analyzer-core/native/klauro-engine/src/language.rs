@@ -1916,7 +1916,7 @@ static SPECS: &[LanguageSpec] = &[
             binding_name_field: "name",
             binding_type_field: "type",
             binding_value_field: "value",
-            decorator_kinds: &[],
+            decorator_kinds: &["annotation"],
             decorator_container_kinds: &[],
             type_requires_body: false,
             text_kinds: &[],

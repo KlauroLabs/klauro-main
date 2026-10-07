@@ -23,7 +23,7 @@ fn a_resolver_inherits_its_surface_through_a_repository_base_class() {
 fn a_framework_component_is_an_entry_point_and_a_plain_class_is_not() {
     let index = index();
     let found = entry(&index, "MainActivity").expect("the activity is an entry point");
-    assert_eq!(found["kind"], "lifecycle");
+    assert_eq!(found["kind"], "ui", "an activity is a screen its user reaches");
     assert!(entry(&index, "Helper").is_none(), "a class with no framework base is not served");
 }
 
