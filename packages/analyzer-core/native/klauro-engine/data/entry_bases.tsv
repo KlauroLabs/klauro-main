@@ -9,6 +9,7 @@ android	ComponentActivity	ui	-
 android-work	CoroutineWorker	background	createWork,doWork
 android	Fragment	ui	-
 dotnet	IHostedService	background	StartAsync
+quartz	IJob	schedule	Execute
 dotnet	IScheduledTask	background	ExecuteAsync
 android-work	ListenableWorker	background	createWork,doWork
 graphql	Mutation	graphql	resolve_*,mutate,mutate_and_get_payload,perform_mutation

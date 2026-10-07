@@ -117,5 +117,6 @@ fn background_work_that_waits_on_a_timer_in_a_loop_runs_on_a_schedule() {
             .unwrap_or_default()
     };
     assert_eq!(kind_of("Worker/Reminders.cs"), "schedule");
+    assert_eq!(kind_of("Worker/Nightly.cs"), "schedule", "a scheduler's job runs on its schedule");
     assert_eq!(kind_of("Worker/GracePeriod.cs"), "background");
 }

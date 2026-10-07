@@ -3586,7 +3586,9 @@ pub fn derive(
             "http" => !is_test(path) && !is_a_rust_tests_module(path),
             _ => !is_unambiguously_test(path),
         };
-        let recurs = entry.kind != "schedule" || recurring(&entry.registrar);
+        let recurs = entry.kind != "schedule"
+            || recurring(&entry.registrar)
+            || entry_base(&entry.registrar).is_some_and(|base| base.kind == "schedule");
         if !recurs {
             continued.push(entry.handler.clone());
         }
