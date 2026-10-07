@@ -1193,41 +1193,6 @@ fn read_it() {
     index.entry_points.extend(delivered.into_iter().filter(|entry| !handled.contains(&(entry.handler.clone(), entry.kind))));
     let dispatched = derived.dispatched;
     index.patterns = Some(derived.patterns);
-    if let (Some(architecture), Some(roles), Some(patterns)) = (index.architecture.as_mut(), index.roles.as_ref(), index.patterns.as_ref()) {
-        let programs: Vec<&str> = index
-            .entry_points
-            .iter()
-            .filter(|entry| matches!(entry.kind, "lifecycle" | "cli" | "background") && !unshipped::is_set_aside(entry.unshipped.as_ref()))
-            .map(|entry| entry.handler.as_str())
-            .collect();
-        let source_files: rustc_hash::FxHashSet<&str> = index.files.iter().filter(|file| matches!(file.kind, discovery::FileKind::Source)).map(|file| file.path.as_str()).collect();
-        let shaped_from = components::Sources { roles, nodes: &index.nodes, edges: &index.edges, calls: &index.calls, messages: &patterns.messages, programs: &programs, entry_points: &index.entry_points, source_files: &source_files };
-        for project in architecture.projects.iter_mut() {
-            project.shape = components::shape_of(&project.project, &shaped_from);
-        }
-        let told: Vec<(String, String, String)> = architecture
-            .projects
-            .iter()
-            .map(|project| {
-                let told = components::told(&project.name, &project.shape, &project.frameworks);
-                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&format!("{}\n{told}", crate::author::ARCHITECTURE_ASKED)), told)
-            })
-            .collect();
-        let names: Vec<String> = architecture.projects.iter().map(|project| project.name.clone()).collect();
-        let written: Vec<Option<String>> = crate::author::asking(|| {
-            use rayon::prelude::*;
-            told.par_iter()
-                .zip(names.par_iter())
-                .map(|((key, digest, told), name)| match told.lines().count() > 1 {
-                    true => crate::memory::unless_changed("architecture", key, digest, || crate::author::describe_architecture(told, name)),
-                    false => None,
-                })
-                .collect()
-        });
-        for (project, narrative) in architecture.projects.iter_mut().zip(written) {
-            project.narrative = narrative;
-        }
-    }
 
     let ci_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     let found_ci = ci::extract(&root, &ci_paths);
@@ -1286,6 +1251,44 @@ fn read_it() {
     index.layering = layering;
     index.injections = injection::derive(&pattern_graph, &index.calls);
     drop(pattern_graph);
+    if let Some(found) = index.roles.as_mut() {
+        roles::entered_later(found, &index.nodes, &index.entry_points);
+    }
+    if let (Some(architecture), Some(roles), Some(patterns)) = (index.architecture.as_mut(), index.roles.as_ref(), index.patterns.as_ref()) {
+        let programs: Vec<&str> = index
+            .entry_points
+            .iter()
+            .filter(|entry| matches!(entry.kind, "lifecycle" | "cli" | "background") && !unshipped::is_set_aside(entry.unshipped.as_ref()))
+            .map(|entry| entry.handler.as_str())
+            .collect();
+        let source_files: rustc_hash::FxHashSet<&str> = index.files.iter().filter(|file| matches!(file.kind, discovery::FileKind::Source)).map(|file| file.path.as_str()).collect();
+        let shaped_from = components::Sources { roles, nodes: &index.nodes, edges: &index.edges, calls: &index.calls, messages: &patterns.messages, programs: &programs, entry_points: &index.entry_points, source_files: &source_files };
+        for project in architecture.projects.iter_mut() {
+            project.shape = components::shape_of(&project.project, &shaped_from);
+        }
+        let told: Vec<(String, String, String)> = architecture
+            .projects
+            .iter()
+            .map(|project| {
+                let told = components::told(&project.name, &project.shape, &project.frameworks);
+                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&format!("{}\n{told}", crate::author::ARCHITECTURE_ASKED)), told)
+            })
+            .collect();
+        let names: Vec<String> = architecture.projects.iter().map(|project| project.name.clone()).collect();
+        let written: Vec<Option<String>> = crate::author::asking(|| {
+            use rayon::prelude::*;
+            told.par_iter()
+                .zip(names.par_iter())
+                .map(|((key, digest, told), name)| match told.lines().count() > 1 {
+                    true => crate::memory::unless_changed("architecture", key, digest, || crate::author::describe_architecture(told, name)),
+                    false => None,
+                })
+                .collect()
+        });
+        for (project, narrative) in architecture.projects.iter_mut().zip(written) {
+            project.narrative = narrative;
+        }
+    }
     index.edges.extend(dispatched);
 
 

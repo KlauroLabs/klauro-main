@@ -307,6 +307,25 @@ fn orchestrates(project: &SubProject, deployables: &[crate::scope::Deployable]) 
     })
 }
 
+fn without_a_shared_prefix(named: Vec<(String, &'static str, bool)>) -> Vec<(String, &'static str)> {
+    let words = |name: &str| name.split(' ').map(str::to_lowercase).collect::<Vec<_>>();
+    let rooted: Vec<Vec<String>> = named.iter().filter(|(_, _, rooted)| *rooted).map(|(name, _, _)| words(name)).collect();
+    let shared = match rooted.as_slice() {
+        [first, _, ..] => (0..first.len()).take_while(|at| rooted.iter().all(|held| held.len() > *at + 1 && held[*at] == first[*at])).count(),
+        _ => 0,
+    };
+    named
+        .into_iter()
+        .map(|(name, kind, rooted)| {
+            let held: Vec<&str> = name.split(' ').collect();
+            match rooted && shared > 0 && held.len() - shared >= 2 {
+                true => (capitalised(&held[shared..].join(" ")), kind),
+                false => (name, kind),
+            }
+        })
+        .collect()
+}
+
 fn unique_names(named: Vec<(String, &'static str)>) -> Vec<String> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for (name, _) in &named {
@@ -407,7 +426,7 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
         .zip(partition.sub_projects.iter())
         .map(|(tally, project)| kind_of(project, tally, orchestrates(project, facts.deployables), declares_a_program(project, facts.deployables)))
         .collect();
-    let names = unique_names(
+    let names = unique_names(without_a_shared_prefix(
         partition
             .sub_projects
             .iter()
@@ -418,10 +437,10 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
                     (true, "tooling", false) => "Repository tooling".to_string(),
                     _ => as_spelled(&plain_name(project, facts.repository), facts.spelled),
                 };
-                (name, *kind)
+                (name, *kind, !project.root.is_empty())
             })
             .collect(),
-    );
+    ));
     let reads: Vec<Reading> = tallies
         .iter()
         .zip(partition.sub_projects.iter())
@@ -537,6 +556,18 @@ mod tests {
         let mut defaults = project("src/ServiceDefaults", "ServiceDefaults", "deployable");
         defaults.imported_by = vec!["subproject:src/Basket.API".to_string()];
         assert_eq!(kind_of(&defaults, &tally(&[("http", 1)]), false, false).0, "library");
+    }
+
+    #[test]
+    fn a_prefix_every_part_shares_is_the_product_s_name_and_is_dropped() {
+        let named = without_a_shared_prefix(vec![
+            ("Finance domain entities".to_string(), "library", true),
+            ("Finance presentation web API".to_string(), "service", true),
+            ("Finance plaid".to_string(), "library", true),
+            ("Repository tooling".to_string(), "tooling", false),
+        ]);
+        let names: Vec<&str> = named.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Domain entities", "Presentation web API", "Finance plaid", "Repository tooling"]);
     }
 
     #[test]

@@ -1,0 +1,19 @@
+aspire	starts	AddProject	-
+aspire	starts	AddNpmApp	-
+aspire	starts	AddExecutable	-
+aspire	provisions	AddRedis	Redis
+aspire	provisions	AddRabbitMQ	RabbitMQ
+aspire	provisions	AddPostgres	PostgreSQL
+aspire	provisions	AddSqlServer	SQL Server
+aspire	provisions	AddMySql	MySQL
+aspire	provisions	AddMongoDB	MongoDB
+aspire	provisions	AddKafka	Kafka
+aspire	provisions	AddNats	NATS
+aspire	provisions	AddElasticsearch	Elasticsearch
+aspire	provisions	AddAzureStorage	Azure Storage
+aspire	provisions	AddAzureServiceBus	Azure Service Bus
+aspire	provisions	AddAzureCosmosDB	Azure Cosmos DB
+aspire	provisions	AddOllama	Ollama
+aspire	provisions	AddFoundry	Azure AI Foundry
+aspire	provisions	AddYarp	YARP reverse proxy
+aspire	provisions	AddContainer	-

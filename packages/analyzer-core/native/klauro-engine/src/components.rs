@@ -9,6 +9,7 @@ use crate::roles::Roles;
 
 static LABELS: &str = include_str!("../data/component_labels.tsv");
 static REGISTRIES: &str = include_str!("../data/composition_registries.tsv");
+static ORCHESTRATION: &str = include_str!("../data/orchestration_calls.tsv");
 const ROLES_TO_TELL_ORGANISATION: usize = 3;
 static ENTERING: &[&str] = &["command", "component", "controller", "handler", "listener", "scheduled", "worker"];
 static WORKING: &[&str] = &["request-handler", "service", "validator", "view-model"];
@@ -35,6 +36,52 @@ pub struct Style {
     pub evidence: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct Orchestrated {
+    pub starts: Vec<String>,
+    pub provisions: Vec<String>,
+}
+
+fn readable(written: &str) -> String {
+    crate::names::leaf(written).replace(['_', '.'], " ")
+}
+
+fn orchestrated(project: &str, sources: &Sources, named: &HashMap<&str, &IndexNode>) -> Orchestrated {
+    let rows: Vec<(&str, &str, &str)> = ORCHESTRATION
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (_, how, call, resource) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            Some((how, call, resource))
+        })
+        .collect();
+    let (mut starts, mut provisions) = (Vec::new(), Vec::new());
+    for call in sources.calls {
+        let Some(caller) = call.caller.as_deref() else { continue };
+        let in_project = named.get(caller).is_some_and(|node| node.project.as_deref() == Some(project));
+        if !in_project || crate::paths::is_test(caller.split(':').next().unwrap_or_default()) {
+            continue;
+        }
+        let leaf = crate::names::leaf(&call.callee);
+        let Some((how, _, resource)) = rows.iter().find(|(_, named_call, _)| *named_call == leaf) else { continue };
+        let told = match (*how, *resource) {
+            ("starts", _) => call.type_arguments.first().map(|written| readable(written)).or_else(|| call.literals.first().cloned()),
+            (_, "-") => call.literals.first().cloned(),
+            (_, resource) => Some(resource.to_string()),
+        };
+        let Some(told) = told else { continue };
+        let held = match *how {
+            "starts" => &mut starts,
+            _ => &mut provisions,
+        };
+        let spoken = |written: &str| written.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+        if !held.iter().any(|known: &String| spoken(known) == spoken(&told)) {
+            held.push(told);
+        }
+    }
+    Orchestrated { starts, provisions }
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Shape {
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -46,6 +93,10 @@ pub struct Shape {
     pub styles: Vec<Style>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub starts: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub provisions: Vec<String>,
 }
 
 pub fn label_of(role: &str) -> String {
@@ -253,7 +304,11 @@ pub fn shape_of(project: &str, sources: &Sources) -> Shape {
         true => Vec::new(),
         false => stages,
     };
-    Shape { components, modules, organised_by, styles, stages }
+    let Orchestrated { starts, provisions } = orchestrated(project, sources, &named);
+    if !starts.is_empty() {
+        styles.push(Style { style: "orchestrator", evidence: format!("it starts {} parts and provisions {} resources for them", starts.len(), provisions.len()) });
+    }
+    Shape { components, modules, organised_by, styles, stages, starts, provisions }
 }
 
 pub fn told(name: &str, shape: &Shape, frameworks: &[String]) -> String {
@@ -269,6 +324,12 @@ pub fn told(name: &str, shape: &Shape, frameworks: &[String]) -> String {
     }
     if !shape.stages.is_empty() {
         told.push_str(&format!("stages in order: {}\n", shape.stages.join(", ")));
+    }
+    if !shape.starts.is_empty() {
+        told.push_str(&format!("starts these parts: {}\n", shape.starts.join(", ")));
+    }
+    if !shape.provisions.is_empty() {
+        told.push_str(&format!("provisions these resources: {}\n", shape.provisions.join(", ")));
     }
     if !shape.modules.is_empty() {
         told.push_str(&format!("modules: {}\n", shape.modules.join(", ")));

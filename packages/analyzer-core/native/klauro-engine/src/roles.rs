@@ -206,6 +206,31 @@ fn inheritance<'a>(nodes: &'a [IndexNode], edges: &'a [IndexEdge], type_referenc
     found
 }
 
+fn role_of_entry(kind: &str) -> Option<&'static str> {
+    match kind {
+        "http" | "rpc" | "graphql" | "ipc" => Some("handler"),
+        "ui" => Some("component"),
+        "event" | "message" => Some("listener"),
+        "schedule" => Some("scheduled"),
+        "cli" => Some("command"),
+        "test" => Some("test"),
+        _ => None,
+    }
+}
+
+pub fn entered_later(held: &mut Roles, nodes: &[IndexNode], entry_points: &[EntryPoint]) {
+    let named: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut seen: rustc_hash::FxHashSet<(String, &'static str)> = held.roles.iter().map(|role| (role.node.clone(), role.role)).collect();
+    for entry in entry_points {
+        let (Some(node), Some(role)) = (named.get(entry.handler.as_str()), role_of_entry(entry.kind)) else { continue };
+        if seen.insert((node.id.clone(), role)) {
+            held.roles.push(Role { node: node.id.clone(), role, from: format!("{}:{}", entry.kind, entry.registrar), generic: false, project: node.project.clone() });
+        }
+    }
+    held.roles.sort_by(|left, right| left.node.cmp(&right.node).then(left.role.cmp(right.role)));
+    held.by_role = tallied(&held.roles);
+}
+
 pub fn derive(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
@@ -276,15 +301,7 @@ pub fn derive(
 
     for entry in entry_points {
         let Some(node) = named.get(entry.handler.as_str()) else { continue };
-        let role = match entry.kind {
-            "http" | "rpc" | "graphql" | "ipc" => "handler",
-            "ui" => "component",
-            "event" | "message" => "listener",
-            "schedule" => "scheduled",
-            "cli" => "command",
-            "test" => "test",
-            _ => continue,
-        };
+        let Some(role) = role_of_entry(entry.kind) else { continue };
         if seen.insert((node.id.clone(), role)) {
             roles.push(Role { node: node.id.clone(), role, from: format!("{}:{}", entry.kind, entry.registrar), generic: false, project: node.project.clone() });
         }
