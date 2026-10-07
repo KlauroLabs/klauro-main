@@ -103,3 +103,19 @@ fn a_message_handed_to_the_bus_is_published_to_whoever_receives_it() {
         "both branches publish; logging the message or keeping it in a list publishes nothing"
     );
 }
+
+#[test]
+fn background_work_that_waits_on_a_timer_in_a_loop_runs_on_a_schedule() {
+    let index = common::read("surfaces");
+    let kind_of = |file: &str| -> String {
+        index["entry_points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["handler"].as_str().is_some_and(|handler| handler.starts_with(file)))
+            .map(|entry| entry["kind"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(kind_of("Worker/Reminders.cs"), "schedule");
+    assert_eq!(kind_of("Worker/GracePeriod.cs"), "background");
+}

@@ -1,4 +1,5 @@
 mod alias;
+mod timers;
 mod effects;
 mod addresses;
 mod architecture;
@@ -1193,6 +1194,7 @@ fn read_it() {
     let handled: rustc_hash::FxHashSet<(String, &'static str)> =
         index.entry_points.iter().map(|entry| (entry.handler.clone(), entry.kind)).collect();
     index.entry_points.extend(delivered.into_iter().filter(|entry| !handled.contains(&(entry.handler.clone(), entry.kind))));
+    timers::recurring(&mut index.entry_points, &index.calls);
     let published = effects::published(&index.calls, &index.locals, &index.entry_points, &paths);
     if !published.is_empty() {
         index.exit_points.extend(published);

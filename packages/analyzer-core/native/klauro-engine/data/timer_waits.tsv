@@ -1,0 +1,9 @@
+Task	Delay
+Thread	Sleep
+time	sleep,Sleep
+asyncio	sleep
+thread	sleep
+tokio::time	sleep
+std::thread	sleep
+Kernel	sleep
+-	sleep,usleep,setTimeout
