@@ -2015,13 +2015,6 @@ export interface CASValidation {
   };
 }
 
-export interface CASAnalyzer {
-  getAnalyzerName(): string;
-  getSupportedLanguages(): string[];
-  getSupportedFrameworks(): string[];
-  analyze(projectPath: string): Promise<CASContribution>;
-  enhance?(existingAnalysis: CASOutput, projectPath: string): Promise<CASContribution>;
-}
 
 export interface CASContribution {
   nodes?: CASNode[];
@@ -2042,12 +2035,6 @@ export interface CASContribution {
   call_chains?: CASCallChain[];
 }
 
-export interface CASMergeStrategy {
-  nodeConflictResolution: 'merge' | 'replace' | 'keep-both';
-  edgeConflictResolution: 'merge' | 'replace' | 'keep-both';
-  metadataConflictResolution: 'merge' | 'replace' | 'prefer-specialized';
-  priority: string[];
-}
 
 export class CASNodeBuilder {
   private node: Partial<CASNode> = {};
@@ -3066,15 +3053,6 @@ export interface CASFixture {
   used_by?: string[];
 }
 
-export interface CASNodeTestCoverage {
-  covered: boolean;
-  coverage_percentage?: number;
-  tested_by?: string[];
-  untested_branches?: Array<{
-    line: number;
-    condition: string;
-  }>;
-}
 
 export interface CASTestSummary {
   total_tests: number;
@@ -4750,156 +4728,11 @@ export interface ChangeSemanticImpact {
   risk_reasons: string[];
 }
 
-export interface AnalysisConfidence {
-  overall: number;
-  staleness: 'fresh' | 'recent' | 'stale' | 'very-stale';
-  lastAnalysis: string;
-  timeSinceAnalysis: number;
 
-  perFile: Record<string, {
-    confidence: number;
-    reason: string;
-  }>;
 
-  perNode: Record<string, {
-    confidence: number;
-    factors: string[];
-  }>;
 
-  recommendations: Array<{
-    action: 'reanalyze' | 'reanalyze-file' | 'reanalyze-module';
-    target?: string;
-    reason: string;
-    priority: 'low' | 'medium' | 'high';
-  }>;
-}
 
-export interface ContextBundle {
-  tokenCount: number;
-  priority: 'essential' | 'important' | 'supplementary';
 
-  core: {
-    targetNode: CASNode;
-    signature?: string;
-    documentation?: string;
-    immediateContext?: string;
-  };
-
-  related?: {
-    callers: CASNode[];
-    callees: CASNode[];
-    siblings: CASNode[];
-  };
-
-  patterns?: {
-    appliedPatterns: string[];
-    conventions: string[];
-    antiPatterns: string[];
-  };
-
-  history?: {
-    recentChanges: ChangeHistoryEntry[];
-    changeVelocity: 'stable' | 'active' | 'volatile';
-  };
-
-  similar?: Array<{
-    node: CASNode;
-    similarity: number;
-    reason: string;
-  }>;
-
-  truncated: boolean;
-  omitted: string[];
-}
-
-export interface PreFlightAssessment {
-  feasibility: 'safe' | 'caution' | 'risky' | 'dangerous';
-  impact: ImpactAnalysis;
-
-  conflicts: Array<{
-    type: 'recent-change' | 'in-progress' | 'pattern-violation' | 'convention-violation';
-    description: string;
-    changeId?: string;
-    severity: 'info' | 'warning' | 'error';
-  }>;
-
-  suggestions: Array<{
-    type: 'use-existing' | 'follow-pattern' | 'consider-alternative' | 'update-related';
-    description: string;
-    reference?: string;
-    code?: string;
-  }>;
-
-  requiredUpdates: Array<{
-    file: string;
-    nodeId?: string;
-    reason: string;
-    automated: boolean;
-  }>;
-
-  testStrategy: {
-    existingTests: string[];
-    newTestsNeeded: string[];
-    suggestedTestPattern?: string;
-  };
-
-  estimatedEffort: 'trivial' | 'small' | 'medium' | 'large';
-}
-
-export interface MinimumTestSet {
-  required: Array<{
-    testId: string;
-    testName: string;
-    file: string;
-    reason: string;
-    coversNodes: string[];
-  }>;
-
-  recommended: Array<{
-    testId: string;
-    testName: string;
-    reason: string;
-    priority: number;
-  }>;
-
-  optional: Array<{
-    testId: string;
-    testName: string;
-    reason: string;
-  }>;
-
-  coverage: {
-    coveredNodes: string[];
-    uncoveredNodes: string[];
-    coveragePercent: number;
-  };
-
-  estimatedRunTime: number;
-  fullSuiteRunTime: number;
-  savingsPercent: number;
-}
-
-export interface AnalysisTimeline {
-  entries: TimelineEntry[];
-  span: { start: string; end: string };
-  resolution: 'minute' | 'hour' | 'day' | 'week';
-}
-
-export interface TimelineEntry {
-  timestamp: string;
-  type: 'analysis' | 'change' | 'milestone';
-
-  analysisId?: string;
-  nodeCount?: number;
-  duration?: number;
-
-  changeId?: string;
-  summary?: string;
-  impactLevel?: 'low' | 'medium' | 'high';
-
-  milestone?: 'release' | 'branch' | 'merge' | 'tag';
-  label?: string;
-}
 
 export interface HeatMapData {
   type: 'churn' | 'bugs' | 'complexity' | 'coverage' | 'staleness';
@@ -4960,40 +4793,8 @@ export interface WatchStatus {
   error?: string;
 }
 
-export interface CrossRepoLink {
-  id: string;
-  sourceRepo: string;
-  targetRepo: string;
-  linkType: 'api-call' | 'shared-db' | 'message-queue' | 'import' | 'submodule';
 
-  apiEndpoint?: string;
-  apiConsumers?: string[];
 
-  sharedTables?: string[];
-
-  publishedMessages?: string[];
-  consumedMessages?: string[];
-}
-
-export interface CrossRepoImpact {
-  changeId: string;
-  affectedRepos: Array<{
-    repo: string;
-    linkType: string;
-    affectedNodes: string[];
-    severity: 'info' | 'warning' | 'breaking';
-  }>;
-}
-
-export interface AnalysisLockStatus {
-  locked: boolean;
-  holder?: {
-    pid: number;
-    startedAt: string;
-    operation: string;
-  };
-  queuedOperations: number;
-}
 
 
 

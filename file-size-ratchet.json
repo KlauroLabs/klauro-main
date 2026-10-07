@@ -19,7 +19,7 @@
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
-      "ceiling": 5059
+      "ceiling": 4844
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",
