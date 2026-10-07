@@ -86,6 +86,91 @@ pub fn does(exit: &ExitPoint) -> &'static str {
     }
 }
 
+fn type_named(written: &str) -> &str {
+    let bare = written.trim().strip_prefix("new ").unwrap_or(written.trim());
+    let bare = bare.split(['(', '<', '{', ' ']).next().unwrap_or(bare);
+    bare.rsplit(['.', ':']).next().unwrap_or(bare)
+}
+
+pub fn published(
+    calls: &[crate::model::CallFact],
+    locals: &[crate::model::LocalBinding],
+    entries: &[crate::entry_exit::EntryPoint],
+    files: &[String],
+) -> Vec<ExitPoint> {
+    let received: rustc_hash::FxHashSet<&str> =
+        entries.iter().filter(|entry| matches!(entry.kind, "message" | "event")).map(|entry| entry.name.as_str()).collect();
+    if received.is_empty() {
+        return Vec::new();
+    }
+    let mut typed: rustc_hash::FxHashMap<(&str, &str), &str> = rustc_hash::FxHashMap::default();
+    for local in locals {
+        if let Some(written) = local.constructed.as_deref().or(local.annotation.as_deref()) {
+            typed.insert((local.unit.as_str(), local.name.as_str()), type_named(written));
+        }
+    }
+    let mut made: rustc_hash::FxHashMap<&str, Vec<&str>> = rustc_hash::FxHashMap::default();
+    for call in calls.iter().filter(|call| call.constructs) {
+        if let (Some(caller), Some(message)) = (call.caller.as_deref(), received.get(type_named(&call.callee)).copied()) {
+            let held = made.entry(caller).or_default();
+            if !held.contains(&message) {
+                held.push(message);
+            }
+        }
+    }
+    let subscribed: rustc_hash::FxHashSet<(u32, u32)> =
+        entries.iter().filter(|entry| matches!(entry.kind, "message" | "event")).map(|entry| (entry.file, entry.line)).collect();
+    let mut found = Vec::new();
+    for call in calls {
+        let sends = match by_words(&call.callee) {
+            Some("send") => true,
+            Some("write") => false,
+            _ => continue,
+        };
+        if call.constructs || subscribed.contains(&(call.file, call.line)) || crate::paths::is_test(&files[call.file as usize]) {
+            continue;
+        }
+        let Some(caller) = call.caller.as_deref() else { continue };
+        let mut messages: Vec<&str> = Vec::new();
+        for written in &call.literals {
+            let direct = received
+                .get(type_named(written))
+                .copied()
+                .or_else(|| typed.get(&(caller, written.trim())).and_then(|held| received.get(held).copied()));
+            match direct {
+                Some(message) => messages.push(message),
+                None if sends && !written.contains(['"', '\'', ' ']) => messages.extend(made.get(caller).into_iter().flatten().copied()),
+                None => {}
+            }
+        }
+        messages.sort_unstable();
+        messages.dedup();
+        for message in messages {
+            found.push(ExitPoint {
+                id: format!("exit:{}:{}:{}:published:{message}", files[call.file as usize], call.line, call.column),
+                kind: "message",
+                name: match &call.receiver {
+                    Some(receiver) => format!("{receiver}.{}", call.callee),
+                    None => call.callee.clone(),
+                },
+                source: caller.to_string(),
+                target: message.to_string(),
+                operation: call.callee.clone(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: Some(message.to_string()),
+                service: None,
+                method: None,
+                origin: None,
+                action: None,
+                does: Some("send"),
+            });
+        }
+    }
+    found
+}
+
 pub fn assign(exits: &mut [ExitPoint]) {
     for exit in exits.iter_mut() {
         exit.does = Some(does(exit));

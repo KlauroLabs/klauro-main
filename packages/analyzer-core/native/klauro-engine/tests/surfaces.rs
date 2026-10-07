@@ -85,3 +85,21 @@ fn a_handler_subscribed_to_a_bus_is_entered_by_the_messages_it_receives() {
         "{received:?}"
     );
 }
+
+#[test]
+fn a_message_handed_to_the_bus_is_published_to_whoever_receives_it() {
+    let index = common::read("surfaces");
+    let mut published: Vec<(String, String)> = index["exit_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|exit| exit["kind"] == "message" && exit["source"].as_str().unwrap_or_default().starts_with("Worker/Checkout.cs"))
+        .map(|exit| (exit["source"].as_str().unwrap().rsplit(':').next().unwrap().to_string(), exit["target"].as_str().unwrap().to_string()))
+        .collect();
+    published.sort();
+    assert_eq!(
+        published,
+        vec![("Settle".to_string(), "OrderPaid".to_string()), ("Settle".to_string(), "OrderRefused".to_string())],
+        "both branches publish; logging the message or keeping it in a list publishes nothing"
+    );
+}
