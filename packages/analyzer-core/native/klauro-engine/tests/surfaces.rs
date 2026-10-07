@@ -136,3 +136,23 @@ fn a_field_typed_by_a_constrained_parameter_is_read_as_its_constraint() {
         .expect("the field is a node");
     assert_eq!(field["type_annotation"], "IOrders");
 }
+
+#[test]
+fn each_worker_that_overrides_what_its_base_listens_with_receives_its_own_messages() {
+    let index = common::read("inherited_listener");
+    let mut received: Vec<(String, String)> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "message")
+        .map(|entry| (entry["name"].as_str().unwrap().to_string(), entry["handler"].as_str().unwrap().to_string()))
+        .collect();
+    received.sort();
+    assert_eq!(
+        received,
+        vec![
+            ("InvoiceDue".to_string(), "Refunds.cs:function:HandleEvent@InvoiceWorker".to_string()),
+            ("RefundRequested".to_string(), "Refunds.cs:function:HandleEvent@RefundWorker".to_string()),
+        ]
+    );
+}

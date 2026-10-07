@@ -22,7 +22,7 @@ fn rules() -> &'static [Rule] {
     })
 }
 
-fn words_of(operation: &str) -> Vec<String> {
+pub(crate) fn words_of(operation: &str) -> Vec<String> {
     let bare = operation.rsplit(['.', ':']).next().unwrap_or(operation);
     let bare = bare.strip_suffix("Async").unwrap_or(bare);
     let mut words: Vec<String> = Vec::new();
