@@ -68,3 +68,10 @@ fn a_continuations_callback_stays_inside_the_function_that_started_it() {
     assert!(held("src/worker-manager.js:function:runTask", "src/worker-manager.js:callback:child.on"));
     assert!(held("src/worker-manager.js:function:runTask", "src/worker-manager.js:callback:child.stdout.on"));
 }
+
+#[test]
+fn a_streams_own_events_are_never_entries_wherever_they_are_registered() {
+    let index = index();
+    let events = events(&index);
+    assert!(named(&events, "data").is_none() && named(&events, "end").is_none(), "{events:#?}");
+}

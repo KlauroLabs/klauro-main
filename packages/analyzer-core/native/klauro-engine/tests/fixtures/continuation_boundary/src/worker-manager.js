@@ -23,3 +23,12 @@ function serve() {
     res.end('ok');
   });
 }
+
+function wire(socket) {
+  socket.on('data', (chunk) => {
+    console.log(chunk);
+  });
+  socket.on('end', () => {
+    console.log('closed');
+  });
+}

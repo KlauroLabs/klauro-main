@@ -45,3 +45,13 @@ fn a_one_shot_timers_callback_stays_inside_the_function_that_started_it() {
         "the callback's code stays reachable from the code that scheduled it"
     );
 }
+
+#[test]
+fn a_timer_started_inside_a_flow_it_belongs_to_is_not_an_entry() {
+    let index = index();
+    let entries = schedule_entries(&index);
+    assert!(
+        entries.iter().all(|entry| !entry["handler"].as_str().unwrap_or_default().starts_with("src/lease.js")),
+        "a lease heartbeat started while handling a request is part of that request's flow: {entries:#?}"
+    );
+}

@@ -7,6 +7,12 @@ use crate::names;
 static RUNTIME_EMITTERS: &str = include_str!("../data/runtime_emitters.tsv");
 static HANDLING: &[&str] = &["background", "graphql", "http", "ipc", "message", "rpc", "schedule", "tool", "ui"];
 
+static STREAM_EVENTS: &str = include_str!("../data/stream_events.tsv");
+
+fn a_streams_own_event(name: &str) -> bool {
+    STREAM_EVENTS.lines().any(|held| held == name)
+}
+
 fn emitted_by_the_runtime(registrar: &str) -> bool {
     let Some((receiver, _)) = registrar.rsplit_once('.') else { return false };
     let root = names::root(receiver);
@@ -87,10 +93,15 @@ pub fn fold_into_what_started_them(entry_points: &mut Vec<EntryPoint>, continued
     };
     let folded: HashSet<String> = entry_points
         .iter()
-        .filter(|entry| entry.kind == "event")
+        .filter(|entry| matches!(entry.kind, "event" | "schedule"))
         .filter(|entry| {
             let registered_in = parent_of.get(entry.handler.as_str()).copied();
-            emitted_by_the_runtime(&entry.registrar)
+            if entry.kind == "schedule" {
+                return node_of.get(entry.handler.as_str()).is_some_and(|handler| handler.kind == NodeKind::Variable)
+                    || enclosing_callables(registered_in, &node_of).iter().any(|unit| reached.contains(unit.id.as_str()));
+            }
+            a_streams_own_event(&entry.name)
+                || emitted_by_the_runtime(&entry.registrar)
                 || on_our_own_bus(entry)
                 || registered_in.is_some_and(|unit| reached.contains(unit))
                 || started_by_the_registering_unit(&entry.registrar, registered_in, &node_of, &started)
