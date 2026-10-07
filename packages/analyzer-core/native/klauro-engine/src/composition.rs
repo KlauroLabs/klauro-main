@@ -571,11 +571,11 @@ fn spawnable_names(projects: &[&SubProject], deployables: &[Deployable]) -> Hash
     };
     for project in projects {
         claim(plain_name(&project.name), &project.id);
-        if !project.root.is_empty() {
-            claim(plain_name(basename(&project.root)), &project.id);
-        }
-        for unit in deployables.iter().filter(|unit| !unit.root.is_empty() && unit.root == project.root) {
-            claim(plain_name(&unit.name), &project.id);
+        for root in std::iter::once(&project.root).chain(project.members.iter()).filter(|root| !root.is_empty()) {
+            claim(plain_name(basename(root)), &project.id);
+            for unit in deployables.iter().filter(|unit| unit.root == *root) {
+                claim(plain_name(&unit.name), &project.id);
+            }
         }
     }
     named
@@ -610,7 +610,11 @@ fn path_segments(written: &str) -> Vec<String> {
 fn rooted_projects(projects: &[&SubProject]) -> Vec<(Vec<String>, String)> {
     projects
         .iter()
-        .map(|project| (path_segments(&project.root), project.id.clone()))
+        .flat_map(|project| {
+            std::iter::once(&project.root)
+                .chain(project.members.iter())
+                .map(|root| (path_segments(root), project.id.clone()))
+        })
         .filter(|(segments, _)| segments.len() >= MINIMUM_ROOT_SEGMENTS)
         .collect()
 }

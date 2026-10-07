@@ -29,6 +29,16 @@ pub struct SubProject {
     pub ships_in: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub consumed_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    #[serde(skip)]
+    pub imported_by: Vec<String>,
+    #[serde(skip)]
+    pub published: bool,
+    #[serde(skip)]
+    pub test_files: u32,
+    #[serde(skip)]
+    pub code_files: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +65,8 @@ pub struct Partition {
     pub sub_projects: Vec<SubProject>,
     #[serde(skip)]
     pub assignment: Vec<(String, String)>,
+    #[serde(skip)]
+    pub imports_between: Vec<(String, String, u32)>,
     pub sub_cas_nodes: SubCasNodes,
     pub assigned_declarations: u32,
     pub shared_declarations: u32,
@@ -271,13 +283,16 @@ pub fn derive(
     }
 
     let mut derived = partition(declared, files, nodes, edges, entry_points, code, deployables);
-    for project in derived.sub_projects.iter_mut().filter(|project| project.status == "module" && project.declared_by != "repository-residue") {
-        let published = manifests.iter().any(|(root, manifest)| *root == project.root && publishes_a_package(&children, manifest));
-        if published {
+    for project in derived.sub_projects.iter_mut().filter(|project| project.declared_by != "repository-residue") {
+        project.published = manifests.iter().any(|(root, manifest)| *root == project.root && publishes_a_package(&children, manifest));
+        if project.published && project.status == "module" {
             project.status = "library";
         }
     }
     describe(&mut derived.sub_projects, descriptors);
+    declared_consumers(&mut derived.sub_projects, &manifests, &children);
+    let shells = platform_shells(&derived.sub_projects, &manifests, &children);
+    fold_into_units(&mut derived, shells);
     derived
 }
 
@@ -497,6 +512,11 @@ fn partition(
             status: "module",
             ships_in: Vec::new(),
             consumed_by: Vec::new(),
+            members: Vec::new(),
+            imported_by: Vec::new(),
+            published: false,
+            test_files: 0,
+            code_files: 0,
             owner: None,
             system: None,
             depends_on: Vec::new(),
@@ -507,11 +527,18 @@ fn partition(
         })
         .collect();
 
-    for path in files {
+    for (file, path) in files.iter().enumerate() {
         if let Some(at) = owner(path) {
             sub_projects[at].files += 1;
+            if code.get(file).copied().unwrap_or(false) {
+                sub_projects[at].code_files += 1;
+                if crate::paths::is_test(path) {
+                    sub_projects[at].test_files += 1;
+                }
+            }
         }
     }
+    let mut between: HashMap<(usize, usize), u32> = HashMap::default();
 
     let mut imports: HashMap<&str, Vec<&str>> = HashMap::default();
     for edge in edges {
@@ -526,8 +553,14 @@ fn partition(
             (Some(from), Some(to)) if from == to => sub_projects[from].imports_within += 1,
             (Some(from), to) => {
                 sub_projects[from].imports_crossing += 1;
+                if let Some(to) = to {
+                    *between.entry((from, to)).or_default() += 1;
+                }
                 if let Some(to) = to.filter(|_| !crate::paths::is_test(&edge.source)) {
                     let consumer = sub_projects[from].id.clone();
+                    if !sub_projects[to].imported_by.contains(&consumer) {
+                        sub_projects[to].imported_by.push(consumer.clone());
+                    }
                     let consumed = &mut sub_projects[to].consumed_by;
                     if !consumed.contains(&consumer) {
                         consumed.push(consumer);
@@ -689,6 +722,10 @@ fn partition(
         .into_iter()
         .map(|(path, at)| (path, sub_projects[at].id.clone()))
         .collect();
+    let imports_between: Vec<(String, String, u32)> = between
+        .into_iter()
+        .map(|((from, to), count)| (sub_projects[from].id.clone(), sub_projects[to].id.clone(), count))
+        .collect();
 
     if sub_projects[residue].declarations == 0 {
         let empty = sub_projects.remove(residue).id;
@@ -719,10 +756,253 @@ fn partition(
     };
     Partition {
         assignment,
+        imports_between,
         sub_projects,
         sub_cas_nodes,
         assigned_declarations: assigned,
         shared_declarations: shared,
         unpartitioned_declarations: unpartitioned,
     }
+}
+
+const MADE_OF_TESTS: f64 = 0.7;
+
+fn is_made_of_tests(project: &SubProject) -> bool {
+    project.code_files > 0 && project.test_files as f64 / project.code_files as f64 >= MADE_OF_TESTS
+}
+
+fn unit_of(folded: &HashMap<String, String>, id: &str) -> String {
+    let mut current = id.to_string();
+    while let Some(next) = folded.get(&current) {
+        current = next.clone();
+    }
+    current
+}
+
+fn tested_part(project: &SubProject, between: &[(String, String, u32)], by_id: &HashMap<&str, &SubProject>) -> Option<String> {
+    let mut targets: Vec<(&str, u32)> = between
+        .iter()
+        .filter(|(from, to, _)| *from == project.id && by_id.get(to.as_str()).is_some_and(|held| !is_made_of_tests(held)))
+        .map(|(_, to, count)| (to.as_str(), *count))
+        .collect();
+    if targets.is_empty() {
+        targets = by_id
+            .values()
+            .filter(|held| !is_made_of_tests(held) && held.imported_by.contains(&project.id))
+            .map(|held| (held.id.as_str(), 0))
+            .collect();
+    }
+    targets.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(right.0)));
+    targets.first().map(|(to, _)| to.to_string())
+}
+
+fn ships_within(project: &SubProject, host: &SubProject) -> bool {
+    project.ships_in.iter().all(|unit| host.ships_in.contains(unit))
+}
+
+pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>) {
+    let mut folded: HashMap<String, String> = shells.into_iter().collect();
+    {
+        let by_id: HashMap<&str, &SubProject> = partition.sub_projects.iter().map(|project| (project.id.as_str(), project)).collect();
+        for project in partition.sub_projects.iter().filter(|project| !project.root.is_empty() && is_made_of_tests(project)) {
+            if let Some(target) = tested_part(project, &partition.imports_between, &by_id) {
+                folded.insert(project.id.clone(), target);
+            }
+        }
+        loop {
+            let mut found = None;
+            for project in &partition.sub_projects {
+                if project.root.is_empty() || project.published || folded.contains_key(&project.id) || is_made_of_tests(project) {
+                    continue;
+                }
+                let mut consumers: Vec<String> = project
+                    .imported_by
+                    .iter()
+                    .filter(|consumer| by_id.get(consumer.as_str()).is_some_and(|held| !is_made_of_tests(held)))
+                    .map(|consumer| unit_of(&folded, consumer))
+                    .filter(|consumer| *consumer != project.id)
+                    .collect();
+                consumers.sort();
+                consumers.dedup();
+                let [host] = consumers.as_slice() else { continue };
+                let Some(held) = by_id.get(host.as_str()) else { continue };
+                if ships_within(project, held) {
+                    found = Some((project.id.clone(), host.clone()));
+                    break;
+                }
+            }
+            match found {
+                Some((from, to)) => {
+                    folded.insert(from, to);
+                }
+                None => break,
+            }
+        }
+    }
+    if folded.is_empty() {
+        return;
+    }
+    let units: HashMap<String, String> = folded.keys().map(|id| (id.clone(), unit_of(&folded, id))).collect();
+    let mut absorbed: Vec<SubProject> = Vec::new();
+    let mut kept: Vec<SubProject> = Vec::new();
+    for project in partition.sub_projects.drain(..) {
+        match units.contains_key(&project.id) {
+            true => absorbed.push(project),
+            false => kept.push(project),
+        }
+    }
+    for member in absorbed {
+        let host_id = &units[&member.id];
+        let Some(host) = kept.iter_mut().find(|project| project.id == *host_id) else { continue };
+        host.files += member.files;
+        host.test_files += member.test_files;
+        host.code_files += member.code_files;
+        host.declarations += member.declarations;
+        host.entry_points += member.entry_points;
+        host.imports_within += member.imports_within;
+        host.runnable |= member.runnable;
+        host.ship_backed |= member.ship_backed;
+        for unit in member.ships_in {
+            if !host.ships_in.contains(&unit) {
+                host.ships_in.push(unit);
+            }
+        }
+        host.members.push(member.root);
+        host.members.extend(member.members);
+    }
+    for project in kept.iter_mut() {
+        let own = project.id.clone();
+        let mut consumers: Vec<String> = project
+            .consumed_by
+            .iter()
+            .map(|consumer| units.get(consumer).cloned().unwrap_or_else(|| consumer.clone()))
+            .filter(|consumer| *consumer != own)
+            .collect();
+        consumers.sort();
+        consumers.dedup();
+        project.consumed_by = consumers;
+        project.members.sort();
+        project.ships_in.sort();
+    }
+    for (_, id) in partition.assignment.iter_mut() {
+        if let Some(unit) = units.get(id.as_str()) {
+            *id = unit.clone();
+        }
+    }
+    let mut between: HashMap<(String, String), u32> = HashMap::default();
+    for (from, to, count) in partition.imports_between.drain(..) {
+        let from = units.get(&from).cloned().unwrap_or(from);
+        let to = units.get(&to).cloned().unwrap_or(to);
+        if from != to {
+            *between.entry((from, to)).or_default() += count;
+        }
+    }
+    partition.imports_between = between.into_iter().map(|((from, to), count)| (from, to, count)).collect();
+    partition.sub_projects = kept;
+    partition.sub_cas_nodes.qualified = partition.sub_projects.len() as u32;
+    partition.sub_cas_nodes.promoted = partition.sub_projects.len() >= PROMOTION_THRESHOLD;
+}
+
+static DEPENDENCY_SECTIONS: &[&str] = &["dependencies", "optionalDependencies", "peerDependencies"];
+
+fn descendants<'a>(children: &HashMap<&'a str, Vec<&'a IndexNode>>, id: &str) -> Vec<&'a IndexNode> {
+    let mut found = Vec::new();
+    let mut pending: Vec<&IndexNode> = children.get(id).cloned().unwrap_or_default();
+    while let Some(node) = pending.pop() {
+        found.push(node);
+        if let Some(inner) = children.get(node.id.as_str()) {
+            pending.extend(inner.iter().copied());
+        }
+    }
+    found
+}
+
+fn depended_names<'a>(children: &HashMap<&'a str, Vec<&'a IndexNode>>, manifest: &str) -> Vec<String> {
+    let Some(document) = children.get(manifest) else { return Vec::new() };
+    document
+        .iter()
+        .filter(|node| DEPENDENCY_SECTIONS.contains(&node.name.as_str()))
+        .flat_map(|section| children.get(section.id.as_str()).cloned().unwrap_or_default())
+        .map(|dependency| dependency.name.clone())
+        .collect()
+}
+
+fn referenced_projects<'a>(children: &HashMap<&'a str, Vec<&'a IndexNode>>, manifest: &str) -> Vec<String> {
+    let folder = directory_of(manifest);
+    descendants(children, manifest)
+        .into_iter()
+        .filter(|node| node.name == "ProjectReference")
+        .filter_map(|reference| children.get(reference.id.as_str())?.iter().find(|attribute| attribute.name == "Include").and_then(|attribute| scalar(attribute)))
+        .map(|written| directory_of(&crate::paths::join(folder, &written.replace('\\', "/"))).to_string())
+        .collect()
+}
+
+fn declared_consumers(sub_projects: &mut [SubProject], manifests: &[(String, String)], children: &HashMap<&str, Vec<&IndexNode>>) {
+    let by_name: HashMap<String, usize> = sub_projects
+        .iter()
+        .enumerate()
+        .filter(|(_, project)| !project.root.is_empty())
+        .map(|(at, project)| (project.name.clone(), at))
+        .collect();
+    let by_root: HashMap<String, usize> = sub_projects.iter().enumerate().map(|(at, project)| (project.root.clone(), at)).collect();
+    let mut found: Vec<(usize, String)> = Vec::new();
+    for (consumer, project) in sub_projects.iter().enumerate() {
+        for (_, manifest) in manifests.iter().filter(|(root, _)| *root == project.root) {
+            for name in depended_names(children, manifest) {
+                if let Some(at) = by_name.get(&name).filter(|at| **at != consumer) {
+                    found.push((*at, sub_projects[consumer].id.clone()));
+                }
+            }
+            for root in referenced_projects(children, manifest) {
+                if let Some(at) = by_root.get(&root).filter(|at| **at != consumer) {
+                    found.push((*at, sub_projects[consumer].id.clone()));
+                }
+            }
+        }
+    }
+    for (at, consumer) in found {
+        let project = &mut sub_projects[at];
+        if !project.imported_by.contains(&consumer) {
+            project.imported_by.push(consumer.clone());
+        }
+        if !project.consumed_by.contains(&consumer) {
+            project.consumed_by.push(consumer);
+        }
+    }
+}
+
+static PLATFORM_SHELLS: &str = include_str!("../data/platform_shells.tsv");
+
+fn shell_folders(framework: &str) -> Vec<&'static str> {
+    PLATFORM_SHELLS
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(named, _)| *named == framework)
+        .flat_map(|(_, folders)| folders.split(','))
+        .collect()
+}
+
+fn platform_shells(sub_projects: &[SubProject], manifests: &[(String, String)], children: &HashMap<&str, Vec<&IndexNode>>) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for outer in sub_projects.iter().filter(|project| !project.root.is_empty()) {
+        let folders: Vec<&str> = manifests
+            .iter()
+            .filter(|(root, _)| *root == outer.root)
+            .flat_map(|(_, manifest)| depended_names(children, manifest))
+            .flat_map(|framework| shell_folders(&framework))
+            .collect();
+        if folders.is_empty() {
+            continue;
+        }
+        for inner in sub_projects.iter().filter(|project| project.id != outer.id) {
+            let held = folders.iter().any(|folder| {
+                let shell = format!("{}/{folder}", outer.root);
+                inner.root == shell || inner.root.starts_with(&format!("{shell}/"))
+            });
+            if held {
+                found.push((inner.id.clone(), outer.id.clone()));
+            }
+        }
+    }
+    found
 }

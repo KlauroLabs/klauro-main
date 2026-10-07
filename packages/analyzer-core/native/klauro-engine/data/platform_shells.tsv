@@ -1,0 +1,5 @@
+flutter	android,ios,macos,linux,windows,web
+react-native	android,ios
+expo	android,ios
+@capacitor/core	android,ios,electron
+@nativescript/core	App_Resources

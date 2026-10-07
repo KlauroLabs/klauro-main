@@ -261,7 +261,16 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
         .map(|(at, project)| (at, project.root.as_str()))
         .collect();
     let residue = partition.sub_projects.iter().position(|project| project.root.is_empty());
+    let index_of: std::collections::HashMap<&str, usize> = partition.sub_projects.iter().enumerate().map(|(at, project)| (project.id.as_str(), at)).collect();
+    let assigned: std::collections::HashMap<&str, usize> = partition
+        .assignment
+        .iter()
+        .filter_map(|(path, id)| index_of.get(id.as_str()).map(|at| (path.as_str(), *at)))
+        .collect();
     let deepest = |path: &str| -> Option<usize> {
+        if let Some(at) = assigned.get(path) {
+            return Some(*at);
+        }
         roots
             .iter()
             .filter(|(_, root)| contains(root, path))
@@ -388,6 +397,11 @@ mod tests {
             status,
             ships_in: Vec::new(),
             consumed_by: Vec::new(),
+            members: Vec::new(),
+            imported_by: Vec::new(),
+            published: false,
+            test_files: 0,
+            code_files: 0,
             owner: None,
             system: None,
             depends_on: Vec::new(),

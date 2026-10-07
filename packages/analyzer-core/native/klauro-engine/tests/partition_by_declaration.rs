@@ -16,7 +16,7 @@ fn project<'a>(all: &'a [Value], root: &str) -> &'a Value {
 #[test]
 fn a_package_built_into_a_whole_repository_image_is_still_its_own_sub_project() {
     let all = projects("partition_whole");
-    for root in ["packages/a", "packages/b", "packages/b/native/crate", "packages/c", "packages/d"] {
+    for root in ["packages/b", "packages/b/native/crate", "packages/c", "packages/d"] {
         project(&all, root);
     }
     assert!(all.iter().all(|part| part["ship_backed"] == false), "copying everything names no project: {all:?}");
@@ -29,7 +29,7 @@ fn a_nested_crate_is_its_own_sub_project_and_takes_its_own_files() {
     let inner = project(&all, "packages/b/native/crate");
     assert_eq!(outer["declared_by"], "workspace-member");
     assert_eq!(inner["declared_by"], "module-manifest");
-    assert_eq!(outer["files"], 2);
+    assert_eq!(outer["files"], 4, "it holds its own files and the package only it uses");
     assert_eq!(inner["files"], 2);
     assert_eq!(inner["declarations"], 1);
 }
@@ -37,11 +37,10 @@ fn a_nested_crate_is_its_own_sub_project_and_takes_its_own_files() {
 #[test]
 fn packages_the_image_names_one_by_one_are_deployables_and_the_rest_are_not() {
     let all = projects("partition_named");
-    for root in ["packages/a", "packages/b"] {
-        let part = project(&all, root);
-        assert_eq!(part["ship_backed"], true, "{root}");
-        assert_eq!(part["status"], "deployable", "{root}");
-    }
+    let part = project(&all, "packages/b");
+    assert_eq!(part["ship_backed"], true);
+    assert_eq!(part["status"], "deployable");
+    assert_eq!(part["members"], serde_json::json!(["packages/a"]), "the package only it uses ships inside it");
     for root in ["packages/b/native/crate", "packages/c", "packages/d"] {
         assert_eq!(project(&all, root)["ship_backed"], false, "{root}");
     }
@@ -63,7 +62,8 @@ fn a_dockerfile_that_copies_one_package_makes_only_that_package_a_deployable() {
 fn a_project_is_labelled_by_what_it_does_not_by_a_stored_type() {
     let all = projects("partition_whole");
     assert_eq!(project(&all, "packages/c")["status"], "executable", "it starts and nothing ships it");
-    assert_eq!(project(&all, "packages/a")["status"], "library", "another project imports into it");
+    assert!(all.iter().all(|part| part["root"] != "packages/a"), "a package only one part uses is a component of that part");
+    assert_eq!(project(&all, "packages/b")["members"], serde_json::json!(["packages/a"]));
     assert_eq!(project(&all, "packages/d")["status"], "module", "declared, owned, not reached");
     assert_eq!(project(&all, "packages/b")["status"], "module");
 }
