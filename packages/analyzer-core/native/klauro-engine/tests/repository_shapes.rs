@@ -49,3 +49,10 @@ fn a_bare_server_serves_every_request() {
     assert_eq!(only_part(&index)["role"], "service");
     assert_eq!(entries(&index, "http"), vec!["/*"]);
 }
+
+#[test]
+fn what_a_command_prints_is_its_output() {
+    let index = common::read("shape_cli");
+    let printed = index["exit_points"].as_array().unwrap().iter().filter(|exit| exit["kind"] == "output").count();
+    assert_eq!(printed, 1, "the list command prints the notes");
+}

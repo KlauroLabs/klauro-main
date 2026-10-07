@@ -12,6 +12,7 @@ mod comprehend;
 mod composition;
 mod confidence;
 mod continuations;
+mod outputs;
 mod parent;
 mod conflicts;
 mod conform;
@@ -84,6 +85,7 @@ mod shared;
 mod service_catalog;
 mod shapes;
 mod services;
+mod surfaces;
 mod tables;
 mod told_paths;
 mod injection;
@@ -924,6 +926,15 @@ fn read_it() {
             node.project = Some((*project).to_string());
         }
     }
+    let offered = surfaces::offered_to_other_parts(&partition, &index.nodes, &index.edges, &index.entry_points, &paths);
+    index.entry_points.extend(offered);
+    let emitted = outputs::written_to_standard_output(&outputs::Sources {
+        calls: &index.calls,
+        locals: &index.locals,
+        edges: &index.edges,
+        entry_points: &index.entry_points,
+    });
+    index.exit_points.extend(emitted);
     eprintln!(
         "partition {:?} | sub-projects {} | promoted {} | assigned {} shared {} unpartitioned {}",
         partition_started.elapsed(),

@@ -60,3 +60,16 @@ fn a_program_its_host_never_runs_is_a_unit_of_its_own() {
     assert_eq!(client["role"], "tool");
     assert_eq!(client["files"], 2, "the command line and what only it runs: {client:#?}");
 }
+
+#[test]
+fn a_library_part_offers_what_other_parts_use() {
+    let index = common::read("units_library");
+    let offered: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "export")
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, vec!["formatName"]);
+}
