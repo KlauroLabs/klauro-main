@@ -58,3 +58,9 @@ fn a_call_through_a_service_client_reaches_that_service() {
     assert!(reached.iter().all(|(kind, _)| kind == "api"), "{reached:?}");
     assert!(reached.iter().any(|(_, operation)| operation.ends_with("expire")), "{reached:?}");
 }
+
+#[test]
+fn an_address_used_as_a_key_in_code_that_never_reaches_the_network_names_no_service() {
+    let found = services("services_claim_key");
+    assert!(!found.contains_key("Stripe"), "{:?}", found.keys().collect::<Vec<_>>());
+}

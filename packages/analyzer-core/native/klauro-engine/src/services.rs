@@ -285,6 +285,8 @@ pub fn derive(sources: &Sources) -> Found {
         }
     }
 
+    let reaches_the_network: HashSet<u32> =
+        sources.exits.iter().filter(|exit| matches!(exit.kind, "api" | "network")).map(|exit| exit.file).collect();
     let mut exits_at: HashMap<(u32, u32), Vec<&ExitPoint>> = HashMap::default();
     for exit in sources.exits.iter().filter(|exit| !tested_at(exit.file, exit.line)) {
         exits_at.entry((exit.file, exit.line)).or_default().push(exit);
@@ -334,7 +336,7 @@ pub fn derive(sources: &Sources) -> Found {
             if a_page_for_people(literal, &address) {
                 continue;
             }
-            if let Some(known) = service_catalog::by_host(host) {
+            if let Some(known) = service_catalog::by_host(host).filter(|_| exits.is_some() || reaches_the_network.contains(&call.file)) {
                 gathering.note(known, "endpoint", literal, Some(call.file), call.line);
                 reached(&mut gathering, known.name);
             } else if exits.is_some_and(|exits| exits.iter().any(|exit| exit.kind == "api"))
