@@ -45,3 +45,15 @@ fn a_call_through_a_data_context_is_a_call_to_the_database() {
         .collect();
     assert_eq!(kept, vec!["ToListAsync PostgreSQL"]);
 }
+
+#[test]
+fn a_part_is_described_by_its_components_and_the_style_they_form() {
+    let index = common::read("layers");
+    let shape = &index["architecture"]["projects"][0]["shape"];
+    let labels: Vec<&str> = shape["components"].as_array().unwrap().iter().map(|component| component["label"].as_str().unwrap()).collect();
+    for wanted in ["endpoints that take requests", "services", "repositories", "database context"] {
+        assert!(labels.contains(&wanted), "{wanted} in {labels:?}");
+    }
+    let styles: Vec<&str> = shape["styles"].as_array().unwrap().iter().map(|style| style["style"].as_str().unwrap()).collect();
+    assert!(styles.contains(&"layered"), "{styles:?}");
+}

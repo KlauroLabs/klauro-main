@@ -28,6 +28,11 @@ pub struct ProjectArchitecture {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
     pub serves: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub frameworks: Vec<String>,
+    pub shape: crate::components::Shape,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narrative: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +130,14 @@ pub fn derive(
             found.sort_by(|left, right| {
                 left.path.cmp(&right.path).then(left.method.cmp(&right.method))
             });
+            let mut frameworks: Vec<String> = dependencies
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.role == "framework" && (dependency.imports > 0 || dependency.declared) && dependency.projects.iter().any(|held| held == id))
+                .map(|dependency| dependency.name.clone())
+                .collect();
+            frameworks.sort();
+            frameworks.dedup();
             ProjectArchitecture {
                 project: project.id.clone(),
                 name: project.name.clone(),
@@ -133,6 +146,9 @@ pub fn derive(
                 categories: named,
                 routes: found,
                 serves,
+                frameworks,
+                shape: crate::components::Shape::default(),
+                narrative: None,
             }
         })
         .collect();

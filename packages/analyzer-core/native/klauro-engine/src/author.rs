@@ -775,6 +775,30 @@ struct PartDescribed {
     summary: String,
 }
 
+#[derive(Deserialize)]
+struct ArchitectureDescribed {
+    narrative: String,
+}
+
+pub fn describe_architecture(facts: &str, name: &str) -> Option<String> {
+    if !asked() {
+        return None;
+    }
+    let prompt = format!(
+        "These are the facts read about how one part of a software system is built. The part is called \"{name}\".\n\n{facts}\n\n\
+         Write two to four sentences a person new to the team understands, saying how this part is put together: its \
+         architectural style, its main components and how work passes between them, the domain modules if there are \
+         any, and what it is built on. When stages are listed, group them into the few phases a reader would name and \
+         give those phases in order. Use plain words for what each component does, never class names, file names, \
+         paths or package names. Say only what the facts show, and never name a product, vendor or technology the \
+         facts do not name.\n\n\
+         Return JSON only: {{\"narrative\":\"...\"}}"
+    );
+    let described: ArchitectureDescribed = answered(&prompt, 900, &proposing(), "narrative", 1, DESCRIBING_ASK)?;
+    let narrative = described.narrative.trim().to_string();
+    (!narrative.is_empty()).then_some(narrative)
+}
+
 pub fn describe_a_part(facts: &str, name: &str) -> Option<String> {
     if !asked() {
         return None;
@@ -1364,8 +1388,13 @@ fn shaped(of: &str) -> serde_json::Value {
         }),
         "summary" => serde_json::json!({
             "type": "object",
-            "properties": {"name": text, "summary": text},
-            "required": ["name", "summary"],
+            "properties": {"summary": text},
+            "required": ["summary"],
+        }),
+        "narrative" => serde_json::json!({
+            "type": "object",
+            "properties": {"narrative": text},
+            "required": ["narrative"],
         }),
         "placed" => serde_json::json!({
             "type": "object",
