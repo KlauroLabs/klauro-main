@@ -11,6 +11,8 @@ pub struct Dependency {
     pub role: &'static str,
     pub category: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
@@ -499,6 +501,7 @@ pub fn derive(
             let standard = known.is_none() && runtime_of(language, package);
             Dependency {
                 name: package.to_string(),
+                family: known.map(|found| found.prefix),
                 version: None,
                 declared: false,
                 decided_by: None,
@@ -557,6 +560,7 @@ pub fn derive(
             let known = classify(name);
             Dependency {
                 name: name.clone(),
+                family: known.map(|found| found.prefix),
                 version: None,
                 declared: false,
                 decided_by: None,
@@ -720,6 +724,21 @@ pub fn file_project(assignment: &[(String, String)]) -> HashMap<&str, &str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn declared_packages_belong_to_the_part_whose_manifest_declares_them_under_their_framework_family() {
+        let manifested = vec![
+            ("@nestjs/core".to_string(), None, "api/package.json".to_string()),
+            ("@nestjs/common".to_string(), None, "api/package.json".to_string()),
+        ];
+        let project_of: super::HashMap<&str, &str> = [("api/package.json", "subproject:api")].into_iter().collect();
+        let found = super::derive(&[], &manifested, &Default::default(), &Default::default(), &[], &[], &[], &[], &project_of);
+        for dependency in &found.dependencies {
+            assert_eq!(dependency.family, Some("@nestjs"));
+            assert_eq!(dependency.projects, vec!["subproject:api".to_string()]);
+        }
+        assert_eq!(found.dependencies.len(), 2);
+    }
+
     #[test]
     fn a_package_whose_name_runs_past_ascii_is_read_whole() {
         assert!(!super::named_as("—dash", "re"));

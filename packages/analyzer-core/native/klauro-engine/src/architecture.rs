@@ -134,7 +134,7 @@ pub fn derive(
                 .dependencies
                 .iter()
                 .filter(|dependency| dependency.role == "framework" && (dependency.imports > 0 || dependency.declared) && dependency.projects.iter().any(|held| held == id))
-                .map(|dependency| dependency.name.clone())
+                .map(|dependency| dependency.family.unwrap_or(&dependency.name).to_string())
                 .collect();
             frameworks.sort();
             frameworks.dedup();
