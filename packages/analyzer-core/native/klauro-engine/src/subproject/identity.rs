@@ -22,6 +22,7 @@ pub struct Facts<'a> {
     pub repository: &'a str,
     pub scope: &'a str,
     pub deployables: &'a [crate::scope::Deployable],
+    pub spelled: &'a BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -165,6 +166,27 @@ fn words_of(declared: &str) -> Vec<String> {
         }
     }
     words
+}
+
+pub fn spellings<'t>(texts: impl Iterator<Item = &'t str>) -> BTreeMap<String, String> {
+    let mut seen: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for text in texts {
+        for word in text.split(|letter: char| !letter.is_ascii_alphanumeric()).filter(|word| (2..=6).contains(&word.len())) {
+            if !word.chars().next().is_some_and(|letter| letter.is_ascii_alphabetic()) {
+                continue;
+            }
+            let held = seen.entry(word.to_ascii_lowercase()).or_default();
+            match word.chars().all(|letter| letter.is_ascii_uppercase() || letter.is_ascii_digit()) {
+                true => held.0 += 1,
+                false => held.1 += 1,
+            }
+        }
+    }
+    seen.into_iter().filter(|(_, (capitals, other))| *capitals > *other).map(|(word, _)| (word.clone(), word.to_ascii_uppercase())).collect()
+}
+
+fn as_spelled(name: &str, spelled: &BTreeMap<String, String>) -> String {
+    name.split(' ').map(|word| spelled.get(&word.to_ascii_lowercase()).cloned().unwrap_or_else(|| word.to_string())).collect::<Vec<_>>().join(" ")
 }
 
 fn readable(words: &[String]) -> String {
@@ -394,7 +416,7 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
                 let alone = partition.sub_projects.len() == 1;
                 let name = match (project.root.is_empty(), *kind, alone) {
                     (true, "tooling", false) => "Repository tooling".to_string(),
-                    _ => plain_name(project, facts.repository),
+                    _ => as_spelled(&plain_name(project, facts.repository), facts.spelled),
                 };
                 (name, *kind)
             })
@@ -487,6 +509,14 @@ mod tests {
         let mut held = Tally::default();
         held.entries = entries.iter().copied().collect();
         held
+    }
+
+    #[test]
+    fn a_word_keeps_the_capitals_the_repository_writes_it_in() {
+        let spelled = spellings(["The MCP server and the CLI talk to the API. Run the CLI.", "MCP tools; cli flags; CLI help"].into_iter());
+        assert_eq!(as_spelled("Mcp server", &spelled), "MCP server");
+        assert_eq!(as_spelled("Immich cli", &spelled), "Immich CLI");
+        assert_eq!(as_spelled("Order processor", &spelled), "Order processor");
     }
 
     #[test]

@@ -449,6 +449,8 @@ fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {
 
 const ROOM_TO_DESCEND: usize = 256 << 20;
 
+const SPELLING_DOCUMENTS: usize = 400;
+
 fn main() {
     rayon::ThreadPoolBuilder::new()
         .num_threads(budget::pool_size())
@@ -1519,6 +1521,14 @@ fn read_it() {
     }
     if let Some(partition) = index.partition.as_mut() {
         let repository = root.file_name().and_then(|held| held.to_str()).unwrap_or_default();
+        let written: Vec<String> = index
+            .files
+            .iter()
+            .filter(|file| file.path.to_ascii_lowercase().ends_with(".md") && !crate::paths::is_test(&file.path))
+            .take(SPELLING_DOCUMENTS)
+            .filter_map(|file| crate::paths::read_inside(&root, &file.path))
+            .collect();
+        let spelled = subproject::identity::spellings(written.iter().map(String::as_str));
         let facts = subproject::identity::Facts {
             files: index.files.iter().map(|file| (file.path.as_str(), file.language)).collect(),
             entry_points: &index.entry_points,
@@ -1528,6 +1538,7 @@ fn read_it() {
             repository,
             scope: &scope,
             deployables: index.scope.as_ref().map(|held| held.deployables.as_slice()).unwrap_or(&[]),
+            spelled: &spelled,
         };
         subproject::identity::assign(partition, &facts);
         for project in &partition.sub_projects {
