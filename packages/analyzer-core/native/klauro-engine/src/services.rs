@@ -174,10 +174,10 @@ fn installed_package(literal: &str) -> Option<&str> {
         None if literal.starts_with('@') && !literal.contains('.') => literal,
         None => return None,
     };
-    let mut segments = installed.split('/').filter(|segment| !segment.is_empty());
-    let first = segments.next()?;
-    match (first.starts_with('@'), segments.next()) {
-        (true, Some(name)) => Some(&installed[..first.len() + 1 + name.len()]),
+    let mut segments = installed.split('/');
+    let first = segments.next().filter(|first| !first.is_empty())?;
+    match (first.starts_with('@'), segments.next().filter(|name| !name.is_empty())) {
+        (true, Some(name)) => installed.get(..first.len() + 1 + name.len()),
         _ => Some(first),
     }
 }
@@ -549,6 +549,8 @@ mod tests {
         assert_eq!(installed_package("@openai"), Some("@openai"));
         assert_eq!(installed_package("me@openai.com"), None);
         assert_eq!(installed_package("run the installer"), None);
+        assert_eq!(installed_package("node_modules/@a//é"), Some("@a"));
+        assert_eq!(installed_package("node_modules/@é/ü/bin"), Some("@é/ü"));
     }
 
     #[test]
