@@ -64,3 +64,10 @@ fn an_address_used_as_a_key_in_code_that_never_reaches_the_network_names_no_serv
     let found = services("services_claim_key");
     assert!(!found.contains_key("Stripe"), "{:?}", found.keys().collect::<Vec<_>>());
 }
+
+#[test]
+fn a_program_launched_from_an_installed_package_names_its_vendor() {
+    let found = services("services_launched");
+    assert!(found.get("Stripe").is_some_and(|stripe| evidenced(stripe, "program") > 0), "{:?}", found.keys().collect::<Vec<_>>());
+    assert!(!found.contains_key("Sentry"), "a scope named in a lookup is no program: {:?}", found.keys().collect::<Vec<_>>());
+}

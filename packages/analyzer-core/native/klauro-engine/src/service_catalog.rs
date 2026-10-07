@@ -235,7 +235,7 @@ pub static SERVICES: &[Known] = &[
     known("Cloudflare R2", "storage", &[], &["r2.cloudflarestorage.com"], &[], &[], &["R2_"]),
     known("Vercel Blob", "storage", &["@vercel/blob"], &["blob.vercel-storage.com"], &[], &[], &["BLOB_READ_WRITE"]),
     known("OpenAI", "ai",
-        &["openai", "OpenAI", "Azure.AI.OpenAI", "github.com/sashabaranov/go-openai", "async-openai", "ruby-openai",
+        &["openai", "@openai", "OpenAI", "Azure.AI.OpenAI", "github.com/sashabaranov/go-openai", "async-openai", "ruby-openai",
           "@ai-sdk/openai"],
         &["openai.com", "openai.azure.com"], &[], &[], &["OPENAI_", "AZURE_OPENAI"]),
     known("Anthropic", "ai", &["@anthropic-ai", "anthropic", "Anthropic", "@ai-sdk/anthropic"], &["anthropic.com"],

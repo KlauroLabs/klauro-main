@@ -164,6 +164,24 @@ pub fn address_in(text: &str) -> Option<Address<'_>> {
     Some(Address { scheme, host })
 }
 
+fn installed_package(literal: &str) -> Option<&str> {
+    let literal = literal.trim();
+    if literal.contains(char::is_whitespace) {
+        return None;
+    }
+    let installed = match literal.split_once("node_modules/") {
+        Some((_, rest)) => rest,
+        None if literal.starts_with('@') && !literal.contains('.') => literal,
+        None => return None,
+    };
+    let mut segments = installed.split('/').filter(|segment| !segment.is_empty());
+    let first = segments.next()?;
+    match (first.starts_with('@'), segments.next()) {
+        (true, Some(name)) => Some(&installed[..first.len() + 1 + name.len()]),
+        _ => Some(first),
+    }
+}
+
 fn holds_a_connection(value: &str) -> bool {
     value.contains("://") || value.split(';').filter(|pair| pair.split_once('=').is_some_and(|(key, held)| !key.trim().is_empty() && !held.trim().is_empty())).count() >= 2
 }
@@ -299,7 +317,26 @@ pub fn derive(sources: &Sources) -> Found {
         }
     }
 
+    let launching: HashSet<&str> = sources
+        .exits
+        .iter()
+        .filter(|exit| exit.kind == "process" && !tested_at(exit.file, exit.line))
+        .filter_map(|exit| gathering.project_of_file.get(&exit.file).copied())
+        .collect();
+    let into_installed_packages: HashSet<(u32, &str)> = sources
+        .calls
+        .iter()
+        .filter(|call| call.literals.iter().any(|literal| literal.contains("node_modules")))
+        .map(|call| (call.file, call.caller.as_deref().unwrap_or("")))
+        .collect();
     for call in sources.calls.iter().filter(|call| !tested_at(call.file, call.line)) {
+        let launches_programs = gathering.project_of_file.get(&call.file).is_some_and(|project| launching.contains(project));
+        for literal in call.literals.iter().filter(|_| launches_programs) {
+            let pathed = literal.contains("node_modules/") || into_installed_packages.contains(&(call.file, call.caller.as_deref().unwrap_or("")));
+            if let Some(known) = installed_package(literal).filter(|_| pathed).and_then(service_catalog::by_package) {
+                gathering.note(known, "program", literal, Some(call.file), call.line);
+            }
+        }
         let asks_the_environment = ASKS_THE_ENVIRONMENT
             .contains(&crate::names::leaf(&call.callee).to_ascii_lowercase().as_str())
             && call.receiver.as_deref().is_some_and(|within| {
@@ -503,6 +540,15 @@ mod tests {
         let held = address_in("redis://${REDIS_HOST}:6379").unwrap();
         assert_eq!((held.scheme, held.host), ("redis", None));
         assert!(address_in("no address here").is_none());
+    }
+
+    #[test]
+    fn a_path_into_an_installed_package_names_the_package() {
+        assert_eq!(installed_package("node_modules/@anthropic-ai/claude-agent-sdk-win32-x64"), Some("@anthropic-ai/claude-agent-sdk-win32-x64"));
+        assert_eq!(installed_package("engines/node_modules/stripe/bin/cli.js"), Some("stripe"));
+        assert_eq!(installed_package("@openai"), Some("@openai"));
+        assert_eq!(installed_package("me@openai.com"), None);
+        assert_eq!(installed_package("run the installer"), None);
     }
 
     #[test]
