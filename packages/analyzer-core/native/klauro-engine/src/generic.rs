@@ -692,6 +692,10 @@ impl<'a> Extractor<'a> {
     }
 
     fn written_type(&self, node: Node, written: String) -> String {
+        if matches!(self.spec.id, "csharp" | "java") {
+            let held = bounds::constrained_in_scope(self.source, node);
+            return if held.is_empty() { written } else { bounds::constrained(&written, &held) };
+        }
         if self.spec.id != "rust" {
             return written;
         }

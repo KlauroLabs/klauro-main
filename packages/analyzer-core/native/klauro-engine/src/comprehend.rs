@@ -2323,7 +2323,7 @@ pub fn derive(
     }
 
     fn names_a_surface(entry: &EntryPoint) -> bool {
-        if entry.kind == "schedule" && !crate::entry_exit::recurring(&entry.registrar) {
+        if !crate::entry_exit::recurs(entry) {
             return false;
         }
         if !matches!(entry.kind, "event" | "message" | "schedule") {

@@ -119,4 +119,20 @@ fn background_work_that_waits_on_a_timer_in_a_loop_runs_on_a_schedule() {
     assert_eq!(kind_of("Worker/Reminders.cs"), "schedule");
     assert_eq!(kind_of("Worker/Nightly.cs"), "schedule", "a scheduler's job runs on its schedule");
     assert_eq!(kind_of("Worker/GracePeriod.cs"), "background");
+    let flows: Vec<&str> = index["comprehension"]["flows"].as_array().unwrap().iter().filter_map(|flow| flow["entry_point"].as_str()).collect();
+    for scheduled in ["Worker/Reminders.cs", "Worker/Nightly.cs"] {
+        assert!(flows.iter().any(|entry| entry.contains(scheduled)), "{scheduled} runs as a flow: {flows:?}");
+    }
+}
+
+#[test]
+fn a_field_typed_by_a_constrained_parameter_is_read_as_its_constraint() {
+    let index = common::read("surfaces");
+    let field = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == "Worker/Pump.cs:field:_worker")
+        .expect("the field is a node");
+    assert_eq!(field["type_annotation"], "IOrders");
 }

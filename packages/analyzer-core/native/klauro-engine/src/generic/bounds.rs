@@ -90,3 +90,64 @@ pub(super) fn bounded(written: &str, bounds: &[(String, String)]) -> String {
     flush(&mut word, &mut spoken);
     spoken
 }
+
+static DECLARES_PARAMETERS: &[&str] = &[
+    "class_declaration",
+    "interface_declaration",
+    "method_declaration",
+    "record_declaration",
+    "struct_declaration",
+];
+static NOT_A_TYPE: &[&str] = &["class", "default", "new()", "notnull", "struct", "unmanaged"];
+
+fn first_named_bound<'s>(written: impl Iterator<Item = &'s str>) -> Option<String> {
+    written
+        .map(str::trim)
+        .find(|bound| !bound.is_empty() && !NOT_A_TYPE.contains(bound) && bound.starts_with(char::is_uppercase))
+        .map(str::to_string)
+}
+
+fn declared_constraints(source: &[u8], item: Node, held: &mut Vec<(String, String)>) {
+    let mut cursor = item.walk();
+    for child in item.named_children(&mut cursor) {
+        match child.kind() {
+            "type_parameter_constraints_clause" => {
+                let written = text(source, child).trim().trim_start_matches("where").trim();
+                if let Some((name, bounds)) = written.split_once(':')
+                    && let Some(bound) = first_named_bound(bounds.split(','))
+                {
+                    held.push((name.trim().to_string(), bound));
+                }
+            }
+            "type_parameters" => {
+                let mut inner = child.walk();
+                for parameter in child.named_children(&mut inner).filter(|held| held.kind() == "type_parameter") {
+                    let written = text(source, parameter).trim();
+                    if let Some((name, bounds)) = written.split_once(" extends ")
+                        && let Some(bound) = first_named_bound(bounds.split('&'))
+                    {
+                        held.push((name.trim().to_string(), bound));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(super) fn constrained_in_scope(source: &[u8], node: Node) -> Vec<(String, String)> {
+    let mut held = Vec::new();
+    let mut at = Some(node);
+    while let Some(current) = at {
+        if DECLARES_PARAMETERS.contains(&current.kind()) {
+            declared_constraints(source, current, &mut held);
+        }
+        at = current.parent();
+    }
+    held
+}
+
+pub(super) fn constrained(written: &str, bounds: &[(String, String)]) -> String {
+    let bare = written.trim();
+    bounds.iter().find(|(name, _)| name == bare).map(|(_, bound)| bound.clone()).unwrap_or_else(|| written.to_string())
+}
