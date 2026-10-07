@@ -363,6 +363,7 @@ pub fn by_package(specifier: &str) -> Option<&'static Known> {
     lowered
         .char_indices()
         .filter(|(_, letter)| SEGMENT_ENDS.contains(letter))
+        .filter(|(at, letter)| *letter == '/' || !lowered[..*at].starts_with('@') || lowered[..*at].contains('/'))
         .map(|(at, _)| &lowered[..at])
         .collect::<Vec<_>>()
         .into_iter()
@@ -441,6 +442,13 @@ mod tests {
 
     fn named(found: Option<&Known>) -> Option<&str> {
         found.map(|known| known.name)
+    }
+
+    #[test]
+    fn a_scoped_entry_matches_only_its_own_scope() {
+        assert_eq!(named(by_package("@zoom-image/core")), None);
+        assert_eq!(named(by_package("@zoom/videosdk")), Some("Zoom"));
+        assert_eq!(named(by_package("@trigger.dev/sdk")), Some("Trigger.dev"));
     }
 
     #[test]

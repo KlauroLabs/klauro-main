@@ -24,6 +24,7 @@ mod budget;
 mod dead;
 mod mentions;
 mod messages;
+mod programs;
 mod queues;
 mod dependencies;
 mod discovery;
@@ -47,6 +48,7 @@ mod gomod;
 mod generic;
 mod externals;
 mod facts_cache;
+mod set_aside;
 mod stable_ids;
 mod graph;
 mod health;
@@ -741,6 +743,18 @@ fn read_it() {
         .entry_points
         .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &index.imports, &index.locals, &paths, &resolution));
     derived.entry_points.extend(file_routes::drawn(&root, &paths, &index.nodes));
+    let spoken_in: Vec<Option<&str>> = index.files.iter().map(|file| file.language).collect();
+    let programs = programs::run_as_programs(&programs::Sources {
+        root: &root,
+        paths: &paths,
+        languages: &spoken_in,
+        nodes: &index.nodes,
+        calls: &index.calls,
+        exports: &index.exports,
+        edges: &index.edges,
+        known: &derived.entry_points,
+    });
+    derived.entry_points.extend(programs);
     let wired_handlers: rustc_hash::FxHashSet<&str> = wired_entries.iter().map(|entry| entry.handler.as_str()).collect();
     derived.entry_points.retain(|entry| entry.kind != "graphql" || !wired_handlers.contains(entry.handler.as_str()));
     derived.entry_points.extend(wired_entries.iter().cloned());
@@ -843,6 +857,7 @@ fn read_it() {
         unshipped::classify(&mut index.entry_points, &paths, &index.nodes, &index.edges, &scope, &continued);
     let build_script_ids: rustc_hash::FxHashSet<String> = build_scripts.into_iter().map(|entry| entry.id).collect();
     index.entry_points.retain(|entry| !build_script_ids.contains(&entry.id));
+    programs::set_aside_development_programs(&mut index.entry_points, &paths, &index.calls, &scope);
     entry_exit::follow_their_program(&mut index.entry_points, &index.edges, &index.calls, &paths);
     eprintln!(
         "unshipped {:?} | tagged {} | build scripts {} | continuations {} (reached through their starter {}, starter unreached {}, orphaned {})",
@@ -1121,6 +1136,7 @@ fn read_it() {
     index.ci = found_ci;
 
     let services_started = Instant::now();
+    let set_aside = set_aside::SetAside::find(&index.nodes, &index.entry_points, &index.edges);
     let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     let not_ours: Vec<bool> = index.files.iter().map(|file| file.generated || file.oversize).collect();
     let found_services = services::derive(&services::Sources {
@@ -1133,6 +1149,7 @@ fn read_it() {
         exits: &index.exit_points,
         nodes: &index.nodes,
         settings: &index.settings,
+        set_aside: &set_aside,
     });
     drop(service_paths);
     let services::Found { services: found_services, serving } = found_services;

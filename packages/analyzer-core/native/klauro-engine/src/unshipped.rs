@@ -22,7 +22,7 @@ impl Unshipped {
     pub fn is_established(&self) -> bool {
         matches!(
             self.basis,
-            "shipping-evidence" | "island" | "program-only-reach" | "reaches-mostly-program-code" | "reaches-only-program-code" | "test-only-reach"
+            "shipping-evidence" | "development-program" | "island" | "program-only-reach" | "reaches-mostly-program-code" | "reaches-only-program-code" | "test-only-reach"
         )
     }
 }

@@ -107,6 +107,16 @@ impl Scope {
         })
     }
 
+    pub fn ships_the_build_of(&self, path: &str) -> bool {
+        self.bundled_entries.iter().filter(|bundled| bundled.entry == path).any(|bundled| {
+            self.deployables
+                .iter()
+                .flat_map(|unit| unit.ships.iter())
+                .filter(|shipped| !shipped.is_empty())
+                .any(|shipped| contains(shipped, &bundled.output))
+        })
+    }
+
     pub fn part_has_shipping_evidence(&self, path: &str) -> bool {
         self.deployables.iter().any(|unit| {
             if unit.root.is_empty() || !contains(&unit.root, path) {

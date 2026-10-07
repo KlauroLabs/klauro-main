@@ -49,6 +49,7 @@ pub struct Sources<'a> {
     pub exits: &'a [ExitPoint],
     pub nodes: &'a [IndexNode],
     pub settings: &'a [SettingRead],
+    pub set_aside: &'a crate::set_aside::SetAside,
 }
 
 const EVIDENCE_KEPT: usize = 12;
@@ -163,6 +164,10 @@ pub fn address_in(text: &str) -> Option<Address<'_>> {
     Some(Address { scheme, host })
 }
 
+fn holds_a_connection(value: &str) -> bool {
+    value.contains("://") || value.split(';').filter(|pair| pair.split_once('=').is_some_and(|(key, held)| !key.trim().is_empty() && !held.trim().is_empty())).count() >= 2
+}
+
 fn shaped_like_a_setting(named: &str) -> bool {
     named.len() > 2
         && named.bytes().all(|letter| letter.is_ascii_uppercase() || letter.is_ascii_digit() || letter == b'_')
@@ -252,7 +257,7 @@ pub fn derive(sources: &Sources) -> Found {
         .paths
         .iter()
         .enumerate()
-        .map(|(at, path)| sources.not_ours.get(at).copied().unwrap_or(false) || crate::paths::is_test(path) || builds_the_repository(path))
+        .map(|(at, path)| sources.not_ours.get(at).copied().unwrap_or(false) || crate::paths::is_test(path) || crate::paths::is_not_shipped(path) || builds_the_repository(path))
         .collect();
     let structured: Vec<bool> = sources
         .paths
@@ -263,6 +268,7 @@ pub fn derive(sources: &Sources) -> Found {
         })
         .collect();
     let tested = |file: u32| set_aside.get(file as usize).copied().unwrap_or(true);
+    let tested_at = |file: u32, line: u32| tested(file) || sources.set_aside.holds(file, line);
 
     if let Some(dependencies) = sources.dependencies {
         for dependency in &dependencies.dependencies {
@@ -273,14 +279,14 @@ pub fn derive(sources: &Sources) -> Found {
             }
         }
     }
-    for import in sources.imports.iter().filter(|import| !tested(import.file)) {
+    for import in sources.imports.iter().filter(|import| !tested_at(import.file, import.line)) {
         if let Some(known) = service_catalog::by_package(&import.specifier) {
             gathering.note(known, "import", &import.specifier, Some(import.file), import.line);
         }
     }
 
     let mut exits_at: HashMap<(u32, u32), Vec<&ExitPoint>> = HashMap::default();
-    for exit in sources.exits.iter().filter(|exit| !tested(exit.file)) {
+    for exit in sources.exits.iter().filter(|exit| !tested_at(exit.file, exit.line)) {
         exits_at.entry((exit.file, exit.line)).or_default().push(exit);
         if let Some(known) = service_catalog::by_package(&exit.target) {
             gathering.note(known, "call", &exit.name, Some(exit.file), exit.line);
@@ -291,7 +297,7 @@ pub fn derive(sources: &Sources) -> Found {
         }
     }
 
-    for call in sources.calls.iter().filter(|call| !tested(call.file)) {
+    for call in sources.calls.iter().filter(|call| !tested_at(call.file, call.line)) {
         let asks_the_environment = ASKS_THE_ENVIRONMENT
             .contains(&crate::names::leaf(&call.callee).to_ascii_lowercase().as_str())
             && call.receiver.as_deref().is_some_and(|within| {
@@ -341,7 +347,7 @@ pub fn derive(sources: &Sources) -> Found {
         }
     }
 
-    for read in sources.settings.iter().filter(|read| !tested(read.file)) {
+    for read in sources.settings.iter().filter(|read| !tested_at(read.file, read.line)) {
         if let Some(known) = service_catalog::by_setting(&read.name) {
             gathering.note(known, "setting", &read.name, Some(read.file), read.line);
         }
@@ -354,7 +360,7 @@ pub fn derive(sources: &Sources) -> Found {
         .filter_map(|node| Some((node.parent.as_deref()?, node.name.as_str())))
         .collect();
     for node in sources.nodes.iter() {
-        if tested(node.file) || !structured.get(node.file as usize).copied().unwrap_or(false) {
+        if tested_at(node.file, node.span.line) || !structured.get(node.file as usize).copied().unwrap_or(false) {
             continue;
         }
         let value = node.type_annotation.as_deref().unwrap_or("").trim().trim_matches(['"', '\'']);
@@ -374,7 +380,7 @@ pub fn derive(sources: &Sources) -> Found {
         };
         let configured = match shaped_like_a_setting(named) {
             true => service_catalog::by_setting(named),
-            false => service_catalog::by_setting_exactly(named),
+            false => service_catalog::by_setting_exactly(named).filter(|_| holds_a_connection(value)),
         };
         if let Some(known) = configured {
             gathering.note(known, "setting", named, Some(node.file), node.span.line);
@@ -432,7 +438,7 @@ pub fn derive(sources: &Sources) -> Found {
         let through: Vec<&ExitPoint> = sources
             .exits
             .iter()
-            .filter(|exit| exit.kind == reached_as && !tested(exit.file) && !reached.contains(&exit.id))
+            .filter(|exit| exit.kind == reached_as && !tested_at(exit.file, exit.line) && !reached.contains(&exit.id))
             .collect();
         if through.is_empty() {
             continue;
@@ -451,6 +457,7 @@ pub fn derive(sources: &Sources) -> Found {
     let mut services: Vec<Service> = gathering
         .held
         .into_iter()
+        .filter(|(_, held)| held.counted.keys().any(|how| *how != "package"))
         .map(|(name, held)| {
             let reached = held.reached_by.len() as u32;
             Service {
@@ -494,6 +501,14 @@ mod tests {
         let held = address_in("redis://${REDIS_HOST}:6379").unwrap();
         assert_eq!((held.scheme, held.host), ("redis", None));
         assert!(address_in("no address here").is_none());
+    }
+
+    #[test]
+    fn a_plain_key_names_a_service_only_when_it_holds_a_connection() {
+        assert!(holds_a_connection("Host=localhost;Database=orders;Username=app"));
+        assert!(holds_a_connection("amqp://localhost"));
+        assert!(!holds_a_connection("Discord"));
+        assert!(!holds_a_connection("AssetCreate"));
     }
 
     #[test]
