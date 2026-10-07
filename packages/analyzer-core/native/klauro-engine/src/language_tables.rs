@@ -373,6 +373,8 @@ pub static MANIFEST_EXTENSIONS: &[&str] = &[
 ];
 
 pub static MANIFEST_PATTERNS: &[&str] = &[
+    "^.*\\.(dockerfile|containerfile)$",
+    "^(dockerfile|containerfile)\\..*$",
     "^.*\\.routes$",
     "^requirements.*\\.txt$",
 ];

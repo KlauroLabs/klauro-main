@@ -1,0 +1,7 @@
+dotnet	IServiceCollection
+dotnet	IServiceProvider
+dotnet	WebApplicationBuilder
+dotnet	IHostBuilder
+dotnet	IHostApplicationBuilder
+spring	BeanDefinitionRegistry
+angular	EnvironmentProviders

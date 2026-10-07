@@ -1200,7 +1200,8 @@ fn read_it() {
             .filter(|entry| matches!(entry.kind, "lifecycle" | "cli" | "background") && !unshipped::is_set_aside(entry.unshipped.as_ref()))
             .map(|entry| entry.handler.as_str())
             .collect();
-        let shaped_from = components::Sources { roles, nodes: &index.nodes, edges: &index.edges, calls: &index.calls, messages: &patterns.messages, programs: &programs };
+        let source_files: rustc_hash::FxHashSet<&str> = index.files.iter().filter(|file| matches!(file.kind, discovery::FileKind::Source)).map(|file| file.path.as_str()).collect();
+        let shaped_from = components::Sources { roles, nodes: &index.nodes, edges: &index.edges, calls: &index.calls, messages: &patterns.messages, programs: &programs, entry_points: &index.entry_points, source_files: &source_files };
         for project in architecture.projects.iter_mut() {
             project.shape = components::shape_of(&project.project, &shaped_from);
         }
@@ -1209,7 +1210,7 @@ fn read_it() {
             .iter()
             .map(|project| {
                 let told = components::told(&project.name, &project.shape, &project.frameworks);
-                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&told), told)
+                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&format!("{}\n{told}", crate::author::ARCHITECTURE_ASKED)), told)
             })
             .collect();
         let names: Vec<String> = architecture.projects.iter().map(|project| project.name.clone()).collect();
@@ -1217,7 +1218,10 @@ fn read_it() {
             use rayon::prelude::*;
             told.par_iter()
                 .zip(names.par_iter())
-                .map(|((key, digest, told), name)| crate::memory::unless_changed("architecture", key, digest, || crate::author::describe_architecture(told, name)))
+                .map(|((key, digest, told), name)| match told.lines().count() > 1 {
+                    true => crate::memory::unless_changed("architecture", key, digest, || crate::author::describe_architecture(told, name)),
+                    false => None,
+                })
                 .collect()
         });
         for (project, narrative) in architecture.projects.iter_mut().zip(written) {
