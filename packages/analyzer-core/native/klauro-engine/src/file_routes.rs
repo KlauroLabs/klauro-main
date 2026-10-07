@@ -17,14 +17,18 @@ struct Router {
     extensions: &'static [&'static str],
     leaf: Leaf,
     skipped_segments: &'static [&'static str],
+    prefix: &'static str,
+    site: bool,
 }
 
 static ROUTERS: &[Router] = &[
-    Router { package: "expo-router", directories: &["app", "src/app"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Any, skipped_segments: &[] },
-    Router { package: "next", directories: &["app", "src/app"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Named("page"), skipped_segments: &[] },
-    Router { package: "next", directories: &["pages", "src/pages"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Any, skipped_segments: &["api"] },
-    Router { package: "nuxt", directories: &["pages", "app/pages"], extensions: &["vue"], leaf: Leaf::Any, skipped_segments: &[] },
-    Router { package: "@sveltejs/kit", directories: &["src/routes"], extensions: &["svelte"], leaf: Leaf::Named("+page"), skipped_segments: &[] },
+    Router { package: "expo-router", directories: &["app", "src/app"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Any, skipped_segments: &[], prefix: "", site: false },
+    Router { package: "next", directories: &["app", "src/app"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Named("page"), skipped_segments: &[], prefix: "", site: false },
+    Router { package: "next", directories: &["pages", "src/pages"], extensions: &["tsx", "jsx", "ts", "js"], leaf: Leaf::Any, skipped_segments: &["api"], prefix: "", site: false },
+    Router { package: "nuxt", directories: &["pages", "app/pages"], extensions: &["vue"], leaf: Leaf::Any, skipped_segments: &[], prefix: "", site: false },
+    Router { package: "@sveltejs/kit", directories: &["src/routes"], extensions: &["svelte"], leaf: Leaf::Named("+page"), skipped_segments: &[], prefix: "", site: false },
+    Router { package: "@docusaurus/core", directories: &["src/pages"], extensions: &["tsx", "jsx", "ts", "js", "md", "mdx"], leaf: Leaf::Any, skipped_segments: &[], prefix: "", site: true },
+    Router { package: "@docusaurus/core", directories: &["docs"], extensions: &["md", "mdx"], leaf: Leaf::Any, skipped_segments: &[], prefix: "/docs", site: true },
 ];
 
 fn declared_packages(text: &str) -> Vec<String> {
@@ -70,7 +74,11 @@ fn screen_route(router: &Router, within: &str) -> Option<String> {
     if matches!(router.leaf, Leaf::Any) && stem != "index" {
         route.push(segment_of(stem)?);
     }
-    Some(format!("/{}", route.join("/")))
+    Some(match (router.prefix, route.is_empty()) {
+        ("", _) => format!("/{}", route.join("/")),
+        (prefix, true) => prefix.to_string(),
+        (prefix, false) => format!("{prefix}/{}", route.join("/")),
+    })
 }
 
 static ROUTE_VERBS: &[&str] = &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
@@ -179,7 +187,10 @@ pub fn drawn(root: &Path, files: &[String], nodes: &[IndexNode]) -> Vec<EntryPoi
                         file: at as u32,
                         line: module.span.line,
                         guards: Vec::new(),
-                        registrar: format!("file_route:{}", router.package),
+                        registrar: match router.site {
+                            true => format!("site_route:{}", router.package),
+                            false => format!("file_route:{}", router.package),
+                        },
                         unshipped: None,
                     });
                 }
@@ -238,5 +249,14 @@ mod tests {
         assert_eq!(route(1, "workspace/[id]/page.tsx").as_deref(), Some("/workspace/:id"));
         assert_eq!(route(1, "workspace/[id]/card.tsx"), None);
         assert_eq!(route(4, "docs/[...rest]/+page.svelte").as_deref(), Some("/docs/*"));
+    }
+
+    #[test]
+    fn a_documentation_site_serves_its_pages_and_its_documents_under_the_docs_route() {
+        assert_eq!(route(5, "index.tsx").as_deref(), Some("/"));
+        assert_eq!(route(5, "errors.md").as_deref(), Some("/errors"));
+        assert_eq!(route(6, "overview/introduction.mdx").as_deref(), Some("/docs/overview/introduction"));
+        assert_eq!(route(6, "index.md").as_deref(), Some("/docs"));
+        assert_eq!(route(6, "logo.png"), None);
     }
 }

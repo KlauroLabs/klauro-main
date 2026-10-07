@@ -403,7 +403,7 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
         if entry.kind == "event" && crate::capabilities::is_a_screen_event(&entry.name) {
             tallies[at].screen_events += 1;
         }
-        if entry.registrar == "served_document" {
+        if entry.registrar == "served_document" || entry.registrar.starts_with("site_route:") {
             tallies[at].served_documents += 1;
         }
         let samples = tallies[at].samples.entry(entry.kind).or_default();
