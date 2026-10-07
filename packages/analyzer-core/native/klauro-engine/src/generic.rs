@@ -925,7 +925,7 @@ impl<'a> Extractor<'a> {
             loop_depth: 0,
             awaited: false,
             dispatch_param: None,
-            argv_param: None,
+            argv_param: self.argv_local_among(root),
             registrar_receiver: None,
         };
         self.walk(root, &scope);
@@ -1095,7 +1095,7 @@ impl<'a> Extractor<'a> {
         if kind == "vec_lit" {
             self.clojure_data_routes(node);
         }
-        if kind.starts_with("if_") && scope.argv_param.is_some() {
+        if (kind.starts_with("if_") || kind.starts_with("elif") || kind.starts_with("elsif")) && scope.argv_param.is_some() {
             self.declare_cli_dispatch_if(node, scope);
         }
         if self.spec.id == "rust" && kind == "const_item" {
@@ -1632,6 +1632,15 @@ impl<'a> Extractor<'a> {
     }
 
     fn argv_local(&self, node: Node) -> Option<String> {
+        let body = self.spec.signature.body_fields.iter().find_map(|field| node.child_by_field_name(field))?;
+        let statements = match body.named_child_count() {
+            1 => body.named_child(0).unwrap_or(body),
+            _ => body,
+        };
+        self.argv_local_among(statements)
+    }
+
+    fn argv_local_among(&self, statements: Node) -> Option<String> {
         fn looks_like_argv(text: &str) -> bool {
             let held = text.trim();
             let lowered = held.to_ascii_lowercase();
@@ -1643,13 +1652,8 @@ impl<'a> Extractor<'a> {
                     held[at + probe.len()..].trim_start().chars().next().is_some_and(|held| held.is_ascii_digit())
                 })
             };
-            numeric_after("[") || numeric_after(".nth(") || numeric_after(".get(") || numeric_after("flag.Arg(")
+            numeric_after("[") || numeric_after(".nth(") || numeric_after(".get(") || numeric_after("flag.Arg(") || numeric_after(".slice(")
         }
-        let body = self.spec.signature.body_fields.iter().find_map(|field| node.child_by_field_name(field))?;
-        let statements = match body.named_child_count() {
-            1 => body.named_child(0).unwrap_or(body),
-            _ => body,
-        };
         let mut cursor = statements.walk();
         for statement in statements.named_children(&mut cursor) {
             let child = if self.spec.declares.binding_kinds.contains(&statement.kind()) {
@@ -1667,6 +1671,13 @@ impl<'a> Extractor<'a> {
                 continue;
             }
             let Some(name_node) = child.child_by_field_name(self.spec.declares.binding_name_field) else { continue };
+            let name_node = match name_node.kind().contains("pattern") {
+                true => match name_node.named_child(0) {
+                    Some(first) => first,
+                    None => continue,
+                },
+                false => name_node,
+            };
             let name = self.text(name_node).trim();
             if !name.is_empty() && name.chars().all(|held| held.is_alphanumeric() || held == '_') {
                 return Some(name.to_string());
@@ -2574,13 +2585,13 @@ impl<'a> Extractor<'a> {
                 continue;
             }
             let after = condition_text[after_at..].trim_start();
-            if let Some(stripped) = after.strip_prefix("==")
+            if let Some(stripped) = after.strip_prefix("===").or_else(|| after.strip_prefix("=="))
                 && let Some(label) = Self::leading_quoted_literal(stripped.trim_start())
             {
                 return Some(label);
             }
             let before = condition_text[..at].trim_end();
-            if let Some(stripped) = before.strip_suffix("==")
+            if let Some(stripped) = before.strip_suffix("===").or_else(|| before.strip_suffix("=="))
                 && let Some(label) = Self::trailing_quoted_literal(stripped.trim_end())
             {
                 return Some(label);

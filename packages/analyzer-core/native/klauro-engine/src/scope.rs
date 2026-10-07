@@ -107,6 +107,16 @@ impl Scope {
         })
     }
 
+    pub fn ships_the_source_of(&self, path: &str) -> bool {
+        self.deployables.iter().flat_map(|unit| unit.ships.iter()).any(|shipped| {
+            let (built_from, built_into) = match shipped.rsplit_once('/') {
+                Some((parent, last)) => (parent, last),
+                None => ("", shipped.as_str()),
+            };
+            BUILT_INTO_DIRECTORIES.contains(&built_into) && !built_from.is_empty() && contains(built_from, path)
+        })
+    }
+
     pub fn ships_the_build_of(&self, path: &str) -> bool {
         self.bundled_entries.iter().filter(|bundled| bundled.entry == path).any(|bundled| {
             self.deployables

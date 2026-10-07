@@ -73,12 +73,13 @@ fn kind_of(project: &SubProject, tally: &Tally, orchestrates: bool, declares_a_p
     if orchestrates {
         return ("orchestrator", "it starts and wires the other parts together".to_string());
     }
-    if entered > 0 && share(tally.set_aside, entered) >= SET_ASIDE_SHARE {
-        return ("tooling", format!("{} of its {entered} entry points are programs nothing ships", tally.set_aside));
-    }
     let screens = tally.of_kinds(&["ui"]) + tally.screen_events;
     let serving = tally.of_kinds(SERVING_KINDS);
     let commands = tally.of_kinds(&["ipc"]);
+    let all = entered + tally.set_aside;
+    if all > 0 && share(tally.set_aside, all) >= SET_ASIDE_SHARE && screens + serving + commands == 0 {
+        return ("tooling", format!("{} of its {all} entry points are programs nothing ships", tally.set_aside));
+    }
     let background = tally.of_kinds(BACKGROUND_KINDS);
     if tally.served_documents > 0 && tally.served_documents == tally.of_kinds(&["ui"]) && serving == 0 {
         return ("website", format!("it serves {} pages", tally.served_documents));
@@ -186,12 +187,16 @@ fn plain_name(project: &SubProject, repository: &str) -> String {
     let declared = match (project.name.as_str(), project.root.is_empty()) {
         ("" | "repository" | "root", false) => crate::paths::display_name(&project.root),
         ("" | "repository" | "root", true) => repository.to_string(),
-        (named, _) => named.to_string(),
+        (named, _) => match named.strip_prefix('@').and_then(|scoped| scoped.split_once('/')) {
+            Some((scope, name)) if name.eq_ignore_ascii_case(scope) || words_of(name).len() >= 2 => name.to_string(),
+            Some((scope, name)) => format!("{scope} {name}"),
+            None => named.to_string(),
+        },
     };
     let repository_words: Vec<String> = words_of(repository).into_iter().map(|word| word.to_lowercase()).collect();
     let words = words_of(&declared);
     let leading = words.iter().zip(repository_words.iter()).take_while(|(word, held)| word.to_lowercase() == **held).count();
-    let trimmed: Vec<String> = match leading == repository_words.len() && leading > 0 && leading < words.len() {
+    let trimmed: Vec<String> = match leading == repository_words.len() && leading > 0 && words.len() - leading >= 2 {
         true => words[leading..].to_vec(),
         false => words,
     };
@@ -348,15 +353,16 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
             continue;
         }
         let Some(at) = deepest(path) else { continue };
+        if crate::unshipped::is_set_aside(entry.unshipped.as_ref()) {
+            tallies[at].set_aside += 1;
+            continue;
+        }
         *tallies[at].entries.entry(entry.kind).or_default() += 1;
         if entry.kind == "event" && crate::capabilities::is_a_screen_event(&entry.name) {
             tallies[at].screen_events += 1;
         }
         if entry.registrar == "served_document" {
             tallies[at].served_documents += 1;
-        }
-        if crate::unshipped::is_set_aside(entry.unshipped.as_ref()) {
-            tallies[at].set_aside += 1;
         }
         let samples = tallies[at].samples.entry(entry.kind).or_default();
         let said = entry.path.as_deref().unwrap_or(entry.name.as_str());
@@ -488,6 +494,10 @@ mod tests {
         assert_eq!(plain_name(&project("src/Ordering.API", "Ordering.API", "deployable"), "eShop"), "Ordering API");
         assert_eq!(plain_name(&project("src/OrderProcessor", "OrderProcessor", "deployable"), "eShop"), "Order processor");
         assert_eq!(plain_name(&project("src/eShop.ServiceDefaults", "eShop.ServiceDefaults", "library"), "eShop"), "Service defaults");
+        assert_eq!(plain_name(&project("mobile", "immich_mobile", "executable"), "immich"), "Immich mobile");
+        assert_eq!(plain_name(&project("", "@mastodon/mastodon", "deployable"), "mastodon"), "Mastodon");
+        assert_eq!(plain_name(&project("streaming", "@mastodon/streaming", "deployable"), "mastodon"), "Mastodon streaming");
+        assert_eq!(plain_name(&project("apps/marketing-site", "@klauro/marketing-site", "deployable"), "proof-of-concept"), "Marketing site");
         assert_eq!(plain_name(&project("packages/remote-client", "@agent-desktop/remote-client", "library"), "agent-desktop"), "Remote client");
         assert_eq!(plain_name(&project("src-tauri", "agent-desktop", "deployable"), "agent-desktop"), "Agent desktop");
     }
@@ -550,8 +560,15 @@ mod tests {
 
     #[test]
     fn a_part_whose_programs_are_all_set_aside_is_tooling() {
-        let mut held = tally(&[("lifecycle", 10)]);
+        let mut held = tally(&[("lifecycle", 1)]);
         held.set_aside = 9;
         assert_eq!(kind_of(&project("scripts", "scripts", "module"), &held, false, true).0, "tooling");
+    }
+
+    #[test]
+    fn a_part_with_screens_stays_an_app_however_many_scripts_sit_beside_them() {
+        let mut held = tally(&[("ui", 20), ("cli", 2)]);
+        held.set_aside = 70;
+        assert_eq!(kind_of(&project("", "desktop", "module"), &held, false, false).0, "app");
     }
 }

@@ -133,7 +133,12 @@ fn stands_alone_and_ends_the_process(sources: &Sources) -> HashSet<u32> {
 
 pub fn run_as_programs(sources: &Sources) -> Vec<EntryPoint> {
     let Sources { root, paths, languages, nodes, known, .. } = *sources;
-    let started: HashSet<u32> = known.iter().filter(|entry| matches!(entry.kind, "lifecycle" | "cli")).map(|entry| entry.file).collect();
+    let started: HashSet<u32> = known
+        .iter()
+        .filter(|entry| matches!(entry.kind, "lifecycle" | "cli"))
+        .filter(|entry| entry.kind != "lifecycle" || run_by_its_format(&paths[entry.file as usize], languages.get(entry.file as usize).copied().flatten()).is_none())
+        .map(|entry| entry.file)
+        .collect();
     let modules: HashMap<u32, &str> = nodes.iter().filter(|node| node.kind == NodeKind::Module).map(|node| (node.file, node.id.as_str())).collect();
     let runnable = |file: u32| {
         let path = paths[file as usize].as_str();
@@ -179,6 +184,42 @@ pub fn run_as_programs(sources: &Sources) -> Vec<EntryPoint> {
             }
         })
         .collect()
+}
+
+fn reads_its_command_line(call: &CallFact) -> bool {
+    let spoken = [
+        Some(call.callee.clone()),
+        call.receiver.clone(),
+        call.receiver.as_deref().map(|receiver| format!("{receiver}.{}", call.callee)),
+        call.receiver.as_deref().map(|receiver| format!("{receiver}::{}", call.callee)),
+    ];
+    spoken.into_iter().flatten().any(|named| rows().any(|[_, how, value]| how == "argv" && (named == value || named.starts_with(&format!("{value}.")))))
+}
+
+pub fn commanded_programs(entries: &mut [EntryPoint], calls: &[CallFact]) {
+    let reading: HashSet<u32> = calls.iter().filter(|call| reads_its_command_line(call)).map(|call| call.file).collect();
+    for entry in entries.iter_mut().filter(|entry| entry.kind == "lifecycle" && reading.contains(&entry.file)) {
+        entry.kind = "cli";
+    }
+}
+
+pub fn set_aside_unserved_documents(entries: &mut [EntryPoint], files: &[String], scope: &crate::scope::Scope) {
+    if !scope.deployables.iter().any(|unit| matches!(unit.category, "shipped" | "runnable")) {
+        return;
+    }
+    for entry in entries.iter_mut().filter(|entry| entry.registrar == "served_document" && entry.unshipped.is_none()) {
+        let path = files[entry.file as usize].as_str();
+        let held = scope.deployables.iter().any(|unit| !unit.root.is_empty() && paths::contains(&unit.root, path))
+            || scope.deployables.iter().flat_map(|unit| unit.ships.iter()).any(|shipped| !shipped.is_empty() && paths::contains(shipped, path))
+            || scope.ships_the_source_of(path);
+        if !held {
+            entry.unshipped = Some(Unshipped {
+                role: "documentation",
+                basis: "unserved-document",
+                evidence: format!("{path} is a page no deployable serves or ships"),
+            });
+        }
+    }
 }
 
 fn program_name(path: &str) -> String {
@@ -282,6 +323,28 @@ mod tests {
         assert!(!names_the_program("assets", "lib/tasks/assets.rake"));
         assert!(!names_the_program("images/mastodon.svg", "lib/tasks/mastodon.rake"));
         assert!(!names_the_program("@mastodon/mastodon", "lib/tasks/mastodon.rake"));
+    }
+
+    #[test]
+    fn a_program_reading_its_command_line_is_a_command() {
+        let call = |receiver: Option<&str>, callee: &str| CallFact {
+            file: 0,
+            caller: None,
+            callee: callee.to_string(),
+            receiver: receiver.map(str::to_string),
+            line: 1,
+            column: 0,
+            argument_count: 0,
+            literals: Vec::new(),
+            constructs: false,
+            renders: false,
+            type_arguments: Vec::new(),
+            context: Default::default(),
+            passes: Default::default(),
+        };
+        assert!(reads_its_command_line(&call(Some("std::env"), "args")));
+        assert!(reads_its_command_line(&call(Some("process.argv"), "slice")));
+        assert!(!reads_its_command_line(&call(Some("process.env"), "get")));
     }
 
     #[test]

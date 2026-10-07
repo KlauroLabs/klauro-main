@@ -470,6 +470,7 @@ fn read_it() {
         return;
     }
     let root = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let root = root.canonicalize().unwrap_or(root);
     let started = Instant::now();
     let found = discovery::discover(&root);
     let discovered = started.elapsed();
@@ -758,7 +759,10 @@ fn read_it() {
         edges: &index.edges,
         known: &derived.entry_points,
     });
+    let scripted: rustc_hash::FxHashSet<u32> = programs.iter().filter(|entry| entry.registrar.starts_with("run-by:")).map(|entry| entry.file).collect();
+    derived.entry_points.retain(|entry| entry.kind != "lifecycle" || !scripted.contains(&entry.file));
     derived.entry_points.extend(programs);
+    programs::commanded_programs(&mut derived.entry_points, &index.calls);
     let wired_handlers: rustc_hash::FxHashSet<&str> = wired_entries.iter().map(|entry| entry.handler.as_str()).collect();
     derived.entry_points.retain(|entry| entry.kind != "graphql" || !wired_handlers.contains(entry.handler.as_str()));
     derived.entry_points.extend(wired_entries.iter().cloned());
@@ -863,6 +867,7 @@ fn read_it() {
     let build_script_ids: rustc_hash::FxHashSet<String> = build_scripts.into_iter().map(|entry| entry.id).collect();
     index.entry_points.retain(|entry| !build_script_ids.contains(&entry.id));
     programs::set_aside_development_programs(&mut index.entry_points, &paths, &index.calls, &scope);
+    programs::set_aside_unserved_documents(&mut index.entry_points, &paths, &scope);
     entry_exit::follow_their_program(&mut index.entry_points, &index.edges, &index.calls, &paths);
     eprintln!(
         "unshipped {:?} | tagged {} | build scripts {} | continuations {} (reached through their starter {}, starter unreached {}, orphaned {})",

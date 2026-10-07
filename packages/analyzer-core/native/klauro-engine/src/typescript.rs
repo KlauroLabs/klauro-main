@@ -168,7 +168,8 @@ impl<'a> Extractor<'a> {
         callback_of: None,
             registration_label: None,
         });
-        let scope = Scope::root(&self.module_id.clone());
+        let mut scope = Scope::root(&self.module_id.clone());
+        scope.argv_param = self.argv_local(root);
         self.walk(root, &scope);
         let mut metrics: Vec<UnitMetricsEntry> = std::mem::take(&mut self.metrics)
             .into_iter()
@@ -1421,6 +1422,14 @@ impl<'a> Extractor<'a> {
                         .last();
                     if let Some(last) = last {
                         return Some(self.text(last).trim().to_string());
+                    }
+                    continue;
+                }
+                if name_node.kind() == "array_pattern" && looks_like_argv(value_text) {
+                    let mut elements = name_node.walk();
+                    let first = name_node.named_children(&mut elements).find(|element| element.kind() == "identifier");
+                    if let Some(first) = first {
+                        return Some(self.text(first).trim().to_string());
                     }
                     continue;
                 }

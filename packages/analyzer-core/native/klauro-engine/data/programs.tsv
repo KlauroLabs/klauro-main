@@ -37,3 +37,13 @@ python	exit	sys.exit
 go	exit	os.Exit
 rust	exit	std::process::exit
 php	exit	exit
+node	argv	process.argv
+deno	argv	Deno.args
+python	argv	sys.argv
+rust	argv	std::env::args
+rust	argv	env::args
+rust	argv	std::env::args_os
+go	argv	os.Args
+go	argv	flag.Parse
+ruby	argv	ARGV
+dotnet	argv	Environment.GetCommandLineArgs
