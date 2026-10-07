@@ -38,12 +38,12 @@ fn a_callback_on_a_spawned_childs_stream_is_not_an_entry() {
 }
 
 #[test]
-fn a_shutdown_signal_on_the_process_stays_an_entry() {
+fn a_signal_on_the_process_is_never_an_entry() {
     let index = index();
     let events = events(&index);
     assert!(
-        named(&events, "SIGTERM").is_some(),
-        "process.on('SIGTERM') is genuine inbound lifecycle shutdown: {events:#?}"
+        named(&events, "SIGTERM").is_none(),
+        "process.on('SIGTERM') is the process's own lifecycle, recorded on the part, never a flow: {events:#?}"
     );
 }
 

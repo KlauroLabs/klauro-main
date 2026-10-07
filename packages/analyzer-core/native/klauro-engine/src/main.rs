@@ -11,6 +11,7 @@ mod author;
 mod comprehend;
 mod composition;
 mod confidence;
+mod continuations;
 mod parent;
 mod conflicts;
 mod conform;
@@ -764,6 +765,7 @@ fn read_it() {
     derived.entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_exit::guard(&mut derived.entry_points, &index.nodes);
     derived.entry_points.dedup_by(|left, right| left.id == right.id);
+    continuations::fold_into_what_started_them(&mut derived.entry_points, &mut derived.continued, &index.nodes, &index.edges, &index.locals);
     let derived = derived;
     let derived_elapsed = derive_started.elapsed();
     let served = derived.entry_points.iter().filter(|entry| entry.kind != "test").count();

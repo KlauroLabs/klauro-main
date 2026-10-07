@@ -1,0 +1,4 @@
+node	process
+bun	process
+bun	Bun
+deno	Deno

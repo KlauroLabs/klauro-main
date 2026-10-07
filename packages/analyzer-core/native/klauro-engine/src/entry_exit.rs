@@ -98,28 +98,11 @@ pub fn recurring(registrar: &str) -> bool {
     RECURRING.binary_search(&names::leaf(registrar)).is_ok()
 }
 
-static STARTS_A_CONTINUATION: &[&str] = &[
-    "connect",
-    "create_subprocess_exec",
-    "create_subprocess_shell",
-    "createconnection",
-    "createreadstream",
-    "createwritestream",
-    "eventsource",
-    "execfile",
-    "execfilesync",
-    "fork",
-    "open_connection",
-    "popen",
-    "request",
-    "spawn",
-    "spawnsync",
-    "websocket",
-    "worker",
-];
+static CONTINUATION_STARTERS: &str = include_str!("../data/continuation_starters.tsv");
 
-fn starts_a_continuation(named: &str) -> bool {
-    STARTS_A_CONTINUATION.binary_search(&names::leaf(named).to_ascii_lowercase().as_str()).is_ok()
+pub(crate) fn starts_a_continuation(named: &str) -> bool {
+    let leaf = names::leaf(named).to_ascii_lowercase();
+    CONTINUATION_STARTERS.lines().filter_map(|line| line.split_once('\t')).any(|(_, starter)| starter == leaf)
 }
 
 fn continues_a_started_operation(
@@ -3624,7 +3607,6 @@ mod tests {
             ("KEPT_OPERATIONS", KEPT_OPERATIONS),
             ("RECURRING", RECURRING),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
-            ("STARTS_A_CONTINUATION", STARTS_A_CONTINUATION),
         ];
         for (name, table) in tables {
             assert!(table.is_sorted(), "{name} is not sorted, so binary_search cannot find it");
