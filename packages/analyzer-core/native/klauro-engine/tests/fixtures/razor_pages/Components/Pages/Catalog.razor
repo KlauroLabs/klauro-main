@@ -1,0 +1,13 @@
+@page "/"
+@inject CatalogService Catalog
+
+<h1>Catalog</h1>
+
+@code {
+    private List<string> items = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        items = await Catalog.GetItems();
+    }
+}

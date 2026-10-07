@@ -24,7 +24,6 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
             "http GET /Account/Login",
             "http GET /Account/Profile",
             "http GET /api/hooks",
-            "http GET /cart",
             "http GET /health",
             "http GET /items/{id}",
             "http POST /Account/Login",
@@ -39,6 +38,7 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
         .iter()
         .find(|entry| entry["path"] == "/cart")
         .unwrap();
+    assert_eq!(cart["kind"], "ui", "a Razor page is a screen");
     assert_eq!(cart["guards"][0]["name"], "Authorize");
 }
 

@@ -1,0 +1,13 @@
+@page "/item/{itemId:int}"
+@inject CatalogService Catalog
+
+<p>Item</p>
+
+@code {
+    [Parameter] public int ItemId { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Catalog.GetItem(ItemId);
+    }
+}

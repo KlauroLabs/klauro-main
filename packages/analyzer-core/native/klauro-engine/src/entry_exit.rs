@@ -709,7 +709,7 @@ fn decorator_entry(decorator: &Decorator, bare_verbs: bool) -> Option<(&'static 
         "command" | "consolecommand" => Some(("cli", lowered, None)),
         "fact" | "theory" | "test" | "testcase" | "testmethod" | "parameterizedtest"
         | "benchmark" => Some(("test", lowered, None)),
-        "routepage" => Some(("ui", lowered, None)),
+        "routepage" => Some(("ui", lowered, path)),
         _ => None,
     }
 }

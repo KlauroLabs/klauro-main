@@ -411,7 +411,7 @@ fn routed_as_a_page(facts: &mut FileFacts, component: &source_rewrite::Component
     };
     for route in &component.routes {
         facts.nodes[loads].decorators.push(model::Decorator {
-            name: "HttpGet".to_string(),
+            name: "RoutePage".to_string(),
             arguments: vec![model::DecoratorArgument { value: route.clone(), literal: true }],
         });
     }

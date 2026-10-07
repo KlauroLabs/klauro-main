@@ -104,3 +104,18 @@ fn a_framework_base_is_not_reached_through_a_repository_type_that_shares_its_sho
         .collect();
     assert!(background.is_empty(), "a model under ActiveRecord::Base is no job though Jobs::Base is: {background:?}");
 }
+
+#[test]
+fn a_razor_page_is_a_screen_at_its_route() {
+    let index = common::read("razor_pages");
+    let mut screens: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "ui")
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    screens.sort();
+    assert_eq!(screens, vec!["/", "/item/{itemId:int}"]);
+    assert!(index["entry_points"].as_array().unwrap().iter().all(|entry| entry["kind"] != "http"), "a page is never an HTTP route");
+}
