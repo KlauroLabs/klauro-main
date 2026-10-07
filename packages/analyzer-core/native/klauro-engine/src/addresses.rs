@@ -351,6 +351,7 @@ pub fn through_wrappers(
             method: None,
             origin: None,
             action: None,
+            does: None,
         });
     }
     exits.retain(|exit| {

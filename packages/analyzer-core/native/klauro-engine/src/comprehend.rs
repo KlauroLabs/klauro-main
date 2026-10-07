@@ -231,12 +231,6 @@ static GENERIC: &[&str] = &[
     "wmain",
 ];
 
-static CHANGING: &[&str] = &[
-    "add", "commit", "create", "delete", "dispatch", "emit", "enqueue", "insert", "mkdir", "patch",
-    "post", "publish", "put", "remove", "rename", "save", "send", "set", "store", "unlink",
-    "update", "upsert", "write",
-];
-
 pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
     changes(exit)
 }
@@ -361,14 +355,7 @@ fn tabled_name(named: &str) -> bool {
 static BOOKKEEPING_FIELDS: &[&str] = &["domainevents", "requestedhashcode"];
 
 fn changes(exit: &ExitPoint) -> bool {
-    let operation = exit.operation.to_ascii_lowercase();
-    match exit.kind {
-        "process" | "message" => true,
-        "database" | "file" | "network" | "api" | "client_storage" | "cache" => {
-            CHANGING.iter().any(|word| operation.contains(word))
-        }
-        _ => false,
-    }
+    matches!(exit.does.unwrap_or_else(|| crate::effects::does(exit)), "write" | "delete" | "send" | "start")
 }
 
 pub(crate) const PUBLISHED: &str = "published";

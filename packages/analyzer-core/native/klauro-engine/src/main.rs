@@ -1,4 +1,5 @@
 mod alias;
+mod effects;
 mod addresses;
 mod architecture;
 mod arms;
@@ -1097,6 +1098,7 @@ fn read_it() {
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
     actions::assign(&mut index.exit_points, &index.calls, &index.imports, &paths);
+    effects::assign(&mut index.exit_points);
 
     let services_started = Instant::now();
     let set_aside = set_aside::SetAside::find(&index.nodes, &index.entry_points, &index.edges);

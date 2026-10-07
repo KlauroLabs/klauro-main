@@ -128,6 +128,7 @@ pub fn assign(exits: &mut Vec<ExitPoint>, calls: &[CallFact], imports: &[ImportF
             method: None,
             origin: None,
             action: Some(row.action),
+            does: None,
         });
     }
     if !added.is_empty() {

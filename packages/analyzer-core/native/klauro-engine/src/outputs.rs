@@ -81,6 +81,7 @@ pub fn written_to_standard_output(sources: &Sources) -> Vec<ExitPoint> {
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             })
         })
         .collect()

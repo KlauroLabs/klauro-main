@@ -65,3 +65,26 @@ fn no_member_carries_a_name_or_a_description_without_a_model() {
         "comprehension is authored or absent, never derived: {written:?}"
     );
 }
+
+fn steps_of(index: &serde_json::Value, method: &str, surface: &str) -> Vec<String> {
+    index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["method"] == method && flow["surface"] == surface)
+        .unwrap_or_else(|| panic!("{method} {surface} is a flow"))["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["kind"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn what_a_call_does_to_its_store_is_the_step_it_takes() {
+    let index = common::read("effects_basket");
+    assert_eq!(steps_of(&index, "DELETE", "/basket/{id}"), vec!["remove", "respond"]);
+    assert_eq!(steps_of(&index, "PUT", "/basket/{id}"), vec!["keep", "respond"]);
+    assert_eq!(steps_of(&index, "GET", "/basket/{id}"), vec!["read", "respond"]);
+    assert_eq!(steps_of(&index, "GET", "/orders/count/{buyer}"), vec!["read", "respond"], "opening a connection and binding a parameter change nothing");
+}

@@ -127,6 +127,7 @@ pub fn kept_by_a_model_variable(
             method: None,
             origin: None,
             action: Some(ACTION),
+            does: None,
         });
     }
     found

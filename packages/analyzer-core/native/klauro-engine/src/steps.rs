@@ -239,7 +239,6 @@ fn guard_named(written: &str) -> String {
     }
 }
 
-static REMOVES: &[&str] = &["delete", "destroy", "drop", "purge", "remove", "unlink"];
 
 impl<'a> Reader<'a> {
     #[allow(clippy::too_many_arguments)]
@@ -322,29 +321,33 @@ impl<'a> Reader<'a> {
     }
 
     fn action_of(&self, exit: &ExitPoint) -> Option<(&'static str, Option<String>)> {
-        let changing = crate::comprehend::changes_something(exit);
-        let operation = exit.operation.to_ascii_lowercase();
-        let removing = REMOVES.iter().any(|word| operation.contains(word));
+        let does = exit.does.unwrap_or_else(|| crate::effects::does(exit));
         let service = exit.service.clone();
         match exit.kind {
             "database" => {
                 let record = self.records_touched(exit).or(service);
-                Some(match (changing, removing) {
-                    (true, true) => ("remove", record),
-                    (true, false) => ("change", record),
-                    _ => ("read", record),
-                })
+                match does {
+                    "prepare" => None,
+                    "delete" => Some(("remove", record)),
+                    "write" | "send" | "start" => Some(("change", record)),
+                    _ => Some(("read", record)),
+                }
             }
             "message" => Some(("hand_off", Some(exit.addressed.clone().unwrap_or_else(|| exit.name.clone())).filter(|held| !held.is_empty()).or(service))),
             "api" | "network" => Some(("call", service.or_else(|| exit.addressed.clone()).or_else(|| Some(exit.target.clone())))),
-            "cache" | "client_storage" | "file" => Some((
-                if changing { "keep" } else { "read" },
-                service.or_else(|| Some(match exit.kind {
+            "cache" | "client_storage" | "file" => {
+                let place = service.or_else(|| Some(match exit.kind {
                     "client_storage" => "the device".to_string(),
                     "file" => "a file".to_string(),
                     _ => "the cache".to_string(),
-                })),
-            )),
+                }));
+                match does {
+                    "prepare" => None,
+                    "delete" => Some(("remove", place)),
+                    "write" | "send" | "start" => Some(("keep", place)),
+                    _ => Some(("read", place)),
+                }
+            }
             "process" => Some(("call", Some(exit.target.clone()))),
             _ => None,
         }

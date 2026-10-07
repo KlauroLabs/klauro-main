@@ -103,6 +103,7 @@ pub fn reached(edges: &[IndexEdge], nodes: &[IndexNode], files: &[String], names
             method: None,
             origin: None,
             action: None,
+            does: None,
         });
     }
     found

@@ -64,6 +64,8 @@ pub struct ExitPoint {
     pub origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub does: Option<&'static str>,
 }
 
 static HTTP_METHODS: &[&str] = &[
@@ -1211,6 +1213,7 @@ pub fn kept_by_a_model(
             method: None,
             origin: None,
             action: Some(crate::model_calls::ACTION),
+            does: None,
         });
     }
     found
@@ -1399,6 +1402,7 @@ pub fn kept_by_a_store(
                     method: None,
                     origin: None,
                     action: None,
+                    does: None,
                 });
             }
             continue;
@@ -1424,6 +1428,7 @@ pub fn kept_by_a_store(
             method: None,
             origin: None,
             action: None,
+            does: None,
         });
     }
     found
@@ -2474,6 +2479,7 @@ pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             }
         })
         .collect()
@@ -3317,6 +3323,7 @@ pub fn derive(
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             });
         }
         if let Some(operation) = a_cookie_kept(call) {
@@ -3336,6 +3343,7 @@ pub fn derive(
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             });
             return (found, reach);
         }
@@ -3357,6 +3365,7 @@ pub fn derive(
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             });
             return (found, reach);
         }
@@ -3377,6 +3386,7 @@ pub fn derive(
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             });
             return (found, reach);
         }
@@ -3399,6 +3409,7 @@ pub fn derive(
                 method: None,
                 origin: None,
                 action: None,
+                does: None,
             });
             return (found, reach);
         }
@@ -3431,6 +3442,7 @@ pub fn derive(
             method: None,
             origin: None,
             action: None,
+            does: None,
             });
             return (found, reach);
         };
@@ -3458,6 +3470,7 @@ pub fn derive(
             method: None,
             origin: None,
             action: None,
+            does: None,
             });
             return (found, reach);
         }
@@ -3493,6 +3506,7 @@ pub fn derive(
             method: None,
             origin: None,
             action: None,
+            does: None,
                     });
                     return (found, reach);
                 }
@@ -3522,6 +3536,7 @@ pub fn derive(
             method: None,
             origin: None,
             action: None,
+            does: None,
         });
             (found, reach)
     };
