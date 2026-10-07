@@ -66,7 +66,7 @@ fn is_word(letter: char) -> bool {
 pub(super) fn bounded(written: &str, bounds: &[(String, String)]) -> String {
     let mut spoken = String::with_capacity(written.len());
     let mut word = String::new();
-    let mut flush = |word: &mut String, spoken: &mut String| {
+    let flush = |word: &mut String, spoken: &mut String| {
         if word.is_empty() {
             return;
         }

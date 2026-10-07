@@ -1499,6 +1499,7 @@ fn read_it() {
             capabilities: &comprehension.capabilities,
             repository,
             scope: &scope,
+            deployables: index.scope.as_ref().map(|held| held.deployables.as_slice()).unwrap_or(&[]),
         };
         subproject::identity::assign(partition, &facts);
         for project in &partition.sub_projects {

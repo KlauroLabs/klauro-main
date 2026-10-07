@@ -42,3 +42,11 @@ fn a_platform_folder_of_a_cross_platform_app_belongs_to_the_app() {
     assert!(!roots(&all).iter().any(|root| root.starts_with("mobile/android")), "{:?}", roots(&all));
     assert!(part(&all, "mobile")["members"].as_array().unwrap().iter().any(|member| member == "mobile/android/app"));
 }
+
+#[test]
+fn a_repository_of_pages_is_one_website_named_for_the_repository() {
+    let all = parts("website_only");
+    assert_eq!(all.len(), 1, "{:?}", roots(&all));
+    assert_eq!(all[0]["role"], "website");
+    assert_eq!(all[0]["display_name"], "Website only");
+}

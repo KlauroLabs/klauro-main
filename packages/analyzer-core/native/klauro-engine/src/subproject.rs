@@ -773,22 +773,35 @@ fn is_made_of_tests(project: &SubProject) -> bool {
 
 fn unit_of(folded: &HashMap<String, String>, id: &str) -> String {
     let mut current = id.to_string();
+    let mut seen: HashSet<String> = HashSet::default();
     while let Some(next) = folded.get(&current) {
+        if !seen.insert(current.clone()) {
+            break;
+        }
         current = next.clone();
     }
     current
 }
 
+fn fold(folded: &mut HashMap<String, String>, from: String, into: String) -> bool {
+    if from == into || unit_of(folded, &into) == from || folded.contains_key(&from) {
+        return false;
+    }
+    folded.insert(from, into);
+    true
+}
+
 fn tested_part(project: &SubProject, between: &[(String, String, u32)], by_id: &HashMap<&str, &SubProject>) -> Option<String> {
+    let holds_its_tests = |held: &SubProject| !held.published || contains(&held.root, &project.root);
     let mut targets: Vec<(&str, u32)> = between
         .iter()
-        .filter(|(from, to, _)| *from == project.id && by_id.get(to.as_str()).is_some_and(|held| !is_made_of_tests(held)))
+        .filter(|(from, to, _)| *from == project.id && by_id.get(to.as_str()).is_some_and(|held| !is_made_of_tests(held) && holds_its_tests(held)))
         .map(|(_, to, count)| (to.as_str(), *count))
         .collect();
     if targets.is_empty() {
         targets = by_id
             .values()
-            .filter(|held| !is_made_of_tests(held) && held.imported_by.contains(&project.id))
+            .filter(|held| !is_made_of_tests(held) && holds_its_tests(held) && held.imported_by.contains(&project.id))
             .map(|held| (held.id.as_str(), 0))
             .collect();
     }
@@ -801,12 +814,15 @@ fn ships_within(project: &SubProject, host: &SubProject) -> bool {
 }
 
 pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>) {
-    let mut folded: HashMap<String, String> = shells.into_iter().collect();
+    let mut folded: HashMap<String, String> = HashMap::default();
+    for (from, into) in shells {
+        fold(&mut folded, from, into);
+    }
     {
         let by_id: HashMap<&str, &SubProject> = partition.sub_projects.iter().map(|project| (project.id.as_str(), project)).collect();
         for project in partition.sub_projects.iter().filter(|project| !project.root.is_empty() && is_made_of_tests(project)) {
             if let Some(target) = tested_part(project, &partition.imports_between, &by_id) {
-                folded.insert(project.id.clone(), target);
+                fold(&mut folded, project.id.clone(), target);
             }
         }
         loop {
@@ -826,23 +842,25 @@ pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>)
                 consumers.dedup();
                 let [host] = consumers.as_slice() else { continue };
                 let Some(held) = by_id.get(host.as_str()) else { continue };
-                if ships_within(project, held) {
+                if ships_within(project, held) && unit_of(&folded, host) != project.id {
                     found = Some((project.id.clone(), host.clone()));
                     break;
                 }
             }
-            match found {
-                Some((from, to)) => {
-                    folded.insert(from, to);
-                }
-                None => break,
+            let Some((from, to)) = found else { break };
+            if !fold(&mut folded, from, to) {
+                break;
             }
         }
     }
     if folded.is_empty() {
         return;
     }
-    let units: HashMap<String, String> = folded.keys().map(|id| (id.clone(), unit_of(&folded, id))).collect();
+    let units: HashMap<String, String> = folded
+        .keys()
+        .map(|id| (id.clone(), unit_of(&folded, id)))
+        .filter(|(id, unit)| id != unit)
+        .collect();
     let mut absorbed: Vec<SubProject> = Vec::new();
     let mut kept: Vec<SubProject> = Vec::new();
     for project in partition.sub_projects.drain(..) {
@@ -1005,4 +1023,19 @@ fn platform_shells(sub_projects: &[SubProject], manifests: &[(String, String)], 
         }
     }
     found
+}
+
+#[cfg(test)]
+mod folding {
+    use super::*;
+
+    #[test]
+    fn a_cycle_of_folds_ends_instead_of_looping() {
+        let mut folded: HashMap<String, String> = HashMap::default();
+        assert!(fold(&mut folded, "a".to_string(), "b".to_string()));
+        assert!(!fold(&mut folded, "b".to_string(), "a".to_string()));
+        folded.insert("b".to_string(), "a".to_string());
+        let unit = unit_of(&folded, "a");
+        assert!(unit == "a" || unit == "b");
+    }
 }

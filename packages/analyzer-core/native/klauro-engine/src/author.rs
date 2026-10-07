@@ -771,27 +771,25 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)], req
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PartNamed {
-    pub name: String,
-    pub summary: String,
+struct PartDescribed {
+    summary: String,
 }
 
-pub fn name_a_part(facts: &str) -> Option<PartNamed> {
+pub fn describe_a_part(facts: &str, name: &str) -> Option<String> {
     if !asked() {
         return None;
     }
     let prompt = format!(
-        "These are the facts read from one part of a software system.\n\n{facts}\n\n\
-         Give the part a plain display name of 1-4 words that a person on the team would say aloud, \
-         never the package name, never a path, never prefixed with the repository's name, and one line of \
-         at most 14 words saying what the part is and what it is for, such as \"Storefront service: catalogue, \
-         carts, checkout\". Say only what the facts show. Never name a product, vendor or \
-         technology the facts do not name.\n\n\
-         Return JSON only: {{\"name\":\"...\",\"summary\":\"...\"}}"
+        "These are the facts read from one part of a software system, which is called \"{name}\".\n\n{facts}\n\n\
+         Write one line of at most 14 words saying what this part is and what it is for, in plain words a person \
+         new to the team understands, such as \"Storefront service: catalogue, carts, checkout\". Never use code \
+         names, paths or package names. Say only what the facts show. Never name a product, vendor or technology \
+         the facts do not name.\n\n\
+         Return JSON only: {{\"summary\":\"...\"}}"
     );
-    let named: PartNamed = answered(&prompt, 400, &proposing(), "summary", 1, DESCRIBING_ASK)?;
-    let (name, summary) = (named.name.trim().to_string(), named.summary.trim().to_string());
-    (!name.is_empty() && !summary.is_empty()).then_some(PartNamed { name, summary })
+    let described: PartDescribed = answered(&prompt, 400, &proposing(), "summary", 1, DESCRIBING_ASK)?;
+    let summary = described.summary.trim().to_string();
+    (!summary.is_empty()).then_some(summary)
 }
 
 pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)]) -> Proposal {
