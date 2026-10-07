@@ -88,3 +88,15 @@ fn what_a_call_does_to_its_store_is_the_step_it_takes() {
     assert_eq!(steps_of(&index, "GET", "/basket/{id}"), vec!["read", "respond"]);
     assert_eq!(steps_of(&index, "GET", "/orders/count/{buyer}"), vec!["read", "respond"], "opening a connection and binding a parameter change nothing");
 }
+
+#[test]
+fn a_flow_ends_where_its_message_lands_in_another_part() {
+    let index = common::read("seam_parts");
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    let paying = flows.iter().find(|flow| flow["surface"] == "/orders/{id}/pay").expect("paying is a flow");
+    let kinds: Vec<&str> = paying["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
+    assert!(!kinds.iter().any(|kind| matches!(*kind, "change" | "create")), "the shipment is the shipping part's work, not this flow's: {kinds:?}");
+    assert_eq!(paying["leads_into"], serde_json::json!(["entry:Shipping/OrderPaidHandler.cs:function:Handle:message"]));
+    let shipping = flows.iter().find(|flow| flow["project"] == "subproject:Shipping").expect("receiving is a flow of its own part");
+    assert!(shipping["steps"].as_array().unwrap().iter().any(|step| step["object"] == "Shipment"), "{shipping}");
+}

@@ -2361,6 +2361,13 @@ pub fn derive(
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut stepping = next.clone();
+    for (holder, targets) in stepping.iter_mut() {
+        let here = nodes[*holder as usize].project.as_deref();
+        targets.retain(|target| {
+            let held = &nodes[*target as usize];
+            !handlers.contains_key(held.id.as_str()) || held.project.as_deref() == here
+        });
+    }
     for (holder, inner) in members.iter() {
         for held in inner {
             if nodes[*held as usize].id.contains(":callback:")
@@ -2419,6 +2426,15 @@ pub fn derive(
             let (current, depth) = queue[head];
             head += 1;
             let unit = nodes[current as usize].id.as_str();
+            if let Some(other) = handlers.get(unit)
+                && *other != entry.id
+                && nodes[current as usize].project != nodes[start as usize].project
+            {
+                if !matches!(entry.kind, "export" | "test") {
+                    into.push((*other).to_string());
+                }
+                continue;
+            }
             let leaves: Vec<String> = leaving
                 .get(unit)
                 .into_iter()
