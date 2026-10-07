@@ -1988,6 +1988,7 @@ mod command_family_tests {
             object: object.map(str::to_string),
             doing: None,
             when: "always",
+            arms: Vec::new(),
             regions: Vec::new(),
             description: None,
         }

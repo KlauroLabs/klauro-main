@@ -27,6 +27,8 @@ pub struct LogicalStep {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
     pub when: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arms: Vec<String>,
     pub regions: Vec<Region>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -45,6 +47,7 @@ struct Action {
     object: Option<String>,
     doing: Option<String>,
     when: &'static str,
+    arms: Vec<(u64, u16)>,
     unit: u32,
     line: u32,
 }
@@ -422,23 +425,23 @@ impl<'a> Reader<'a> {
     fn operating_on_a_record(&self, target: u32, when: &'static str, line: u32, unit: u32) -> Option<Action> {
         let node = &self.nodes[target as usize];
         if self.events.contains(node.name.as_str()) && (node.kind.is_type() || self.record_owning(target).is_none()) {
-            return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, unit, line });
+            return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, arms: Vec::new(), unit, line });
         }
         if node.kind.is_type() {
             let record = self.held.get(node.name.as_str()).copied()?;
-            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, unit, line });
+            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), unit, line });
         }
         let record = self.record_owning(target)?;
         if node.name == record {
-            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, unit, line });
+            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), unit, line });
         }
         if !self.writes_fields.contains(node.id.as_str()) {
             return None;
         }
-        Some(Action { kind: "change", object: Some(record.to_string()), doing: Some(spoken(&node.name)), when, unit, line })
+        Some(Action { kind: "change", object: Some(record.to_string()), doing: Some(spoken(&node.name)), when, arms: Vec::new(), unit, line })
     }
 
-    fn walk(&self, unit: u32, depth: u32, when: &'static str, visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
+    fn walk(&self, unit: u32, depth: u32, when: &'static str, arms: &[(u64, u16)], visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
         if actions.len() >= ACTIONS_AT_MOST || depth > DEEPEST {
             self.cut.set(true);
             return;
@@ -500,6 +503,15 @@ impl<'a> Reader<'a> {
         let shown_line = |line: u32| if line == u32::MAX { node.span.end_line } else { line };
         for (line, _, target, context, exit, call) in at_line {
             let context = inherited(when, context);
+            let here: Vec<(u64, u16)> = arms
+                .iter()
+                .copied()
+                .chain(
+                    call.or_else(|| exit.and_then(|exit| calls.iter().copied().find(|held| held.line == exit.line)))
+                        .map(|held| held.context.arms.clone())
+                        .unwrap_or_default(),
+                )
+                .collect();
             if let Some(exit) = exit {
                 let operation = crate::names::leaf(&exit.operation).to_ascii_lowercase();
                 if REFRESHES.contains(&operation.as_str()) {
@@ -511,7 +523,7 @@ impl<'a> Reader<'a> {
                     continue;
                 }
                 if let Some((kind, object)) = self.action_of(exit) {
-                    actions.push(Action { kind, object, doing: None, when: context, unit, line: shown_line(line) });
+                    actions.push(Action { kind, object, doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
                 }
                 continue;
             }
@@ -522,10 +534,11 @@ impl<'a> Reader<'a> {
                         && reached.id.starts_with("package:")
                         && let Some(doing) = acted_through_a_library(crate::names::leaf(&reached.name))
                     {
-                        actions.push(Action { kind: "do", object: None, doing: Some(doing), when: context, unit, line: shown_line(line) });
+                        actions.push(Action { kind: "do", object: None, doing: Some(doing), when: context, arms: here.clone(), unit, line: shown_line(line) });
                         continue;
                     }
-                    if let Some(action) = self.operating_on_a_record(target, context, shown_line(line), unit) {
+                    if let Some(mut action) = self.operating_on_a_record(target, context, shown_line(line), unit) {
+                        action.arms = here.clone();
                         actions.push(action);
                     }
                     if visited.insert(target) {
@@ -533,7 +546,7 @@ impl<'a> Reader<'a> {
                         let named = self.nodes[target as usize].name.as_str();
                         if shared {
                             let mut within: Vec<Action> = Vec::new();
-                            self.walk(target, depth + 1, context, visited, &mut within);
+                            self.walk(target, depth + 1, context, &here, visited, &mut within);
                             let checking = a_check(named);
                             let matters = within.iter().any(|action| match action.kind {
                                 "hand_off" | "raise" => true,
@@ -555,6 +568,7 @@ impl<'a> Reader<'a> {
                                     object: looked_up,
                                     doing: None,
                                     when: context,
+                                    arms: here.clone(),
                                     unit,
                                     line: shown_line(line),
                                 }),
@@ -563,12 +577,13 @@ impl<'a> Reader<'a> {
                                     object: checking.then(|| spoken(named)),
                                     doing: (!checking).then(|| spoken(named)),
                                     when: context,
+                                    arms: here.clone(),
                                     unit,
                                     line: shown_line(line),
                                 }),
                             }
                         } else {
-                            self.walk(target, depth + 1, context, visited, actions);
+                            self.walk(target, depth + 1, context, &here, visited, actions);
                         }
                     }
                 }
@@ -577,19 +592,19 @@ impl<'a> Reader<'a> {
                         if let Some((_, _, doing)) =
                             library_calls.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column)
                         {
-                            actions.push(Action { kind: "do", object: None, doing: Some(doing.clone()), when: context, unit, line: shown_line(line) });
+                            actions.push(Action { kind: "do", object: None, doing: Some(doing.clone()), when: context, arms: here.clone(), unit, line: shown_line(line) });
                             continue;
                         }
                         if let Some((_, _, kind, record)) =
                             class_calls.iter().find(|(held_line, held_column, ..)| *held_line == call.line && *held_column == call.column)
                         {
                             if !exits.iter().any(|exit| exit.line == call.line) {
-                                actions.push(Action { kind, object: Some(record.to_string()), doing: None, when: context, unit, line: shown_line(line) });
+                                actions.push(Action { kind, object: Some(record.to_string()), doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
                             }
                             continue;
                         }
                         let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default().to_string();
-                        actions.push(Action { kind: "check", object: Some(named), doing: None, when: context, unit, line: shown_line(line) });
+                        actions.push(Action { kind: "check", object: Some(named), doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
                     }
                 }
             }
@@ -610,6 +625,7 @@ impl<'a> Reader<'a> {
                 object: Some(guarded.join(", ")),
                 doing: None,
                 when: "always",
+                arms: Vec::new(),
                 unit: start,
                 line: first_line,
             });
@@ -617,10 +633,10 @@ impl<'a> Reader<'a> {
         let mut visited: HashSet<u32> = HashSet::from_iter([start]);
         for first in self.called_before(start) {
             if visited.insert(first) {
-                self.walk(first, 1, "always", &mut visited, &mut actions);
+                self.walk(first, 1, "always", &[], &mut visited, &mut actions);
             }
         }
-        self.walk(start, 0, "always", &mut visited, &mut actions);
+        self.walk(start, 0, "always", &[], &mut visited, &mut actions);
         if matches!(entry.kind, "http" | "rpc" | "graphql" | "export") {
             let returned = self.nodes[start as usize]
                 .signature
@@ -632,6 +648,7 @@ impl<'a> Reader<'a> {
                 object: returned,
                 doing: None,
                 when: "always",
+                arms: Vec::new(),
                 unit: start,
                 line: self.nodes[start as usize].span.end_line,
             });
@@ -641,11 +658,13 @@ impl<'a> Reader<'a> {
         for action in actions {
             let node = &self.nodes[action.unit as usize];
             let region = Region { unit: node.id.clone(), file: node.file, start_line: action.line, end_line: action.line };
+            let armed: Vec<String> = action.arms.iter().map(|(branch, arm)| format!("{branch:x}.{arm}")).collect();
             if let Some(last) = steps.last_mut()
                 && last.kind == action.kind
                 && last.object == action.object
                 && last.doing == action.doing
                 && last.when == action.when
+                && last.arms == armed
             {
                 match last.regions.iter_mut().find(|held| held.unit == region.unit) {
                     Some(held) => {
@@ -672,6 +691,7 @@ impl<'a> Reader<'a> {
                 object: action.object,
                 doing: action.doing,
                 when: action.when,
+                arms: armed,
                 regions: vec![region],
                 description: None,
             });

@@ -96,7 +96,36 @@ fn a_flow_ends_where_its_message_lands_in_another_part() {
     let paying = flows.iter().find(|flow| flow["surface"] == "/orders/{id}/pay").expect("paying is a flow");
     let kinds: Vec<&str> = paying["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
     assert!(!kinds.iter().any(|kind| matches!(*kind, "change" | "create")), "the shipment is the shipping part's work, not this flow's: {kinds:?}");
-    assert_eq!(paying["leads_into"], serde_json::json!(["entry:Shipping/OrderPaidHandler.cs:function:Handle:message"]));
+    let landing: Vec<&str> = paying["leads_into"].as_array().unwrap().iter().map(|into| into.as_str().unwrap()).collect();
+    assert_eq!(landing.len(), 1, "{landing:?}");
+    assert!(landing[0].starts_with("entry:Shipping/OrderPaidHandler.cs:function:Handle") && landing[0].contains("OrderPaidHandler:message"), "{landing:?}");
     let shipping = flows.iter().find(|flow| flow["project"] == "subproject:Shipping").expect("receiving is a flow of its own part");
     assert!(shipping["steps"].as_array().unwrap().iter().any(|step| step["object"] == "Shipment"), "{shipping}");
+}
+
+#[test]
+fn steps_on_different_arms_of_one_decision_are_marked_as_alternatives() {
+    let index = common::read("seam_parts");
+    let settling = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/orders/{id}/settle")
+        .expect("settling is a flow");
+    let arms_of = |object: &str| -> Vec<String> {
+        settling["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["object"] == object && step["kind"] == "raise")
+            .and_then(|step| step["arms"].as_array())
+            .map(|arms| arms.iter().map(|arm| arm.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
+    };
+    let paid = arms_of("OrderPaid");
+    let refused = arms_of("OrderRefused");
+    assert_eq!((paid.len(), refused.len()), (1, 1), "{settling}");
+    let decision = |arm: &str| arm.rsplit_once('.').map(|(branch, _)| branch.to_string());
+    assert_eq!(decision(&paid[0]), decision(&refused[0]), "both sit under the same decision");
+    assert_ne!(paid[0], refused[0], "on different arms of it");
 }

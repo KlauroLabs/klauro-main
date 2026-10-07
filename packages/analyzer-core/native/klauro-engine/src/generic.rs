@@ -135,6 +135,7 @@ struct Scope {
     in_try: bool,
     conditional_depth: u16,
     loop_depth: u16,
+    arms: Vec<(u64, u16)>,
     awaited: bool,
     dispatch_param: Option<String>,
     argv_param: Option<String>,
@@ -922,6 +923,7 @@ impl<'a> Extractor<'a> {
             self_binding: None,
             in_try: false,
             conditional_depth: 0,
+            arms: Vec::new(),
             loop_depth: 0,
             awaited: false,
             dispatch_param: None,
@@ -1164,7 +1166,27 @@ impl<'a> Extractor<'a> {
             }
             let mut inner = scope.clone();
             inner.conditional_depth += 1;
-            self.walk(node, &inner);
+            let branch = ((self.file as u64) << 32) | node.start_byte() as u64;
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                let mut arm = 0u16;
+                loop {
+                    let child = cursor.node();
+                    let deciding = matches!(cursor.field_name(), Some("condition" | "value" | "subject"));
+                    match deciding || !child.is_named() {
+                        true => self.visit(child, &inner),
+                        false => {
+                            arm += 1;
+                            let mut within = inner.clone();
+                            within.arms.push((branch, arm));
+                            self.visit(child, &within);
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
             return;
         }
         if self.spec.flow.loop_kinds.contains(&kind) {
@@ -3022,6 +3044,7 @@ impl<'a> Extractor<'a> {
                 optional_chained: false,
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
+                arms: scope.arms.clone(),
             },
             passes: Vec::new(),
         });
@@ -3347,6 +3370,7 @@ impl<'a> Extractor<'a> {
                 optional_chained: false,
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
+                arms: scope.arms.clone(),
             },
             passes,
         });

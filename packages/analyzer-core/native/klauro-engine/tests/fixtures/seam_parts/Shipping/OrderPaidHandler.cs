@@ -20,3 +20,11 @@ public class OrderPaidHandler(ShippingContext context) : IIntegrationEventHandle
         await context.SaveChangesAsync();
     }
 }
+
+public class OrderRefusedHandler(ShippingContext context) : IIntegrationEventHandler<OrderRefused>
+{
+    public async Task Handle(OrderRefused @event)
+    {
+        await context.SaveChangesAsync();
+    }
+}

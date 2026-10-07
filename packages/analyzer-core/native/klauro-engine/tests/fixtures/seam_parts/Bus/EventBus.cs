@@ -18,3 +18,5 @@ public interface IEventBusBuilder
 }
 
 public record OrderPaid(int OrderId) : IntegrationEvent;
+
+public record OrderRefused(int OrderId) : IntegrationEvent;

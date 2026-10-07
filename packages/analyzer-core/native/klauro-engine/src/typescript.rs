@@ -76,6 +76,7 @@ impl Scope {
                 optional_chained: false,
                 conditional_depth: self.context.conditional_depth,
                 loop_depth: self.context.loop_depth,
+                arms: self.context.arms.clone(),
             },
         }
     }
@@ -327,7 +328,28 @@ impl<'a> Extractor<'a> {
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
-                self.walk(node, &inner);
+                let branch = ((self.file as u64) << 32) | node.start_byte() as u64;
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    let mut arm = 0u16;
+                    loop {
+                        let child = cursor.node();
+                        let deciding = matches!(cursor.field_name(), Some("condition" | "value"));
+                        match deciding || !child.is_named() {
+                            true => self.visit(child, &inner),
+                            false => {
+                                arm += 1;
+                                let mut within = inner.child(None, None);
+                                within.enclosing_callable = inner.enclosing_callable.clone();
+                                within.context.arms.push((branch, arm));
+                                self.visit(child, &within);
+                            }
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
             }
             "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
                 if let Some(unit) = self.unit(scope) {
@@ -1872,6 +1894,7 @@ impl<'a> Extractor<'a> {
                 optional_chained,
                 conditional_depth: scope.context.conditional_depth,
                 loop_depth: scope.context.loop_depth,
+                arms: scope.context.arms.clone(),
             },
             passes,
         });

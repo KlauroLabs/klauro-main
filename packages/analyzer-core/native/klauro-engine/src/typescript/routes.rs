@@ -404,6 +404,7 @@ impl<'a> Extractor<'a> {
             optional_chained: false,
             conditional_depth: scope.context.conditional_depth,
             loop_depth: scope.context.loop_depth,
+            arms: scope.context.arms.clone(),
         };
         let reference = |this: &mut Self, text: &str, component: bool| {
             let (receiver, callee) = match text.rsplit_once('.') {
@@ -423,7 +424,7 @@ impl<'a> Extractor<'a> {
                 renders: component,
                 passes: Vec::new(),
                 type_arguments: Vec::new(),
-                context: CallContext { ..context },
+                context: context.clone(),
             });
         };
         if names_a_component(&name) {

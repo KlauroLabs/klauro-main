@@ -10,5 +10,6 @@ public static class Subscriptions
     public static void Subscribe(IEventBusBuilder eventBus)
     {
         eventBus.AddSubscription<OrderPaid, OrderPaidHandler>();
+        eventBus.AddSubscription<OrderRefused, OrderRefusedHandler>();
     }
 }

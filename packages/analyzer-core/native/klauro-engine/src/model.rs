@@ -243,6 +243,8 @@ pub struct CallContext {
     pub conditional_depth: u16,
     #[serde(skip_serializing_if = "crate::facts_cache::zero")]
     pub loop_depth: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arms: Vec<(u64, u16)>,
 }
 
 impl CallContext {
@@ -254,6 +256,7 @@ impl CallContext {
             && !self.optional_chained
             && self.conditional_depth == 0
             && self.loop_depth == 0
+            && self.arms.is_empty()
     }
 }
 
