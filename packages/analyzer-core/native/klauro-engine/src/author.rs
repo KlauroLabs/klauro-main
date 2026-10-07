@@ -781,7 +781,8 @@ pub const ARCHITECTURE_ASKED: &str = "Write two to four sentences a person new t
          layered, pipelined, event-driven or anything else the facts do not state. When stages are listed, group them into the few phases a reader would name and \
          give those phases in order. Use plain words for what each component does, never class names, file names, \
          paths or package names. Say only what the facts show, and never name a product, vendor or technology the \
-         facts do not name.";
+         facts do not name. Describe what the facts show even when they are few, and never write that facts are \
+         missing, thin or insufficient.";
 
 #[derive(Deserialize)]
 struct ArchitectureDescribed {

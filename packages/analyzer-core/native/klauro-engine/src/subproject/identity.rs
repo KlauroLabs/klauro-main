@@ -108,7 +108,7 @@ fn kind_of(project: &SubProject, tally: &Tally, orchestrates: bool, declares_a_p
     if !project.consumed_by.is_empty() || !project.imported_by.is_empty() || tally.of_kinds(&["export"]) > 0 {
         return ("library", "other code calls into it".to_string());
     }
-    ("tooling", "nothing ships it, runs it or calls it".to_string())
+    ("unused", "nothing ships it, runs it or calls it".to_string())
 }
 
 fn kind_noun_of(kind: &str) -> &'static str {
@@ -122,6 +122,7 @@ fn kind_noun_of(kind: &str) -> &'static str {
         "service" => "service",
         "worker" => "worker",
         "library" => "library",
+        "unused" => "unused code",
         _ => "tooling",
     }
 }
@@ -434,7 +435,7 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
             .map(|(project, (kind, _))| {
                 let alone = partition.sub_projects.len() == 1;
                 let name = match (project.root.is_empty(), *kind, alone) {
-                    (true, "tooling", false) => "Repository tooling".to_string(),
+                    (true, "tooling" | "unused", false) => "Repository tooling".to_string(),
                     _ => as_spelled(&plain_name(project, facts.repository), facts.spelled),
                 };
                 (name, *kind, !project.root.is_empty())

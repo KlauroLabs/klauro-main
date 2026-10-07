@@ -61,7 +61,7 @@ pub fn manifested(
     files: &[String],
     nodes: &[IndexNode],
     calls: &[CallFact],
-) -> Vec<(String, Option<String>)> {
+) -> Vec<(String, Option<String>, String)> {
     let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {
@@ -86,7 +86,7 @@ pub fn manifested(
         if name.is_empty() || name.contains(['/', ' ']) {
             continue;
         }
-        found.push((name.to_string(), call.literals.get(1).cloned()));
+        found.push((name.to_string(), call.literals.get(1).cloned(), files[call.file as usize].clone()));
     }
     for path in files {
         let basename = crate::paths::basename(path).to_ascii_lowercase();
@@ -105,7 +105,7 @@ pub fn manifested(
                     if name.is_empty() {
                         continue;
                     }
-                    found.push((name.to_string(), version_of(entry)));
+                    found.push((name.to_string(), version_of(entry), path.clone()));
                 }
             }
         }
@@ -138,7 +138,7 @@ fn sections_named(
 fn referenced_packages(
     children: &HashMap<&str, Vec<&IndexNode>>,
     path: &str,
-    found: &mut Vec<(String, Option<String>)>,
+    found: &mut Vec<(String, Option<String>, String)>,
 ) {
     let mut pending = vec![path.to_string()];
     while let Some(parent) = pending.pop() {
@@ -156,7 +156,7 @@ fn referenced_packages(
                 .map(unquoted)
                 .unwrap_or_default();
             if !named.is_empty() {
-                found.push((named.to_string(), None));
+                found.push((named.to_string(), None, path.to_string()));
             }
         }
     }
@@ -197,6 +197,8 @@ static CATALOG: &[Known] = &[
     known("actix-web", "framework", "web"),
     known("aiohttp", "framework", "web"),
     known("axum", "framework", "web"),
+    known("tauri", "framework", "desktop"),
+    known("sidekiq", "framework", "jobs"),
     known("django", "framework", "web"),
     known("dropwizard", "framework", "web"),
     known("express", "framework", "web"),
@@ -472,7 +474,7 @@ fn classify(package: &str) -> Option<&'static Known> {
 
 pub fn derive(
     imports: &[ImportFact],
-    manifested: &[(String, Option<String>)],
+    manifested: &[(String, Option<String>, String)],
     internal: &rustc_hash::FxHashSet<String>,
     own: &HashSet<&str>,
     files: &[String],
@@ -547,7 +549,7 @@ pub fn derive(
         }
     }
 
-    for (name, version) in manifested {
+    for (name, version, manifest) in manifested {
         if declares(name, own) {
             continue;
         }
@@ -568,6 +570,11 @@ pub fn derive(
             }
         });
         entry.declared = true;
+        if let Some(project) = project_of.get(manifest.as_str())
+            && !entry.projects.iter().any(|known| known == project)
+        {
+            entry.projects.push((*project).to_string());
+        }
         if entry.version.is_none() {
             entry.version = version.clone();
         }
