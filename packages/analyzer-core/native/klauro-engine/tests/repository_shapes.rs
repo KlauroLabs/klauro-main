@@ -42,3 +42,10 @@ fn a_command_line_package_is_a_tool_whose_commands_are_its_entries() {
     assert_eq!(only_part(&index)["role"], "tool");
     assert_eq!(entries(&index, "cli"), vec!["add", "list"]);
 }
+
+#[test]
+fn a_bare_server_serves_every_request() {
+    let index = common::read("shape_server");
+    assert_eq!(only_part(&index)["role"], "service");
+    assert_eq!(entries(&index, "http"), vec!["/*"]);
+}

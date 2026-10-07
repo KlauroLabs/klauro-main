@@ -92,6 +92,8 @@ fn registered_on_a_router_like(registrar: &str) -> bool {
 }
 
 
+const EVERY_REQUEST: &str = "/*";
+
 static RECURRING: &[&str] = &["cron", "schedule", "setInterval"];
 
 pub fn recurring(registrar: &str) -> bool {
@@ -2618,13 +2620,16 @@ pub fn derive(
                         .to_string(),
                     (None, "tool") => node.name.clone(),
                     (Some(label), _) => spoken_label(label),
+                    (None, "http") => EVERY_REQUEST.to_string(),
                     (None, _) => registrar.clone(),
                 };
                 entry_points.push(EntryPoint {
                     id: format!("entry:{}", node.id),
                     kind,
                     name: spoken,
-                    method: if kind == "http" {
+                    method: if kind == "http" && label.is_none() {
+                        Some("ALL".to_string())
+                    } else if kind == "http" {
                         Some(mapped_method(verb).or_else(|| aliased_method(verb)).unwrap_or_else(|| verb.to_ascii_uppercase()))
                     } else {
                         None
@@ -2640,6 +2645,7 @@ pub fn derive(
                         match (base, label) {
                             (Some(base), Some(label)) => Some(join_paths(&base, &label)),
                             (Some(base), None) => Some(base),
+                            (None, None) => Some(EVERY_REQUEST.to_string()),
                             (None, label) => label,
                         }
                     } else {
@@ -3479,6 +3485,9 @@ pub fn derive(
     exit_points.retain(|_| *keep.next().unwrap_or(&true));
 
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
+    let routed_files: HashSet<u32> =
+        entry_points.iter().filter(|entry| entry.kind == "http" && entry.path.as_deref() != Some(EVERY_REQUEST)).map(|entry| entry.file).collect();
+    entry_points.retain(|entry| entry.kind != "http" || entry.path.as_deref() != Some(EVERY_REQUEST) || !routed_files.contains(&entry.file));
     entry_points.retain(|entry| {
         if entry.kind == "test" {
             return true;

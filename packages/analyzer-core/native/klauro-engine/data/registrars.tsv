@@ -10,3 +10,4 @@ event	exact	addEventListener,on,once,prependListener	*	any	-
 message	exact	consume,process,subscribe,worker	*	any	-
 ipc	exact	handle,handleOnce,invoke	*	any	-
 cli	exact	action,command,handler	*	any	-
+http	exact	createServer,createSecureServer	http,https,http2	any	stop
