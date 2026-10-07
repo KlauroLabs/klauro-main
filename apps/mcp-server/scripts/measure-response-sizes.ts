@@ -29,10 +29,10 @@ async function main() {
   const search = await semanticSearch(path, 'analyzer orchestrator', { getCas: async () => cas });
   rows.push({ tool: 'search_nodes (default)', bytes: byteSize(search) });
 
-  const orchestratorNode = cas.nodes.find(n => n.name === 'AnalyzerOrchestrator') || cas.nodes.find(n => n.type === 'class');
-  if (orchestratorNode) {
-    const cc = query.getCodingContext(cas, orchestratorNode.id);
-    rows.push({ tool: `get_coding_context (${orchestratorNode.name}, default limits)`, bytes: byteSize(cc) });
+  const classNode = cas.nodes.find(n => n.type === 'class');
+  if (classNode) {
+    const cc = query.getCodingContext(cas, classNode.id);
+    rows.push({ tool: `get_coding_context (${classNode.name}, default limits)`, bytes: byteSize(cc) });
   }
 
   const routeTable = query.getRouteTable(cas);
@@ -41,9 +41,9 @@ async function main() {
   const flowConcepts = query.getFlowConcepts(cas, {});
   rows.push({ tool: `get_flow_concepts (default, NO maxFlows cap) total=${flowConcepts.total}`, bytes: byteSize(flowConcepts) });
 
-  if (orchestratorNode) {
-    const callers = query.getCallers(cas, orchestratorNode.id, 2, 50);
-    rows.push({ tool: `get_callers (${orchestratorNode.name}, depth2 limit50) total=${callers.total}`, bytes: byteSize(callers) });
+  if (classNode) {
+    const callers = query.getCallers(cas, classNode.id, 2, 50);
+    rows.push({ tool: `get_callers (${classNode.name}, depth2 limit50) total=${callers.total}`, bytes: byteSize(callers) });
   }
 
   try {

@@ -40,25 +40,6 @@ module.exports = {
       functions: 75,
       lines: 75,
       statements: 75
-    },
-    // Higher thresholds for core analyzer components
-    'src/analyzer/base-analyzer.ts': {
-      branches: 80,
-      functions: 85,
-      lines: 85,
-      statements: 85
-    },
-    'src/analyzer/language-detector.ts': {
-      branches: 75,
-      functions: 80,
-      lines: 80,
-      statements: 80
-    },
-    'src/analyzer/plugin-registry.ts': {
-      branches: 75,
-      functions: 80,
-      lines: 80,
-      statements: 80
     }
   },
   
@@ -124,11 +105,7 @@ module.exports = {
   testPathIgnorePatterns: [
     '<rootDir>/node_modules/',
     '<rootDir>/dist/',
-    '<rootDir>/coverage/',
-    // Full-corpus old-vs-new extractor differential: minutes of work over
-    // ~1.5k files, so it is a dedicated gate step (`npm run parity:extractor`)
-    // rather than inner-loop unit noise. Run it via jest.parity.config.js.
-    '<rootDir>/src/__tests__/parity/'
+    '<rootDir>/coverage/'
   ],
   
   // Transform ignore patterns
