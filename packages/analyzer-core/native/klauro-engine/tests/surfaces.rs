@@ -29,6 +29,7 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
             "http POST /Account/Login",
             "http POST /api/hooks/received",
             "http POST /v1/analyze",
+            "http PUT /api/hooks",
             "rpc - /Basket/GetBasket",
         ]
     );
@@ -65,7 +66,7 @@ fn a_route_handled_inline_is_handled_by_its_own_lambda() {
         .filter(|entry| entry["path"].as_str().is_some_and(|path| path.starts_with("/api/hooks")))
         .filter_map(|entry| entry["handler"].as_str())
         .collect();
-    assert_eq!(handlers.len(), 2, "{handlers:?}");
+    assert_eq!(handlers.len(), 3, "{handlers:?}");
     assert!(handlers.iter().all(|handler| handler.contains(":callback:")), "{handlers:?}");
 }
 

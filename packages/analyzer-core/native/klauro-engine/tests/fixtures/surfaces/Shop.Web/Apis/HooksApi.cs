@@ -10,10 +10,20 @@ public static class HooksApi
         {
             await repository.AddNew(hook);
         });
+        api.MapPut("/", async Task<Results<Created, BadRequest<string>>> (HookData hook, HooksRepository repository) =>
+        {
+            await repository.AddNew(Links.Url(hook));
+            return TypedResults.Created("/api/hooks/1");
+        });
         return api;
     }
 }
 
 public class HookData
 {
+}
+
+public static class Links
+{
+    public static HookData Url(HookData hook) => hook;
 }

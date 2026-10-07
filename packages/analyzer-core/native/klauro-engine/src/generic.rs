@@ -209,13 +209,13 @@ impl<'a> Extractor<'a> {
     fn handed_over<'b>(&self, node: Node<'b>, found: &mut Vec<(String, Node<'b>)>) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind().contains("string") || configures_the_call(child.kind()) {
+            if child.kind().contains("string") || configures_the_call(child.kind()) || self.spec.declares.lambda_kinds.contains(&child.kind()) {
                 continue;
             }
             if matches!(child.kind(), "arguments" | "argument_list") {
                 let mut inner = child.walk();
                 for argument in child.named_children(&mut inner) {
-                    if configures_the_call(argument.kind()) {
+                    if configures_the_call(argument.kind()) || self.spec.declares.lambda_kinds.contains(&unwrapped(argument).kind()) {
                         continue;
                     }
                     for handler in self.referenced_names(unwrapped(argument), 0) {
@@ -460,7 +460,7 @@ impl<'a> Extractor<'a> {
                 }
                 continue;
             }
-            if child.kind() == "macro_invocation" {
+            if child.kind() == "macro_invocation" || self.spec.declares.lambda_kinds.contains(&child.kind()) {
                 continue;
             }
             if let Some(found) = self.mounted_path(child) {
