@@ -2794,27 +2794,60 @@ pub fn derive(
             above.entry(caller).or_default().push(literal.as_str());
         }
     }
-    fn supertype_base(
-        name: &str,
-        reaches: &HashMap<&str, &'static EntryBase>,
-    ) -> Option<&'static EntryBase> {
-        entry_base(name)
-            .or_else(|| reaches.get(names::leaf(name)).copied())
-    }
+    let spoken = |held: &str| held.to_ascii_lowercase().replace(['_', '-'], "");
+    let named_of_node: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let context_of = |node: &IndexNode| -> HashSet<String> {
+        let mut within: HashSet<String> = HashSet::default();
+        if let Some(path) = files.get(node.file as usize) {
+            within.extend(path.split('/').map(spoken));
+        }
+        let mut above = node.parent.as_deref().and_then(|parent| named_of_node.get(parent).copied());
+        while let Some(held) = above.filter(|held| held.kind.is_type()) {
+            within.insert(spoken(&held.name));
+            above = held.parent.as_deref().and_then(|parent| named_of_node.get(parent).copied());
+        }
+        within
+    };
+    let contexts: HashMap<&str, HashSet<String>> = nodes.iter().filter(|node| node.kind.is_type()).map(|node| (node.id.as_str(), context_of(node))).collect();
+    let types_named: HashMap<&str, Vec<&IndexNode>> = by_name.iter().map(|(name, found)| (*name, found.clone())).collect();
+    let resolve = |written: &str, from: &IndexNode| -> Option<&IndexNode> {
+        let candidates = types_named.get(names::leaf(written))?;
+        let qualifier = written.rsplit_once("::").or_else(|| written.rsplit_once('.')).map(|(qualifier, _)| spoken(names::leaf(qualifier)));
+        let fitting: Vec<&IndexNode> = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.id != from.id)
+            .filter(|candidate| qualifier.as_ref().is_none_or(|qualifier| contexts.get(candidate.id.as_str()).is_some_and(|within| within.contains(qualifier))))
+            .collect();
+        if fitting.len() <= 1 {
+            return fitting.first().copied();
+        }
+        let near = contexts.get(from.id.as_str());
+        let shared = |candidate: &&IndexNode| near.zip(contexts.get(candidate.id.as_str())).map_or(0, |(near, within)| near.intersection(within).count());
+        let best = fitting.iter().map(shared).max().unwrap_or(0);
+        let closest: Vec<&IndexNode> = fitting.iter().copied().filter(|candidate| shared(candidate) == best).collect();
+        match closest.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    };
+    let supertype_base = |written: &str, from: &IndexNode, reaches: &HashMap<&str, &'static EntryBase>| -> Option<&'static EntryBase> {
+        entry_base(written).or_else(|| resolve(written, from).and_then(|held| reaches.get(held.id.as_str()).copied()))
+    };
     let mut reaches: HashMap<&str, &'static EntryBase> = HashMap::default();
     loop {
         let mut settled = false;
         for node in nodes {
-            if !node.kind.is_type() || reaches.contains_key(node.name.as_str()) {
+            if !node.kind.is_type() || reaches.contains_key(node.id.as_str()) {
                 continue;
             }
             let found = above
                 .get(node.id.as_str())
                 .into_iter()
                 .flatten()
-                .find_map(|name| supertype_base(name, &reaches));
+                .find_map(|name| supertype_base(name, node, &reaches));
             if let Some(found) = found {
-                reaches.insert(node.name.as_str(), found);
+                reaches.insert(node.id.as_str(), found);
                 settled = true;
             }
         }
@@ -2827,9 +2860,16 @@ pub fn derive(
             .get(node.id.as_str())
             .into_iter()
             .flatten()
-            .find_map(|name| supertype_base(name, &reaches))
+            .find_map(|name| supertype_base(name, node, &reaches))
     };
 
+    let mut declared_by: HashMap<(&str, &str), HashSet<&str>> = HashMap::default();
+    for call in calls {
+        let (Some(caller), Some(first)) = (call.caller.as_deref(), call.literals.first()) else { continue };
+        if let Some(named) = first.split_whitespace().next() {
+            declared_by.entry((caller, call.callee.as_str())).or_default().insert(named);
+        }
+    }
     let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref()
@@ -2864,7 +2904,10 @@ pub fn derive(
             continue;
         }
         for member in members.get(node.id.as_str()).into_iter().flatten() {
-            if !found.members.iter().any(|pattern| matches_member(pattern, &member.name)) {
+            let declared = |pattern: &str| {
+                pattern.strip_prefix('@').is_some_and(|declarer| declared_by.get(&(node.id.as_str(), declarer)).is_some_and(|names| names.contains(member.name.as_str())))
+            };
+            if !found.members.iter().any(|pattern| declared(pattern) || (!pattern.starts_with('@') && matches_member(pattern, &member.name))) {
                 continue;
             }
             entry_points.push(EntryPoint {

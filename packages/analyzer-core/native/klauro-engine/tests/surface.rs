@@ -78,3 +78,29 @@ fn a_chained_query_crosses_the_boundary_once() {
     assert_eq!(queries.len(), 2, "one exit per query site, not one per chained link");
     assert!(queries.iter().all(|exit| exit["name"] == "session.query"));
 }
+
+#[test]
+fn a_command_line_framework_s_declared_commands_are_entries_and_nothing_else() {
+    let index = common::read("thor_commands");
+    let commands: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "cli")
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, vec!["create"], "only what desc declares is a command, and a model sharing a base's short name is none");
+}
+
+#[test]
+fn a_framework_base_is_not_reached_through_a_repository_type_that_shares_its_short_name() {
+    let index = common::read("thor_commands");
+    let background: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "background")
+        .map(|entry| entry["handler"].as_str().unwrap())
+        .collect();
+    assert!(background.is_empty(), "a model under ActiveRecord::Base is no job though Jobs::Base is: {background:?}");
+}

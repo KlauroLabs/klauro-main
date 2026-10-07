@@ -27,3 +27,4 @@ wpf	Window	ui	-
 uikit	UIViewController	ui	-
 uikit	UITableViewController	ui	-
 android	Activity	ui	-
+thor	Thor	cli	@desc
