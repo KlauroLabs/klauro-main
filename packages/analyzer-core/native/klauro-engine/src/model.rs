@@ -174,6 +174,7 @@ pub enum Via {
     Structure,
     Name,
     Rule,
+    Types,
 }
 
 impl Via {

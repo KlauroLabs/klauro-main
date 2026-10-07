@@ -1717,8 +1717,31 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn loads_a_module(&mut self, node: Node) {
+        let Some(function) = node.child_by_field_name("function") else { return };
+        let loads = function.kind() == "import" || (function.kind() == "identifier" && self.text(function) == "require");
+        if !loads {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else { return };
+        let Some(first) = arguments.named_child(0).filter(|first| first.kind() == "string") else { return };
+        let specifier = trim_quotes(self.text(first)).to_string();
+        if specifier.is_empty() {
+            return;
+        }
+        self.facts.imports.push(ImportFact {
+            file: self.file,
+            specifier,
+            line: line_of(node),
+            type_only: false,
+            everywhere: false,
+            names: Vec::new(),
+        });
+    }
+
     fn call_expression(&mut self, node: Node, scope: &Scope) {
         self.mounted_screens(node);
+        self.loads_a_module(node);
         let constructs = node.kind() == "new_expression";
         let Some(function) = node
             .child_by_field_name("function")

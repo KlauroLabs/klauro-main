@@ -107,6 +107,19 @@ impl Scope {
         })
     }
 
+    pub fn distributes(&self, path: &str) -> bool {
+        let built_from = |output: &str| self.bundled_entries.iter().any(|bundled| bundled.entry == path && bundled.output == output);
+        self.deployables.iter().any(|unit| {
+            let names_it = unit.runs.as_deref().is_some_and(|runs| join(&unit.root, unquote(runs)) == path)
+                || unit.ships.iter().any(|shipped| shipped == path || built_from(shipped));
+            names_it && unit.declarations.iter().any(|declared| !matches!(declared.declares, Declares::Identity) && declared.kind != "cargo-bin")
+        })
+    }
+
+    pub fn runs_file(&self, path: &str) -> bool {
+        self.deployables.iter().any(|unit| unit.runs.as_deref().is_some_and(|runs| join(&unit.root, unquote(runs)) == path))
+    }
+
     pub fn ships_the_source_of(&self, path: &str) -> bool {
         self.deployables.iter().flat_map(|unit| unit.ships.iter()).any(|shipped| {
             let (built_from, built_into) = match shipped.rsplit_once('/') {

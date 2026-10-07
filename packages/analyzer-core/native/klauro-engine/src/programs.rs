@@ -169,9 +169,10 @@ pub fn run_as_programs(sources: &Sources) -> Vec<EntryPoint> {
         .into_iter()
         .map(|(file, registrar)| {
             let path = &paths[file as usize];
+            let started_as_a_service = registrar == STARTS_THE_PACKAGE || registrar == "stands-alone";
             EntryPoint {
                 id: format!("entry:{path}{PROGRAM}"),
-                kind: "cli",
+                kind: if started_as_a_service { "lifecycle" } else { "cli" },
                 name: paths::basename(path).split('.').next().unwrap_or_default().to_string(),
                 method: None,
                 path: None,
@@ -253,7 +254,12 @@ pub fn set_aside_development_programs(entries: &mut [EntryPoint], files: &[Strin
     }
     for entry in entries.iter_mut().filter(|entry| entry.id.ends_with(PROGRAM) && entry.unshipped.is_none()) {
         let path = files[entry.file as usize].as_str();
-        if entry.registrar == STARTS_THE_PACKAGE || scope.ships_file_by_convention(path) {
+        let run_by_a_package_script = entry.registrar.starts_with("package-script:");
+        let runtime = entry.registrar == STARTS_THE_PACKAGE
+            || scope.runs_file(path)
+            || scope.ships_the_build_of(path)
+            || (!run_by_a_package_script && scope.ships_file_by_convention(path));
+        if runtime {
             continue;
         }
         entry.unshipped = Some(Unshipped {

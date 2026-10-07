@@ -1779,7 +1779,10 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         for target in &reached {
             edges.push(IndexEdge {
-                via: Via::Structure,
+                via: match fact.type_only {
+                    true => Via::Types,
+                    false => Via::Structure,
+                },
                 source: from.to_string(),
                 target: index.files[*target as usize].clone(),
                 kind: EdgeKind::Imports,

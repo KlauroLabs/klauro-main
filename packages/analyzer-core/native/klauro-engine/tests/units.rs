@@ -50,3 +50,13 @@ fn a_repository_of_pages_is_one_website_named_for_the_repository() {
     assert_eq!(all[0]["role"], "website");
     assert_eq!(all[0]["display_name"], "Website only");
 }
+
+#[test]
+fn a_program_its_host_never_runs_is_a_unit_of_its_own() {
+    let all = parts("units_own_program");
+    assert_eq!(part(&all, "apps/api")["role"], "service");
+    assert_eq!(part(&all, "apps/api")["members"], serde_json::json!(["packages/client"]));
+    let client = part(&all, "packages/client");
+    assert_eq!(client["role"], "tool");
+    assert_eq!(client["files"], 2, "the command line and what only it runs: {client:#?}");
+}

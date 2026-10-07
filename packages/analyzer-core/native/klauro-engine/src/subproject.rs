@@ -10,7 +10,7 @@ use crate::scope::{Declares, Deployable};
 
 pub mod identity;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SubProject {
     pub id: String,
     pub name: String,
@@ -194,6 +194,7 @@ pub fn derive(
     nested: &[String],
     code: &[bool],
     deployables: &[Deployable],
+    scope: Option<&crate::scope::Scope>,
 ) -> Partition {
     let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
@@ -292,7 +293,10 @@ pub fn derive(
     describe(&mut derived.sub_projects, descriptors);
     declared_consumers(&mut derived.sub_projects, &manifests, &children);
     let shells = platform_shells(&derived.sub_projects, &manifests, &children);
-    fold_into_units(&mut derived, shells);
+    let absorbed = fold_into_units(&mut derived, shells);
+    if let Some(scope) = scope {
+        carve_own_programs(&mut derived, absorbed, &Sources { files, nodes, edges, entry_points, scope });
+    }
     derived
 }
 
@@ -813,7 +817,7 @@ fn ships_within(project: &SubProject, host: &SubProject) -> bool {
     project.ships_in.iter().all(|unit| host.ships_in.contains(unit))
 }
 
-pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>) {
+pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>) -> Vec<SubProject> {
     let mut folded: HashMap<String, String> = HashMap::default();
     for (from, into) in shells {
         fold(&mut folded, from, into);
@@ -854,7 +858,7 @@ pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>)
         }
     }
     if folded.is_empty() {
-        return;
+        return Vec::new();
     }
     let units: HashMap<String, String> = folded
         .keys()
@@ -869,6 +873,7 @@ pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>)
             false => kept.push(project),
         }
     }
+    let templates = absorbed.clone();
     for member in absorbed {
         let host_id = &units[&member.id];
         let Some(host) = kept.iter_mut().find(|project| project.id == *host_id) else { continue };
@@ -919,7 +924,119 @@ pub fn fold_into_units(partition: &mut Partition, shells: Vec<(String, String)>)
     partition.sub_projects = kept;
     partition.sub_cas_nodes.qualified = partition.sub_projects.len() as u32;
     partition.sub_cas_nodes.promoted = partition.sub_projects.len() >= PROMOTION_THRESHOLD;
+    templates
 }
+
+struct Sources<'a> {
+    files: &'a [String],
+    nodes: &'a [IndexNode],
+    edges: &'a [IndexEdge],
+    entry_points: &'a [EntryPoint],
+    scope: &'a crate::scope::Scope,
+}
+
+fn run_from<'a>(starts: &[&'a str], loads: &HashMap<&'a str, Vec<&'a str>>) -> HashSet<&'a str> {
+    let mut reached: HashSet<&str> = HashSet::default();
+    let mut pending: Vec<&str> = starts.to_vec();
+    while let Some(current) = pending.pop() {
+        if reached.insert(current) {
+            pending.extend(loads.get(current).into_iter().flatten().copied().filter(|next| !reached.contains(next)));
+        }
+    }
+    reached
+}
+
+fn carve_own_programs(partition: &mut Partition, absorbed: Vec<SubProject>, sources: &Sources) {
+    let mut loads: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in sources.edges.iter().filter(|edge| edge.kind == EdgeKind::Imports && edge.via != Via::Types) {
+        loads.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+    }
+    let mut programs: Vec<&str> = sources
+        .entry_points
+        .iter()
+        .filter(|entry| matches!(entry.kind, "lifecycle" | "cli") && !crate::unshipped::is_set_aside(entry.unshipped.as_ref()))
+        .filter_map(|entry| sources.files.get(entry.file as usize).map(|path| (entry, path.as_str())))
+        .filter(|(entry, path)| entry.registrar == "package-script:start" || sources.scope.distributes(path))
+        .map(|(_, path)| path)
+        .collect();
+    programs.sort();
+    programs.dedup();
+    let mut carved_any = false;
+    for member in absorbed {
+        let Some(host) = partition.sub_projects.iter().find(|project| project.members.contains(&member.root)).map(|project| project.id.clone()) else { continue };
+        let held_by_host: HashSet<&str> = partition.assignment.iter().filter(|(_, id)| *id == host).map(|(path, _)| path.as_str()).collect();
+        let own: Vec<&str> = programs.iter().copied().filter(|path| held_by_host.contains(path) && contains(&member.root, path)).collect();
+        let others: Vec<&str> = programs.iter().copied().filter(|path| held_by_host.contains(path) && !contains(&member.root, path)).collect();
+        if own.is_empty() || others.is_empty() {
+            continue;
+        }
+        let run_by_others = run_from(&others, &loads);
+        if own.iter().all(|path| run_by_others.contains(path)) {
+            continue;
+        }
+        let run_by_own = run_from(&own, &loads);
+        let carved: HashSet<String> = held_by_host
+            .iter()
+            .filter(|path| run_by_own.contains(*path) && !run_by_others.contains(*path))
+            .map(|path| path.to_string())
+            .collect();
+        if carved.is_empty() {
+            continue;
+        }
+        let declarations = sources
+            .nodes
+            .iter()
+            .filter(|node| node.kind != NodeKind::Module && sources.files.get(node.file as usize).is_some_and(|path| carved.contains(path)))
+            .count() as u32;
+        let mut unit = member;
+        unit.files = carved.len() as u32;
+        unit.code_files = carved.len() as u32;
+        unit.test_files = 0;
+        unit.declarations = declarations;
+        unit.members = Vec::new();
+        unit.consumed_by = Vec::new();
+        unit.imported_by = Vec::new();
+        unit.imports_within = 0;
+        unit.imports_crossing = 0;
+        for (path, id) in partition.assignment.iter_mut() {
+            if carved.contains(path) {
+                *id = unit.id.clone();
+            }
+        }
+        if let Some(held) = partition.sub_projects.iter_mut().find(|project| project.id == host) {
+            held.files = held.files.saturating_sub(unit.files);
+            held.code_files = held.code_files.saturating_sub(unit.code_files);
+            held.declarations = held.declarations.saturating_sub(declarations);
+        }
+        partition.sub_projects.push(unit);
+        carved_any = true;
+    }
+    if !carved_any {
+        return;
+    }
+    let owner: HashMap<&str, &str> = partition.assignment.iter().map(|(path, id)| (path.as_str(), id.as_str())).collect();
+    let mut between: HashMap<(String, String), u32> = HashMap::default();
+    let mut importers: HashMap<String, HashSet<String>> = HashMap::default();
+    for edge in sources.edges.iter().filter(|edge| edge.kind == EdgeKind::Imports) {
+        let (Some(from), Some(to)) = (owner.get(edge.source.as_str()), owner.get(edge.target.as_str())) else { continue };
+        if from == to {
+            continue;
+        }
+        *between.entry((from.to_string(), to.to_string())).or_default() += 1;
+        if !crate::paths::is_test(&edge.source) {
+            importers.entry(to.to_string()).or_default().insert(from.to_string());
+        }
+    }
+    partition.imports_between = between.into_iter().map(|((from, to), count)| (from, to, count)).collect();
+    for project in partition.sub_projects.iter_mut() {
+        let mut found: Vec<String> = importers.remove(&project.id).unwrap_or_default().into_iter().collect();
+        found.sort();
+        project.imported_by = found;
+    }
+    partition.sub_cas_nodes.qualified = partition.sub_projects.len() as u32;
+    partition.sub_cas_nodes.promoted = partition.sub_projects.len() >= PROMOTION_THRESHOLD;
+}
+
 
 static DEPENDENCY_SECTIONS: &[&str] = &["dependencies", "optionalDependencies", "peerDependencies"];
 

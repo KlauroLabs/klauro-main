@@ -909,6 +909,7 @@ fn read_it() {
         &index.nested_repositories,
         &code,
         index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
+        index.scope.as_ref(),
     );
     let project_of: rustc_hash::FxHashMap<&str, &str> = partition
         .assignment
