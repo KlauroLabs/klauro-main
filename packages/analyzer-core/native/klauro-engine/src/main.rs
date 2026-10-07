@@ -728,6 +728,7 @@ fn read_it() {
         resolution.no_caller
     );
 
+    entry_exit::unwrap_composed_decorators(&mut index.nodes, &index.calls);
     let declared_in_markup = xaml::declared_bases(&root, &paths, &index.nodes);
     index.type_references.extend(declared_in_markup);
     let derive_started = Instant::now();

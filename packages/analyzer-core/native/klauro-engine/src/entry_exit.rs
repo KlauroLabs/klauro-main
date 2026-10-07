@@ -97,7 +97,8 @@ const EVERY_REQUEST: &str = "/*";
 static RECURRING: &[&str] = &["cron", "schedule", "setInterval"];
 
 pub fn recurring(registrar: &str) -> bool {
-    RECURRING.binary_search(&names::leaf(registrar)).is_ok()
+    let leaf = names::leaf(registrar);
+    RECURRING.iter().any(|recurs| recurs.eq_ignore_ascii_case(leaf))
 }
 
 static CONTINUATION_STARTERS: &str = include_str!("../data/continuation_starters.tsv");
@@ -615,6 +616,36 @@ fn declared_base(class: &IndexNode) -> Option<String> {
 
 fn owner_path(path: &str, owner: &str) -> String {
     path.replace("[controller]", owner.strip_suffix("Controller").unwrap_or(owner))
+}
+
+pub fn unwrap_composed_decorators(nodes: &mut [IndexNode], calls: &[CallFact]) {
+    let name_of: HashMap<&str, &str> = nodes.iter().filter(|node| node.kind == NodeKind::Function).map(|node| (node.id.as_str(), node.name.as_str())).collect();
+    let mut applied: HashMap<&str, HashSet<&str>> = HashMap::default();
+    for call in calls {
+        let Some(caller) = call.caller.as_deref().filter(|caller| name_of.contains_key(caller)) else { continue };
+        let probe = Decorator { name: call.callee.clone(), arguments: Vec::new() };
+        if matches!(decorator_entry(&probe, false), Some(("http", method, _)) if method != "ANY") {
+            applied.entry(caller).or_default().insert(call.callee.as_str());
+        }
+    }
+    let composed: HashMap<&str, &str> = applied
+        .iter()
+        .filter_map(|(caller, verbs)| match verbs.iter().collect::<Vec<_>>().as_slice() {
+            [only] => Some((name_of[caller], **only)),
+            _ => None,
+        })
+        .collect();
+    if composed.is_empty() {
+        return;
+    }
+    let composed: HashMap<String, String> = composed.into_iter().map(|(name, verb)| (name.to_string(), verb.to_string())).collect();
+    for node in nodes.iter_mut().filter(|node| node.kind == NodeKind::Method) {
+        for decorator in node.decorators.iter_mut() {
+            if let Some(framework) = composed.get(names::leaf(&decorator.name)) {
+                decorator.name = framework.clone();
+            }
+        }
+    }
 }
 
 fn decorator_entry(decorator: &Decorator, bare_verbs: bool) -> Option<(&'static str, String, Option<String>)> {

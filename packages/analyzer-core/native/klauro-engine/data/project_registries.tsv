@@ -1,0 +1,2 @@
+nest	nest-cli.json	projects	root	sourceRoot	entryFile	type=application
+angular	angular.json	projects	root	sourceRoot	main	projectType=application

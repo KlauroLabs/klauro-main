@@ -137,6 +137,56 @@ fn matches_pattern(pattern: &str, root: &str) -> bool {
     }
 }
 
+static PROJECT_REGISTRIES: &str = include_str!("../data/project_registries.tsv");
+
+pub struct Registered {
+    pub name: String,
+    pub root: String,
+    pub at: String,
+    pub starts_at: Option<String>,
+}
+
+pub fn registered_projects(files: &[String], children: &HashMap<&str, Vec<&IndexNode>>) -> Vec<Registered> {
+    let mut found = Vec::new();
+    for registry in PROJECT_REGISTRIES.lines() {
+        let [_, file, section, root_key, source_key, entry_key, application]: [&str; 7] = match registry.split('\t').collect::<Vec<_>>().try_into() {
+            Ok(fields) => fields,
+            Err(_) => continue,
+        };
+        let (kind_key, kind_value) = application.split_once('=').unwrap_or((application, ""));
+        for path in files.iter().filter(|path| basename(path) == file) {
+            let base = directory_of(path);
+            let within = |value: &str| -> String {
+                let value = value.trim().trim_matches('"').trim_start_matches("./").trim_end_matches('/');
+                match (base.is_empty(), value.is_empty()) {
+                    (_, true) => String::new(),
+                    (true, false) => value.to_string(),
+                    (false, false) => format!("{base}/{value}"),
+                }
+            };
+            let Some(holder) = children.get(path.as_str()).and_then(|document| document.iter().find(|node| node.name == section)) else { continue };
+            for project in children.get(holder.id.as_str()).into_iter().flatten() {
+                let field = |key: &str| {
+                    children
+                        .get(project.id.as_str())
+                        .and_then(|fields| fields.iter().find(|field| field.name == key))
+                        .and_then(|field| field.type_annotation.as_deref())
+                        .map(|value| value.trim().trim_matches('"').to_string())
+                };
+                let Some(root) = field(root_key) else { continue };
+                let applies = field(kind_key).is_some_and(|value| value == kind_value);
+                let starts_at = match (applies, field(source_key), field(entry_key)) {
+                    (true, Some(source), Some(entry)) if !entry.contains('.') => Some(within(&format!("{source}/{entry}"))),
+                    (true, _, Some(entry)) => Some(within(&entry)),
+                    _ => None,
+                };
+                found.push(Registered { name: project.name.clone(), root: within(&root), at: path.clone(), starts_at });
+            }
+        }
+    }
+    found
+}
+
 fn workspace_patterns<'a>(
     files: &[String],
     children: &HashMap<&'a str, Vec<&'a IndexNode>>,
@@ -226,6 +276,13 @@ pub fn derive(
                 at: at.clone(),
             });
         }
+    }
+
+    for registered in registered_projects(files, &children) {
+        if registered.root.is_empty() || !claimed.insert(registered.root.clone()) {
+            continue;
+        }
+        declared.push(Declared { name: registered.name, root: registered.root, declared_by: "project-registry", at: registered.at });
     }
 
     for root in nested {

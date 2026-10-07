@@ -73,3 +73,15 @@ fn a_library_part_offers_what_other_parts_use() {
         .collect();
     assert_eq!(offered, vec!["formatName"]);
 }
+
+#[test]
+fn a_registry_declared_monorepo_has_its_apps_routes_and_jobs() {
+    let index = common::read("nest_monorepo");
+    let all = index["partition"]["sub_projects"].as_array().unwrap().clone();
+    assert_eq!(part(&all, "apps/api")["role"], "service");
+    assert_eq!(part(&all, "apps/scheduler")["role"], "worker");
+    assert_eq!(part(&all, "libs/shared")["role"], "library");
+    let entries = index["entry_points"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| entry["kind"] == "http" && entry["path"] == "/orders/place"), "a route behind a decorator the repository composes");
+    assert!(entries.iter().any(|entry| entry["kind"] == "schedule" && entry["name"] == "restock"), "a cron job written with its framework's capitalised decorator");
+}

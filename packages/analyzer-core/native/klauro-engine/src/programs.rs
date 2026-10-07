@@ -11,6 +11,7 @@ use crate::paths;
 static PROGRAMS: &str = include_str!("../data/programs.tsv");
 const PROGRAM: &str = ":program";
 const STARTS_THE_PACKAGE: &str = "package-script:start";
+const REGISTERED_APPLICATION: &str = "registered-application";
 static COMMAND_BREAKS: &[&str] = &["&&", "||", ";", "|"];
 
 fn rows() -> impl Iterator<Item = [&'static str; 3]> {
@@ -147,6 +148,21 @@ pub fn run_as_programs(sources: &Sources) -> Vec<EntryPoint> {
     let held: HashMap<&str, u32> = paths.iter().enumerate().map(|(at, path)| (path.as_str(), at as u32)).collect();
     let alone = stands_alone_and_ends_the_process(sources);
     let mut programs: BTreeMap<u32, String> = BTreeMap::new();
+    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+    for node in nodes {
+        if let Some(parent) = node.parent.as_deref() {
+            children.entry(parent).or_default().push(node);
+        }
+    }
+    for registered in crate::subproject::registered_projects(paths, &children) {
+        let Some(starts_at) = registered.starts_at else { continue };
+        let found = held.get(starts_at.as_str()).copied().or_else(|| {
+            ["ts", "js", "mts", "mjs", "tsx", "jsx"].iter().find_map(|extension| held.get(format!("{starts_at}.{extension}").as_str()).copied())
+        });
+        if let Some(file) = found.filter(|file| runnable(*file)) {
+            programs.insert(file, REGISTERED_APPLICATION.to_string());
+        }
+    }
     for (file, script) in run_by_a_package_script(nodes, paths, &held) {
         if runnable(file) {
             programs.entry(file).or_insert_with(|| format!("package-script:{script}"));
@@ -169,7 +185,7 @@ pub fn run_as_programs(sources: &Sources) -> Vec<EntryPoint> {
         .into_iter()
         .map(|(file, registrar)| {
             let path = &paths[file as usize];
-            let started_as_a_service = registrar == STARTS_THE_PACKAGE || registrar == "stands-alone";
+            let started_as_a_service = registrar == STARTS_THE_PACKAGE || registrar == REGISTERED_APPLICATION || registrar == "stands-alone";
             EntryPoint {
                 id: format!("entry:{path}{PROGRAM}"),
                 kind: if started_as_a_service { "lifecycle" } else { "cli" },
@@ -256,6 +272,7 @@ pub fn set_aside_development_programs(entries: &mut [EntryPoint], files: &[Strin
         let path = files[entry.file as usize].as_str();
         let run_by_a_package_script = entry.registrar.starts_with("package-script:");
         let runtime = entry.registrar == STARTS_THE_PACKAGE
+            || entry.registrar == REGISTERED_APPLICATION
             || scope.runs_file(path)
             || scope.ships_the_build_of(path)
             || (!run_by_a_package_script && scope.ships_file_by_convention(path));
