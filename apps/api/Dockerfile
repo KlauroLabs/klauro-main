@@ -7,9 +7,12 @@ WORKDIR /build/klauro-engine
 COPY packages/analyzer-core/native/klauro-engine/Cargo.toml packages/analyzer-core/native/klauro-engine/Cargo.lock ./
 COPY packages/analyzer-core/native/klauro-engine/build.rs ./build.rs
 COPY packages/analyzer-core/native/klauro-engine/grammars ./grammars
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --locked \
+    && rm -rf src target/release/.fingerprint/klauro-engine-* target/release/deps/klauro_engine-*
 COPY packages/analyzer-core/native/klauro-engine/src ./src
 COPY packages/analyzer-core/native/klauro-engine/data ./data
-RUN cargo build --release --locked
+RUN touch src/main.rs && cargo build --release --locked
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
