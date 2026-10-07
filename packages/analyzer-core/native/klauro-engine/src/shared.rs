@@ -147,4 +147,37 @@ impl<'a> Graph<'a> {
         }
         overriding
     }
+
+    fn below(&self, ancestor: usize, held: usize) -> bool {
+        let mut pending: Vec<usize> = self.implementors.get(self.nodes[ancestor].name.as_str()).cloned().unwrap_or_default();
+        let mut visited: HashSet<usize> = HashSet::default();
+        while let Some(at) = pending.pop() {
+            if at == held {
+                return true;
+            }
+            if visited.insert(at) {
+                pending.extend(self.implementors.get(self.nodes[at].name.as_str()).into_iter().flatten().copied());
+            }
+        }
+        false
+    }
+
+    pub fn shared_implementations(&self, implementations: Vec<usize>) -> Vec<usize> {
+        let owners: Vec<Option<usize>> = implementations
+            .iter()
+            .map(|held| self.type_owner(*held).filter(|owner| self.nodes[*owner].kind != crate::model::NodeKind::Interface))
+            .collect();
+        let shared: Vec<usize> = implementations
+            .iter()
+            .zip(owners.iter())
+            .filter(|(_, owner)| {
+                owner.is_some_and(|owner| owners.iter().flatten().any(|other| *other != owner && self.below(owner, *other)))
+            })
+            .map(|(held, _)| *held)
+            .collect();
+        match shared.is_empty() {
+            true => implementations,
+            false => shared,
+        }
+    }
 }

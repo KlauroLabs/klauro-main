@@ -273,7 +273,12 @@ pub fn derive(sources: &Sources) -> Derived {
         }
     }
     for (declared, implementations) in graph.overriding() {
-        for implementation in implementations.into_iter().filter(|held| !tested(nodes[*held].file)) {
+        let declared_in_a_class = graph.type_owner(declared).is_some_and(|owner| nodes[owner].kind != crate::model::NodeKind::Interface);
+        if declared_in_a_class && !nodes[declared].modifiers.abstract_member {
+            continue;
+        }
+        let implementations: Vec<usize> = implementations.into_iter().filter(|held| !tested(nodes[*held].file)).collect();
+        for implementation in graph.shared_implementations(implementations) {
             dispatched.push(IndexEdge {
                 via: Via::Rule,
                 source: nodes[declared].id.clone(),

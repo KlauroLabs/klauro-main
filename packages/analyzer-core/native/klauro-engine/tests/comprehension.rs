@@ -129,3 +129,25 @@ fn steps_on_different_arms_of_one_decision_are_marked_as_alternatives() {
     assert_eq!(decision(&paid[0]), decision(&refused[0]), "both sit under the same decision");
     assert_ne!(paid[0], refused[0], "on different arms of it");
 }
+
+#[test]
+fn a_call_through_a_shared_base_does_not_reach_every_subclass_override() {
+    let index = common::read("dispatch_base");
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    let units = |surface: &str| -> Vec<String> {
+        flows
+            .iter()
+            .find(|flow| flow["surface"] == surface)
+            .unwrap_or_else(|| panic!("{surface} is a flow"))["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["unit"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let pulse = units("/pulse");
+    assert!(pulse.iter().any(|unit| unit.contains("BaseRepository")), "the base implementation does the work: {pulse:?}");
+    assert!(!pulse.iter().any(|unit| unit.contains("OrderRepository") || unit.contains("RefundRepository")), "other repositories' overrides are not this call's: {pulse:?}");
+    let close = units("/close");
+    assert!(close.iter().any(|unit| unit.contains("NightlyWorker")), "an abstract member still reaches its override: {close:?}");
+}

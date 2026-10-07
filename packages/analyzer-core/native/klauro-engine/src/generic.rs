@@ -891,7 +891,14 @@ impl<'a> Extractor<'a> {
             }
             held => held == "static",
         });
-        Modifiers { exported: open, is_static, ..Modifiers::default() }
+        let mut cursor = node.walk();
+        let abstract_member = node.children(&mut cursor).any(|child| match child.kind() {
+            "modifiers" | "modifier" | "member_modifiers" | "inheritance_modifier" => {
+                self.text(child).split_whitespace().any(|word| word == "abstract")
+            }
+            held => held == "abstract",
+        });
+        Modifiers { exported: open, is_static, abstract_member, ..Modifiers::default() }
     }
 
     pub fn run(mut self, tree: &Tree, path: &str, line_count: u32) -> FileFacts {
