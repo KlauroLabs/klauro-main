@@ -1,0 +1,20 @@
+controller	endpoints that take requests
+request-handler	handlers that carry out commands and queries
+listener	handlers that react to events
+middleware	steps every request passes through
+validator	validators
+data-context	database context
+mapping	table mappings
+migration	schema migrations
+worker	background workers
+scheduled	scheduled jobs
+service	services
+module	module declarations
+model	stored records
+repository	repositories
+integration	clients for outside services
+mailer	mailers
+component	screens and interface components
+view-model	view models
+command	commands
+handler	endpoints that take requests

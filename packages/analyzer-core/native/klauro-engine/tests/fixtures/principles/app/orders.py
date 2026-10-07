@@ -1,9 +1,14 @@
+import sqlite3
+
 from app.shapes import Shape
 
 
 class OrderRepository:
+    def __init__(self):
+        self.connection = sqlite3.connect("orders.db")
+
     def all(self):
-        return []
+        return self.connection.execute("select id, total from orders").fetchall()
 
 
 class OrderService:

@@ -1,5 +1,9 @@
+import { Injectable } from '@nestjs/common';
+import { Pool } from 'pg';
+
+@Injectable()
 export class UserRepository {
-  private rows: any[] = [];
-  findById(id: string) { return this.rows.find(r => r.id === id); }
-  save(u: any) { this.rows.push(u); return u; }
+  constructor(private readonly pool: Pool) {}
+  findById(id: string) { return this.pool.query('select * from users where id = $1', [id]); }
+  save(u: any) { return this.pool.query('insert into users (name) values ($1)', [u.name]); }
 }

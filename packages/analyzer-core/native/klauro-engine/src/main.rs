@@ -1014,17 +1014,11 @@ fn read_it() {
 
 
     let roles_started = Instant::now();
-    let declared: Vec<bool> = index
-        .files
-        .iter()
-        .map(|file| matches!(file.kind, discovery::FileKind::Source))
-        .collect();
     let found = roles::derive(
         &index.nodes,
         &index.edges,
         &index.type_references,
         &index.entry_points,
-        &declared,
         &index.calls,
         &paths,
     );
@@ -1103,6 +1097,50 @@ fn read_it() {
     }
     actions::assign(&mut index.exit_points, &index.calls, &index.imports, &paths);
 
+    let services_started = Instant::now();
+    let set_aside = set_aside::SetAside::find(&index.nodes, &index.entry_points, &index.edges);
+    let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let not_ours: Vec<bool> = index.files.iter().map(|file| file.generated || file.oversize).collect();
+    let found_services = services::derive(&services::Sources {
+        root: &root,
+        paths: &service_paths,
+        not_ours: &not_ours,
+        dependencies: index.dependencies.as_ref(),
+        imports: &index.imports,
+        calls: &index.calls,
+        exits: &index.exit_points,
+        nodes: &index.nodes,
+        settings: &index.settings,
+        set_aside: &set_aside,
+    });
+    drop(service_paths);
+    let services::Found { services: found_services, serving } = found_services;
+    for exit in index.exit_points.iter_mut() {
+        exit.service = serving.get(&exit.id).cloned();
+    }
+    if std::env::var("KLAURO_REPORT_SERVICES").is_ok() {
+        for service in &found_services {
+            let evidenced: Vec<String> =
+                service.evidenced.iter().map(|(how, count)| format!("{how} {count}")).collect();
+            eprintln!(
+                "  service {} | {} | reached {} | {}",
+                service.name,
+                service.kind,
+                service.reached,
+                evidenced.join(", ")
+            );
+        }
+    }
+    index.services = found_services;
+    eprintln!(
+        "services {:?} | {} known | {} unclassified",
+        services_started.elapsed(),
+        index.services.iter().filter(|service| service.known).count(),
+        index.services.iter().filter(|service| !service.known).count(),
+    );
+    if let Some(found) = index.roles.as_mut() {
+        roles::refine(found, &index.nodes, &index.edges, &index.exit_points, &index.entry_points);
+    }
     let patterns_started = Instant::now();
     let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     let declared_packages: Vec<&str> = index
@@ -1160,47 +1198,6 @@ fn read_it() {
     drop(ci_paths);
     index.ci = found_ci;
 
-    let services_started = Instant::now();
-    let set_aside = set_aside::SetAside::find(&index.nodes, &index.entry_points, &index.edges);
-    let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
-    let not_ours: Vec<bool> = index.files.iter().map(|file| file.generated || file.oversize).collect();
-    let found_services = services::derive(&services::Sources {
-        root: &root,
-        paths: &service_paths,
-        not_ours: &not_ours,
-        dependencies: index.dependencies.as_ref(),
-        imports: &index.imports,
-        calls: &index.calls,
-        exits: &index.exit_points,
-        nodes: &index.nodes,
-        settings: &index.settings,
-        set_aside: &set_aside,
-    });
-    drop(service_paths);
-    let services::Found { services: found_services, serving } = found_services;
-    for exit in index.exit_points.iter_mut() {
-        exit.service = serving.get(&exit.id).cloned();
-    }
-    if std::env::var("KLAURO_REPORT_SERVICES").is_ok() {
-        for service in &found_services {
-            let evidenced: Vec<String> =
-                service.evidenced.iter().map(|(how, count)| format!("{how} {count}")).collect();
-            eprintln!(
-                "  service {} | {} | reached {} | {}",
-                service.name,
-                service.kind,
-                service.reached,
-                evidenced.join(", ")
-            );
-        }
-    }
-    index.services = found_services;
-    eprintln!(
-        "services {:?} | {} known | {} unclassified",
-        services_started.elapsed(),
-        index.services.iter().filter(|service| service.known).count(),
-        index.services.iter().filter(|service| !service.known).count(),
-    );
 
     let principles_started = Instant::now();
     let principle_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();

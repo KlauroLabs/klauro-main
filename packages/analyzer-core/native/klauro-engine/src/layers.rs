@@ -65,10 +65,20 @@ static LAYERED_ROLES: &[(&str, u32)] = &[
     ("scheduled", 0),
     ("middleware", 0),
     ("component", 0),
+    ("worker", 0),
     ("service", 1),
     ("provider", 1),
+    ("request-handler", 1),
+    ("validator", 1),
+    ("module", 1),
+    ("view-model", 1),
     ("repository", 2),
     ("model", 2),
+    ("data-context", 2),
+    ("mapping", 2),
+    ("migration", 2),
+    ("integration", 2),
+    ("mailer", 2),
 ];
 
 static BY_CLASS_FIRST: &[&str] =

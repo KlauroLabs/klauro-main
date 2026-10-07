@@ -1,0 +1,10 @@
+rust	read	std::fs::read,fs::read,std::fs::read_to_string,fs::read_to_string,File::open,std::fs::File::open
+rust	write	std::fs::write,fs::write,File::create,std::fs::File::create,std::fs::remove_file,fs::remove_file,std::fs::rename,fs::rename
+node	read	fs.readFile,fs.readFileSync,readFile,readFileSync,fs.promises.readFile,fsp.readFile
+node	write	fs.writeFile,fs.writeFileSync,writeFile,writeFileSync,fs.promises.writeFile,fsp.writeFile,fs.unlink,fs.unlinkSync,fs.rm,fs.rmSync
+python	read	read_text,read_bytes,json.load
+python	write	write_text,write_bytes,json.dump
+dotnet	read	File.ReadAllText,File.ReadAllTextAsync,File.ReadAllBytes,File.ReadAllLines,File.OpenRead
+dotnet	write	File.WriteAllText,File.WriteAllTextAsync,File.WriteAllBytes,File.WriteAllLines,File.Delete,File.OpenWrite
+go	read	os.ReadFile,ioutil.ReadFile,os.Open
+go	write	os.WriteFile,ioutil.WriteFile,os.Create,os.Remove

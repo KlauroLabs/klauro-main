@@ -702,8 +702,8 @@ fn a_role_says_what_made_it_one() {
     let repository = roles
         .iter()
         .find(|role| role["role"] == "repository")
-        .expect("a named interface has a role");
-    assert_eq!(repository["from"], "name:OwnerRepository");
+        .expect("an interface extending a framework repository has a role");
+    assert!(repository["from"].as_str().unwrap().starts_with("inherits:CrudRepository"), "{repository:?}");
 
     assert!(
         roles.iter().any(|role| role["role"] == "handler"),
