@@ -44,15 +44,7 @@ test('fast/bench groups partition every test by ROLE, not by directory, without 
   // exactly the class of file the old core/gauntlet directory-based split let
   // slip into the pre-deploy gate.
   const knownStraySrcBenchmarks = [
-    'src/agent-existing-task-benchmark.test.ts',
-    'src/competitor-baseline-benchmark.test.ts',
-    'src/architecture-pattern-benchmark.test.ts',
-    'src/agent-idiom-benchmark.test.ts',
     'src/capability-inference-benchmark.test.ts',
-    'src/analysis-focus-benchmark.test.ts',
-    'src/agent-greenfield-benchmark.test.ts',
-    'src/runtime-impact-benchmark.test.ts',
-    'src/incremental-benchmark-copy.test.ts',
   ];
   const benchFiles = new Set(bench.files.map(item => item.file));
   const fastFiles = new Set(fast.files.map(item => item.file));

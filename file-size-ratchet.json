@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "ceiling": 12101
+      "ceiling": 12083
     },
     {
       "file": "apps/mcp-server/src/query.ts",
@@ -30,28 +30,12 @@
       "ceiling": 2695
     },
     {
-      "file": "apps/mcp-server/src/cli.ts",
-      "ceiling": 2661
-    },
-    {
       "file": "apps/mcp-server/src/product.ts",
       "ceiling": 2580
     },
     {
       "file": "apps/mcp-server/src/storage.ts",
       "ceiling": 2264
-    },
-    {
-      "file": "apps/mcp-server/src/agent-existing-task-benchmark.ts",
-      "ceiling": 2345
-    },
-    {
-      "file": "apps/mcp-server/src/agent-scratch-build-benchmark.ts",
-      "ceiling": 2273
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "ceiling": 2226
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/tree-sitter-ts-extractor.ts",
@@ -70,24 +54,12 @@
       "ceiling": 1759
     },
     {
-      "file": "apps/mcp-server/src/machine-gauntlet.ts",
-      "ceiling": 1708
-    },
-    {
       "file": "apps/mcp-server/src/remote-source.ts",
       "ceiling": 1640
     },
     {
       "file": "apps/mcp-server/src/agent-context-codec.ts",
       "ceiling": 1596
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-gauntlet.ts",
-      "ceiling": 1320
-    },
-    {
-      "file": "apps/mcp-server/src/incremental-benchmark.ts",
-      "ceiling": 1496
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
@@ -98,32 +70,12 @@
       "ceiling": 1385
     },
     {
-      "file": "apps/mcp-server/src/agent-greenfield-benchmark.ts",
-      "ceiling": 1277
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
       "ceiling": 1233
     },
     {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "ceiling": 1171
-    },
-    {
       "file": "apps/mcp-server/src/description-enrichment.ts",
       "ceiling": 1165
-    },
-    {
-      "file": "apps/mcp-server/src/agent-from-zero-build-context-proof.ts",
-      "ceiling": 1141
-    },
-    {
-      "file": "apps/mcp-server/src/agent-scratch-dogfood-build.ts",
-      "ceiling": 1033
-    },
-    {
-      "file": "apps/mcp-server/src/agent-task-family-coverage.ts",
-      "ceiling": 1018
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",

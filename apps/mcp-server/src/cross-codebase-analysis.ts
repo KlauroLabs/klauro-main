@@ -20,6 +20,7 @@ import { estimatedJsonTokens } from './json-size';
 import { isRuntimeEndpointSemanticName } from './semantic-roles';
 import { buildPassiveDataLinks, passiveDataLifecycleRole, passiveDataOperationRole } from './workspace-passive-data';
 import { buildWorkspaceCapabilityProvenance, buildWorkspaceCompositionTerminality, mergeWorkspaceCapabilityProvenance, terminalWorkspaceSystemCapabilities, type WorkspaceCapabilityProvenance } from './workspace-composition-terminality';
+import { codebaseId, interfaceId, linkId, runtimeComponentId, slugify, stripLocalPathPrefix } from './workspace-identity';
 export type { WorkspaceCapabilityProvenance } from './workspace-composition-terminality';
 export { estimatedJsonTokens } from './json-size';
 
@@ -12079,38 +12080,4 @@ function unmatchedReason(item: SystemInterface): string {
   if (item.role === 'publisher') return 'No analyzed listener matched this published message or stream.';
   if (item.role === 'listener') return 'No analyzed publisher matched this listener.';
   return 'No matching interface was found in the selected analyses.';
-}
-
-function codebaseId(repositoryPath: string): string {
-  return slugify(repositoryPath.split(path.sep).filter(Boolean).slice(-2).join('-')) || slugify(repositoryPath) || 'codebase';
-}
-
-function interfaceId(codebase: string, prefix: string, value: string): string {
-  return `${codebase}:${prefix}:${slugify(stripLocalPathPrefix(value))}`;
-}
-
-function runtimeComponentId(codebase: string, nodeId: string): string {
-  return `${codebase}:runtime:${slugify(stripLocalPathPrefix(nodeId))}`;
-}
-
-function linkId(kind: string, source: string, target: string): string {
-  return `link:${kind}:${slugify(stripLocalPathPrefix(source))}:${slugify(stripLocalPathPrefix(target))}`;
-}
-
-function stripLocalPathPrefix(value: string): string {
-  return String(value || '')
-    .replace(/\/Users\/[^/]+\/dev\//gi, '')
-    .replace(/\/home\/[^/]+\/dev\//gi, '')
-    .replace(/[A-Z]:\\Users\\[^\\]+\\dev\\/gi, '')
-    .replace(/\\/g, '/');
-}
-
-function slugify(input: string): string {
-  return String(input || '')
-    .replace(/[^a-zA-Z0-9@/._-]/g, '-')
-    .replace(/[/.]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase()
-    .slice(0, 120);
 }

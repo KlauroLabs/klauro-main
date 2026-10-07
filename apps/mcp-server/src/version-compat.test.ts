@@ -34,7 +34,6 @@ import {
   getWorkflows,
   searchNodes,
 } from './query';
-import { evaluateVersionSkewChecks } from './version-skew';
 
 function restoreEnv(name: string, previous: string | undefined): void {
   if (previous === undefined) delete process.env[name];
@@ -427,11 +426,4 @@ test('a newer-minor analysis classifies as newer-compatible and loads without de
   const journeys = getUserJourneys(newer) as { total: number; analysis_version_notice?: string };
   assert.equal(journeys.total, 0);
   assert.equal(journeys.analysis_version_notice, undefined, 'a newer analysis must not be flagged as pre-pillar');
-});
-
-test('nightly eval version-skew checks all hold', () => {
-  const checks = evaluateVersionSkewChecks();
-  assert.equal(checks.length, 6);
-  const failing = checks.filter(check => check.status === 'fail');
-  assert.deepEqual(failing.map(check => check.id), []);
 });
