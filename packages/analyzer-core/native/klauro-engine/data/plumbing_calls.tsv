@@ -1,0 +1,5 @@
+NotifyPropertyChanged
+OnPropertyChanged
+OnPropertyChanging
+RaisePropertyChanged
+SetProperty

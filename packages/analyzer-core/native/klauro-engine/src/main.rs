@@ -736,6 +736,8 @@ fn read_it() {
     entry_exit::unwrap_composed_decorators(&mut index.nodes, &index.calls);
     let declared_in_markup = xaml::declared_bases(&root, &paths, &index.nodes);
     index.type_references.extend(declared_in_markup);
+    let bound_in_markup = xaml::bound(&root, &paths, &index.nodes);
+    index.edges.extend(bound_in_markup.edges);
     let derive_started = Instant::now();
     let derived = entry_exit::derive(
         &index.nodes,
@@ -758,6 +760,7 @@ fn read_it() {
         .entry_points
         .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &index.imports, &index.locals, &paths, &resolution));
     derived.entry_points.extend(file_routes::drawn(&root, &paths, &index.nodes));
+    derived.entry_points.extend(bound_in_markup.entries);
     let spoken_in: Vec<Option<&str>> = index.files.iter().map(|file| file.language).collect();
     let programs = programs::run_as_programs(&programs::Sources {
         root: &root,

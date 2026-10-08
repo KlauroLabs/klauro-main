@@ -119,3 +119,24 @@ fn a_razor_page_is_a_screen_at_its_route() {
     assert_eq!(screens, vec!["/", "/item/{itemId:int}"]);
     assert!(index["entry_points"].as_array().unwrap().iter().all(|entry| entry["kind"] != "http"), "a page is never an HTTP route");
 }
+
+#[test]
+fn a_view_bound_to_a_model_loads_through_it_and_each_bound_command_is_an_action() {
+    let index = common::read("mvvm_views");
+    let mut actions: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["registrar"] == "binding")
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    actions.sort();
+    assert_eq!(actions, vec!["OrdersView.CancelOrder", "OrdersView.Refresh"]);
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    let screen = flows.iter().find(|flow| flow["operation"] == "OrdersView").expect("the screen is a flow");
+    assert!(screen["path"].as_array().unwrap().iter().any(|step| step["unit"].as_str().unwrap().contains("InitializeAsync")), "{screen}");
+    assert!(
+        screen["steps"].as_array().unwrap().iter().all(|step| !step["label"].as_str().unwrap_or_default().contains("property")),
+        "property-change notification is plumbing: {screen}"
+    );
+}

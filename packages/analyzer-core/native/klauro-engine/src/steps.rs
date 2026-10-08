@@ -245,6 +245,12 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
     }
 }
 
+static PLUMBING: &str = include_str!("../data/plumbing_calls.tsv");
+
+fn plumbing(named: &str) -> bool {
+    PLUMBING.lines().any(|held| held == named)
+}
+
 static COMMITS: &[&str] = &["commit", "commitasync", "flush", "save", "savechanges", "savechangesasync", "saveentitiesasync", "save_changes"];
 
 static REFRESHES: &[&str] = &["refresh", "reload", "refresh_from_db"];
@@ -568,6 +574,12 @@ impl<'a> Reader<'a> {
         for call in calls {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
             if call.constructs && self.requests.contains_key(named) {
+                continue;
+            }
+            if plumbing(named) {
+                if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
+                    targets.remove(at);
+                }
                 continue;
             }
             if call.constructs && thrown_here.iter().any(|thrown| crate::names::leaf(thrown) == named) {
