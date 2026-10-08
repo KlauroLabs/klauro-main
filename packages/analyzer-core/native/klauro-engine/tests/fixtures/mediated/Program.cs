@@ -38,4 +38,6 @@ app.MapPost("/refunds/{orderId}/archive", async (int orderId, Archive archive) =
     var target = Archive.DispatchTargetFor(orderId);
     return await archive.StoreSnapshot(orderId) + target;
 });
+app.MapPut("/refunds/v1/{orderId}", async (int orderId, RefundRepository refunds) => await refunds.Register(new Refund { OrderId = orderId }));
+app.MapPut("/refunds/v1", async (int orderId, RefundRepository refunds) => await refunds.Register(new Refund { OrderId = orderId }));
 app.Run();

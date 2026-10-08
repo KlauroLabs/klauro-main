@@ -278,3 +278,36 @@ fn another_parts_library_is_one_step_at_the_call_keeping_only_what_it_hands_on()
     let kinds: Vec<&str> = flow["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
     assert!(kinds.iter().filter(|kind| !matches!(**kind, "raise" | "respond")).count() <= 1, "the outbox's own bookkeeping is not this flow's steps: {kinds:?}");
 }
+
+#[test]
+fn what_is_not_a_behaviour_is_set_aside_with_its_reason() {
+    let index = common::read("units_own_program");
+    let set_aside: Vec<(String, String)> = index["comprehension"]["set_aside"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|held| (held["trigger"].as_str().unwrap_or_default().to_string(), held["reason"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    assert!(set_aside.iter().any(|(_, reason)| reason == "a program starting up"), "{set_aside:?}");
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    assert!(flows.iter().all(|flow| flow["kind"] != "lifecycle"), "start-up is never a flow");
+    let entered: Vec<&str> = flows.iter().map(|flow| flow["entry_point"].as_str().unwrap()).collect();
+    for (trigger, _) in &set_aside {
+        assert!(!trigger.is_empty());
+    }
+    assert!(entered.iter().all(|entry| !set_aside.iter().any(|(trigger, _)| trigger == entry)));
+}
+
+#[test]
+fn the_same_behaviour_on_two_routes_of_one_resource_is_one_flow_entered_both_ways() {
+    let index = common::read("mediated");
+    let flows: Vec<&serde_json::Value> = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|flow| flow["surface"].as_str().is_some_and(|surface| surface.starts_with("/refunds/v1")))
+        .collect();
+    assert_eq!(flows.len(), 1, "{flows:#?}");
+    assert_eq!(flows[0]["entered_by"].as_array().map(Vec::len), Some(1));
+}

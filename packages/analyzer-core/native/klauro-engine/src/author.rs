@@ -789,6 +789,50 @@ struct ArchitectureDescribed {
     narrative: String,
 }
 
+pub const BEHAVIOURS_ASKED: &str = "Group what happens after this trigger into the behaviours a person who uses or runs the system would recognise. \
+A behaviour is one trigger leading to one outcome: something kept, changed, removed, sent, shown or answered. \
+ONE_OR_SEVERAL \
+Things that all happen in the same run (save, then notify, then answer) are one behaviour, never several. \
+An extra effect that happens only sometimes (notify others only if a price changed) is part of the same behaviour, not a separate one: split only when the outcomes themselves differ (approved or refused, confirmed or rejected). \
+NOTHING_HAPPENS \
+For each behaviour give:\n\
+- name: a short verb phrase in plain words a product manager understands (\"Place an order\", \"Show the catalog\"), never class, function, file, event or package names;\n\
+- outcome: one plain sentence saying what is different for the person or the system afterwards, also without class, function, file, event or package names;\n\
+- steps: only the numbered steps listed above that belong to it (never add, split or invent steps; a step with nothing a person would notice, such as opening a connection, may be left out), in order, each with its id and a short plain sentence saying that action (\"Check the customer is signed in\", \"Keep the new order\", \"Tell the other part the payment failed\"), never class, function, event, table or package names.\n\
+Always answer, even when the facts are few: judge from what is shown, never ask for more. \
+Name the behaviour from what its steps do. Function and method names can be wrong (copied from elsewhere); when they disagree with the steps or with the request's method (a DELETE removes or deactivates), trust the steps. \
+Steps marked with the same branch letters but different numbers are alternatives: only those can be different behaviours. \
+Describe only what this part does. When it hands something to another part, say it hands it over; never claim the other part's outcome.";
+
+pub const SEVERAL_ALLOWED: &str = "Most triggers are exactly one behaviour. Give several only when the trigger leads to clearly different outcomes on different paths (for example: a command that either creates or updates, or a handler that confirms or rejects).";
+
+pub const ONE_ONLY: &str = "This trigger is exactly one behaviour: return one, named for what the trigger achieves when it succeeds; refusals and failures along the way are part of it.";
+
+pub const MAY_BE_NOTHING: &str = "If nothing a person would recognise happens (only wiring, logging, styling or moving a pointer), return no behaviours.";
+
+pub const ALWAYS_SOMETHING: &str = "Something a person recognises always happens here: return at least one behaviour.";
+
+pub const SAME_BEHAVIOUR_ASKED: &str = "These are behaviours found in one part of a software system, each with the trigger that starts it. \
+Group together only the ones a person could not tell apart: the same action on the same thing with the same result, offered through more than one trigger (for example two versions of the same API, or the same sign-out offered by a menu and by a link). \
+Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
+When in doubt keep them apart. Every number appears in exactly one group.";
+
+pub fn behaviours_of(prompt: &str) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    let asked = format!("{prompt}\n\nReturn JSON only: {{\"behaviours\":[{{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[{{\"id\":\"s1\",\"said\":\"...\"}}]}}]}}");
+    answered::<serde_json::Value>(&asked, 1400, &proposing(), "behaviours", 0, DESCRIBING_ASK)
+}
+
+pub fn same_behaviours(prompt: &str) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    let asked = format!("{prompt}\n\n{SAME_BEHAVIOUR_ASKED}\n\nReturn JSON only: {{\"together\":[[1,4],[2],[3]]}}");
+    answered::<serde_json::Value>(&asked, 600, &proposing(), "together", 1, DESCRIBING_ASK)
+}
+
 pub fn describe_architecture(facts: &str, name: &str) -> Option<String> {
     if !asked() {
         return None;
@@ -1443,6 +1487,28 @@ fn shaped(of: &str) -> serde_json::Value {
                 }},
             },
             "required": ["derived", "left"],
+        }),
+        "behaviours" => serde_json::json!({
+            "type": "object",
+            "properties": {"behaviours": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "name": text,
+                    "outcome": text,
+                    "steps": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"id": text, "said": text},
+                        "required": ["id", "said"],
+                    }},
+                },
+                "required": ["name", "outcome", "steps"],
+            }}},
+            "required": ["behaviours"],
+        }),
+        "together" => serde_json::json!({
+            "type": "object",
+            "properties": {"together": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}},
+            "required": ["together"],
         }),
         "groups" => serde_json::json!({
             "type": "object",

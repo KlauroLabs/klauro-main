@@ -1852,6 +1852,7 @@ mod command_family_tests {
             leads_into: Vec::new(),
             project: None,
             unshipped: None,
+            entered_by: Vec::new(),
         }
     }
 

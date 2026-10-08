@@ -18,7 +18,7 @@ const FLOWS_NAMED: usize = 40;
 const HISTORY_SHARE_OF_FILES: usize = 20;
 const REACHING_AT_ONCE: usize = 24;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Step {
     pub unit: String,
     pub depth: u32,
@@ -26,7 +26,7 @@ pub struct Step {
     pub leaves: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Flow {
     pub summary: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -75,6 +75,8 @@ pub struct Flow {
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unshipped: Option<crate::entry_exit::Unshipped>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entered_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +212,8 @@ pub struct Comprehension {
     pub semantic_coverage: Option<crate::capabilities::Coverage>,
     #[serde(skip)]
     pub derivation: Option<crate::parent::Summary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub set_aside: Vec<crate::behaviours::SetAside>,
 }
 
 static GENERIC: &[&str] = &[
@@ -2747,6 +2751,7 @@ pub fn derive(
             leads_into: into,
             project: nodes[start as usize].project.clone(),
             unshipped: entry.unshipped.clone(),
+            entered_by: Vec::new(),
         });
     }
     set_aside_what_only_programs_run(&mut flows, &delegates, &product_count, &tooling_reach);
@@ -2885,6 +2890,7 @@ pub fn derive(
         chained,
         semantic_coverage: None,
         derivation: None,
+        set_aside: Vec::new(),
     }
 }
 

@@ -107,7 +107,7 @@ impl<'a> Paths<'a> {
         self.tell(&wanted);
         let said = self.said.into_inner().unwrap_or_default();
         let unanswered = self.unanswered.into_inner().unwrap_or_default();
-        for flow in held.flows.iter_mut() {
+        for flow in held.flows.iter_mut().filter(|flow| flow.name.is_none()) {
             if let Some(written) = said.get(&flow.id).filter(|_| chosen.contains(&flow.id)) {
                 flow.description = Some(written.description.clone());
                 if !written.name.is_empty() {

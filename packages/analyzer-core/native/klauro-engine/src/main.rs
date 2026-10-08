@@ -1,4 +1,5 @@
 mod alias;
+mod behaviours;
 mod listeners;
 mod timers;
 mod effects;
@@ -1564,6 +1565,21 @@ fn read_it() {
         frameworks,
         composition: index.composition.as_ref(),
     };
+    if let Some(split) = index.partition.as_ref() {
+        let facts = behaviours::Facts {
+            entries: &index.entry_points,
+            nodes: &index.nodes,
+            part_names: split.sub_projects.iter().map(|part| (part.id.as_str(), part.display_name.as_str())).collect(),
+            consumed: split
+                .sub_projects
+                .iter()
+                .filter(|part| !part.consumed_by.is_empty() || !part.imported_by.is_empty())
+                .map(|part| part.id.as_str())
+                .collect(),
+            calling: index.calls.iter().filter_map(|call| call.caller.as_deref()).collect(),
+        };
+        behaviours::settle(&mut comprehension, &facts);
+    }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(
         "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {} | asked {}",
