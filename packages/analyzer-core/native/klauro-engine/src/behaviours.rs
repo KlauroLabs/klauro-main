@@ -176,13 +176,18 @@ fn branch_of(arm: &str) -> &str {
     arm.rsplit_once('.').map(|(branch, _)| branch).unwrap_or(arm)
 }
 
-fn alternatives(behaviours: &[Behaviour], flow: &Flow) -> bool {
+fn decided_in(arm: &str) -> Option<u64> {
+    u64::from_str_radix(branch_of(arm), 16).ok().map(|branch| branch >> 32)
+}
+
+fn alternatives(behaviours: &[Behaviour], flow: &Flow, handler_file: Option<u32>) -> bool {
     let arms_of = |held: &Behaviour| -> Vec<&str> {
         held.steps
             .iter()
             .filter_map(|said| flow.steps.iter().find(|step| step.id == said.id))
             .filter(|step| OUTCOMES.contains(&step.kind))
             .flat_map(|step| step.arms.iter().map(String::as_str))
+            .filter(|arm| handler_file.is_some_and(|file| decided_in(arm) == Some(file as u64)))
             .collect()
     };
     let owned: Vec<Vec<&str>> = behaviours.iter().map(arms_of).collect();
@@ -328,6 +333,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             (entry.id.as_str(), format!("{part} receives it ({} {})", entry.kind, entry.name))
         })
         .collect();
+    let node_of: HashMap<&str, &IndexNode> = facts.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let flows = std::mem::take(&mut held.flows);
     let mut kept: Vec<Flow> = Vec::new();
     let mut seen: HashSet<(Option<String>, String)> = HashSet::default();
@@ -357,7 +363,8 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let mut again: Vec<(String, String)> = Vec::new();
     for flow in &kept {
         let Some(answer) = answers.get(&flow.id) else { continue };
-        if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow) {
+        let handler_file = flow.path.first().and_then(|start| node_of.get(start.unit.as_str())).map(|node| node.file);
+        if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow, handler_file) {
             again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &landing, true)));
         }
     }
