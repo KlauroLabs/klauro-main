@@ -821,24 +821,44 @@ pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a so
 For each record decide who it is kept for. \
 about: the system exists to keep it for its users. Users create, own, ask for, pay, receive or are told about it, choose from it (kinds, categories, brands), or link it from another service; movements of money or goods and the plans behind them are always about. \
 bookkeeping: the software keeps it only for itself and no user ever sees it: locks, caches, attempts and retries, logs of its own operations, messages queued to send, keys that stop one request being handled twice, indexes and manifests, sign-in sessions, tokens and throttles, switches and settings that steer the software. \
-A record that a flow named after a person's own request creates or changes (claiming, registering, reporting, ordering) is about, even when it works like a lock or a log. \
+A record that a flow named after something a person does creates or changes (claiming, registering, reporting) is about, even when it works like a lock or a log, unless it only notes that the software handled something: its own logs, attempts, and keys that stop one request being handled twice stay bookkeeping. Observations a system receives about its users' own software or devices are about. \
 When in doubt, answer about. Answer every record by its number.";
 
 pub fn bookkeeping_of(prompt: &str, records: usize) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"kinds\":[{{\"n\":1,\"kind\":\"about\"}},{{\"n\":2,\"kind\":\"bookkeeping\"}}]}}");
-    for _ in 0..RECORDS_ASKED_AT_MOST {
-        let answer = answered::<serde_json::Value>(&asked, 300 + 20 * records as u32, &proposing(), "kinds", records, DESCRIBING_ASK)?;
-        let told: std::collections::BTreeSet<u64> = answer["kinds"].as_array().into_iter().flatten().filter_map(|kind| kind["n"].as_u64()).collect();
-        if (1..=records as u64).all(|number| told.contains(&number)) {
-            return Some(answer);
+    let mut votes: Vec<u32> = vec![0; records];
+    let mut readings = 0u32;
+    for reading in 1..=RECORDS_READINGS {
+        let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReading {reading} of {RECORDS_READINGS}.\n\nReturn JSON only: {{\"kinds\":[{{\"n\":1,\"kind\":\"about\"}},{{\"n\":2,\"kind\":\"bookkeeping\"}}]}}");
+        let Some(answer) = (0..RECORDS_ASKED_AT_MOST).find_map(|_| {
+            let answer = answered::<serde_json::Value>(&asked, 300 + 20 * records as u32, &proposing(), "kinds", records, DESCRIBING_ASK)?;
+            let told: std::collections::BTreeSet<u64> = answer["kinds"].as_array().into_iter().flatten().filter_map(|kind| kind["n"].as_u64()).collect();
+            (1..=records as u64).all(|number| told.contains(&number)).then_some(answer)
+        }) else {
+            continue;
+        };
+        readings += 1;
+        for kind in answer["kinds"].as_array().into_iter().flatten() {
+            if kind["kind"] == "bookkeeping"
+                && let Some(vote) = kind["n"].as_u64().and_then(|number| votes.get_mut((number as usize).checked_sub(1)?))
+            {
+                *vote += 1;
+            }
         }
     }
-    None
+    (readings * 2 > RECORDS_READINGS).then(|| {
+        let kinds: Vec<serde_json::Value> = votes
+            .iter()
+            .enumerate()
+            .map(|(at, vote)| serde_json::json!({"n": at + 1, "kind": if vote * 2 > readings { "bookkeeping" } else { "about" }}))
+            .collect();
+        serde_json::json!({ "kinds": kinds })
+    })
 }
 
+const RECORDS_READINGS: u32 = 3;
 const RECORDS_ASKED_AT_MOST: usize = 3;
 
 pub fn behaviours_of(prompt: &str) -> Option<serde_json::Value> {
