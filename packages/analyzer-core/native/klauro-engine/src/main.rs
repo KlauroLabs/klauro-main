@@ -1577,6 +1577,7 @@ fn read_it() {
                 .map(|part| part.id.as_str())
                 .collect(),
             calling: index.calls.iter().filter_map(|call| call.caller.as_deref()).collect(),
+            calls: &index.calls,
         };
         behaviours::settle(&mut comprehension, &facts);
     }

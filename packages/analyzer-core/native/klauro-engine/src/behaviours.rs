@@ -25,6 +25,22 @@ pub struct Facts<'a> {
     pub part_names: HashMap<&'a str, &'a str>,
     pub consumed: HashSet<&'a str>,
     pub calling: HashSet<&'a str>,
+    pub calls: &'a [crate::model::CallFact],
+}
+
+static HOSTING: &str = include_str!("../data/hosting_calls.tsv");
+
+fn hosted_in<'a>(facts: &Facts<'a>, project_of: &HashMap<&'a str, Option<&'a str>>) -> HashMap<String, &'a str> {
+    let mut held: HashMap<String, &str> = HashMap::default();
+    for call in facts.calls.iter().filter(|call| HOSTING.lines().any(|named| named == call.callee)) {
+        let Some(part) = call.caller.as_deref().and_then(|caller| project_of.get(caller).copied().flatten()) else { continue };
+        for argument in &call.type_arguments {
+            for named in argument.split(['<', '>', ',', ' ']).filter(|named| !named.is_empty()) {
+                held.entry(crate::names::leaf(named).to_string()).or_insert(part);
+            }
+        }
+    }
+    held
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -329,6 +345,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let kept = joined(kept);
     if !crate::author::asked() {
         held.flows = kept;
+        hosting(held, facts, &project_of);
         return;
     }
     let first: Vec<(String, String)> = kept
@@ -400,4 +417,27 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         }
     }
     held.flows = merged(settled, facts);
+    hosting(held, facts, &project_of);
+}
+
+fn hosting<'a>(held: &mut Comprehension, facts: &Facts<'a>, project_of: &HashMap<&'a str, Option<&'a str>>) {
+    let hosts = hosted_in(facts, project_of);
+    if hosts.is_empty() {
+        return;
+    }
+    let node_of: HashMap<&str, &IndexNode> = facts.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let entry_of: HashMap<&str, &EntryPoint> = facts.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect();
+    for flow in held.flows.iter_mut() {
+        let Some(entry) = entry_of.get(flow.entry_point.as_str()) else { continue };
+        let mut owner = node_of.get(entry.handler.as_str()).copied();
+        while let Some(node) = owner.filter(|node| !node.kind.is_type()) {
+            owner = node.parent.as_deref().and_then(|parent| node_of.get(parent).copied());
+        }
+        let Some(owner) = owner else { continue };
+        if let Some(part) = hosts.get(owner.name.as_str())
+            && Some(*part) != flow.project.as_deref()
+        {
+            flow.runs_in = Some(part.to_string());
+        }
+    }
 }

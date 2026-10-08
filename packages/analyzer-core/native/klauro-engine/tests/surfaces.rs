@@ -156,3 +156,19 @@ fn each_worker_that_overrides_what_its_base_listens_with_receives_its_own_messag
         ]
     );
 }
+
+#[test]
+fn a_worker_runs_in_the_program_that_hosts_it() {
+    let index = common::read("inherited_listener");
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    let refund = flows
+        .iter()
+        .find(|flow| flow["entry_point"].as_str().is_some_and(|entry| entry.contains("HandleEvent@RefundWorker")))
+        .expect("the refund worker's messages are a flow");
+    assert_eq!(refund["runs_in"], "subproject:Host", "{refund}");
+    let invoice = flows
+        .iter()
+        .find(|flow| flow["entry_point"].as_str().is_some_and(|entry| entry.contains("HandleEvent@InvoiceWorker")))
+        .expect("the invoice worker's messages are a flow");
+    assert!(invoice.get("runs_in").is_none(), "nothing hosts the invoice worker");
+}

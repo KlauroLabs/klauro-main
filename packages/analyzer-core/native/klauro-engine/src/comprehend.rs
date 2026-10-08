@@ -77,6 +77,8 @@ pub struct Flow {
     pub unshipped: Option<crate::entry_exit::Unshipped>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub entered_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runs_in: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2752,6 +2754,7 @@ pub fn derive(
             project: nodes[start as usize].project.clone(),
             unshipped: entry.unshipped.clone(),
             entered_by: Vec::new(),
+            runs_in: None,
         });
     }
     set_aside_what_only_programs_run(&mut flows, &delegates, &product_count, &tooling_reach);

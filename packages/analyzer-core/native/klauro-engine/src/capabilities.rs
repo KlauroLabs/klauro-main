@@ -1853,6 +1853,7 @@ mod command_family_tests {
             project: None,
             unshipped: None,
             entered_by: Vec::new(),
+            runs_in: None,
         }
     }
 

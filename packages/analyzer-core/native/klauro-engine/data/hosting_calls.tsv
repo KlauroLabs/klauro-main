@@ -1,0 +1,6 @@
+AddHostedService
+AddHostedService<T>
+AddJob
+AddWorker
+AddConsumer
+RegisterHostedService
