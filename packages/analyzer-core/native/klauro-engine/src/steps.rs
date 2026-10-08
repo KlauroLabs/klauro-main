@@ -565,7 +565,7 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if call.constructs && thrown_here.iter().any(|thrown| crate::names::leaf(thrown) == named) {
-                if when_of(&call.context) == "always" {
+                if inherited(when, when_of(&call.context)) == "always" {
                     let said = call.literals.iter().find(|literal| literal.contains(' ')).map(|literal| literal.trim_matches(['"', '\'', '$']).to_string());
                     refusals.push((call.line, call.column, named.to_string(), said));
                     at_line.push((call.line, call.column, None, "always", None, Some(call)));
@@ -734,12 +734,37 @@ impl<'a> Reader<'a> {
                                 }),
                             }
                         } else {
-                            self.walk(target, depth + 1, context, &here, visited, actions);
+                            let mut within: Vec<Action> = Vec::new();
+                            self.walk(target, depth + 1, context, &here, visited, &mut within);
+                            let about_records = within.iter().any(|action| {
+                                matches!(action.kind, "hand_off" | "raise" | "send" | "notify" | "refuse" | "respond")
+                                    || action.object.as_deref().is_some_and(|object| self.held.contains(object))
+                            });
+                            let own = !reached.id.starts_with("package:") && !reached.id.starts_with("runtime:");
+                            if about_records || !own || within.len() < 2 {
+                                actions.extend(within);
+                            } else {
+                                let strongest = ["remove", "keep", "change", "create", "call", "read"]
+                                    .into_iter()
+                                    .find(|kind| within.iter().any(|action| action.kind == *kind))
+                                    .unwrap_or("do");
+                                actions.push(Action {
+                                    kind: strongest,
+                                    object: None,
+                                    doing: Some(spoken(named)),
+                                    when: context,
+                                    arms: here.clone(),
+                                    writes: within.iter().any(|action| action.writes),
+                                    unit,
+                                    line: shown_line(line),
+                                });
+                            }
                         }
                     }
                     let callee = self.nodes[target as usize].name.as_str();
                     let own = !self.nodes[target as usize].id.starts_with("package:") && !self.nodes[target as usize].id.starts_with("runtime:");
-                    if own && actions.len() == before && !callee.is_empty() && crate::effects::by_words(callee) == Some("send") {
+                    let awaited = call.is_some_and(|call| call.context.awaited);
+                    if own && awaited && actions.len() == before && !callee.is_empty() && crate::effects::by_words(callee) == Some("send") {
                         actions.push(Action { kind: "notify", object: None, doing: Some(spoken(callee)), when: context, arms: here.clone(), writes: true, unit, line: shown_line(line) });
                     }
                 }
@@ -836,7 +861,7 @@ impl<'a> Reader<'a> {
                 }
                 "keep" | "read" if action.object.is_none() && settled.last().is_some_and(|last| last.line == action.line && last.unit == action.unit) => continue,
                 "keep" | "read" if settled.iter().rev().take_while(|last| last.line == action.line && last.unit == action.unit).any(|last| matches!(last.kind, "hand_off" | "send")) => continue,
-                "keep" | "read" if action.object.is_none() => continue,
+                "keep" | "read" if action.object.is_none() && action.doing.is_none() => continue,
                 _ => {}
             }
             settled.push(action);

@@ -29,4 +29,13 @@ app.MapPost("/refunds/{orderId}/approve", async (int orderId, RefundRepository r
     }
     return await refunds.Find(orderId);
 });
+app.MapPost("/refunds/{orderId}/archive", async (int orderId, Archive archive) =>
+{
+    if (orderId <= 0)
+    {
+        Archive.ThrowNotFound();
+    }
+    var target = Archive.DispatchTargetFor(orderId);
+    return await archive.StoreSnapshot(orderId) + target;
+});
 app.Run();

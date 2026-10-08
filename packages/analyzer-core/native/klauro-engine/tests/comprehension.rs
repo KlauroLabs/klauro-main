@@ -243,3 +243,24 @@ fn a_route_that_always_refuses_says_why_and_never_responds() {
     );
     assert!(steps_of("/refunds/{orderId}/approve").iter().all(|(kind, _)| kind != "refuse"), "a refusal on one arm is not the behaviour");
 }
+
+#[test]
+fn a_helper_that_only_juggles_files_is_one_step_and_names_are_not_effects() {
+    let index = common::read("mediated");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/refunds/{orderId}/archive")
+        .expect("archiving is a flow");
+    let steps: Vec<(String, String)> = flow["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["kind"].as_str().unwrap().to_string(), step["doing"].as_str().or(step["object"].as_str()).unwrap_or_default().to_string()))
+        .collect();
+    assert!(steps.iter().all(|(kind, _)| kind != "refuse"), "a throw on one arm is not a refusal: {steps:?}");
+    assert!(steps.iter().all(|(kind, _)| kind != "notify"), "a pure function named dispatch tells no one: {steps:?}");
+    let filing: Vec<&(String, String)> = steps.iter().filter(|(_, said)| said.to_lowercase().contains("snapshot") || said.contains("file")).collect();
+    assert_eq!(filing.len(), 1, "storing the snapshot is one step: {steps:?}");
+}
