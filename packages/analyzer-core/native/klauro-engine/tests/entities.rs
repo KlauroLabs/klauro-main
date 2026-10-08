@@ -49,24 +49,32 @@ fn a_record_kept_by_a_part_belongs_to_that_part() {
 }
 
 #[test]
-fn the_bodies_an_entry_point_takes_and_gives_are_records_and_a_plain_helper_shape_is_not() {
-    let held = entities("entities/contract");
-    assert_eq!(named(&held), vec!["CreateOrderDto", "OrderView"]);
+fn the_bodies_an_entry_point_takes_and_gives_are_not_records_when_nothing_keeps_them() {
+    assert_eq!(named(&entities("entities/contract")), Vec::<&str>::new());
+    assert_eq!(named(&entities("entities/wire")), Vec::<&str>::new());
 }
 
 #[test]
-fn a_serde_struct_an_ipc_command_takes_or_gives_is_a_record_and_a_plain_struct_is_not() {
-    let held = entities("entities/wire");
-    assert_eq!(named(&held), vec!["Draft", "Note"]);
-}
-
-#[test]
-fn a_request_body_is_written_by_the_flow_that_takes_it() {
+fn a_flow_that_only_answers_with_a_body_writes_no_record() {
     let index = common::read("entities/contract");
     let flows = index["comprehension"]["flows"].as_array().unwrap();
     let creating = flows.iter().find(|flow| flow["id"].as_str().is_some_and(|id| id.contains("method:create"))).unwrap();
-    assert_eq!(strings(&creating["writes"]), vec!["CreateOrderDto"]);
-    assert_eq!(strings(&creating["reads"]), vec!["OrderView"]);
+    assert!(strings(&creating["writes"]).is_empty(), "{creating}");
+}
+
+#[test]
+fn a_document_kept_in_a_key_value_store_is_a_record_with_its_items_and_a_body_held_in_memory_is_not() {
+    let index = common::read("kv_basket");
+    assert_eq!(named(index["comprehension"]["entities"].as_array().unwrap()), vec!["CartLine", "CustomerCart"]);
+    let kept: Vec<(&str, &str)> = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|flow| flow["steps"].as_array().unwrap())
+        .filter_map(|step| Some((step["kind"].as_str()?, step["object"].as_str()?)))
+        .filter(|(kind, _)| matches!(*kind, "keep" | "read" | "remove"))
+        .collect();
+    assert!(kept.contains(&("keep", "CustomerCart")) && kept.contains(&("read", "CustomerCart")) && kept.contains(&("remove", "CustomerCart")), "{kept:?}");
 }
 
 fn references<'a>(held: &'a [Value], entity: &str) -> Vec<(&'a str, &'a str, &'a str)> {
@@ -183,4 +191,13 @@ fn a_view_with_more_fields_than_the_model_it_shares_a_name_with_never_replaces_t
     let held = entities("entities/views");
     let places: Vec<&str> = held.iter().filter_map(|entity| entity["id"].as_str()).collect();
     assert_eq!(places, vec!["entity:shop/models.py:type:Order"]);
+}
+
+#[test]
+fn tables_map_to_the_types_their_mappings_configure_and_a_dropped_or_framework_table_is_no_record_of_its_own() {
+    let held = entities("entities/ef_records");
+    assert_eq!(named(&held), vec!["AuditEntry", "Order", "ShopUser"], "a reverted or later-dropped table and the framework's own tables are not records");
+    let user = held.iter().find(|entity| entity["declared_as"] == "ShopUser").unwrap();
+    let fields: Vec<&str> = user["named_fields"].as_array().unwrap().iter().filter_map(|field| field["name"].as_str()).collect();
+    assert!(fields.contains(&"email") && fields.contains(&"DisplayName"), "the framework's user table folds into the type that extends it: {fields:?}");
 }

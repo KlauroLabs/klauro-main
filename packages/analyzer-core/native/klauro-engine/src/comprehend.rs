@@ -239,6 +239,8 @@ static GENERIC: &[&str] = &[
 
 const FIELDS_TOLD: usize = 10;
 
+static FRAMEWORK_RECORDS: &str = include_str!("../data/framework_records.tsv");
+
 const INHERITED_AT_MOST: usize = 4;
 
 fn with_inherited(
@@ -4324,6 +4326,33 @@ fn entities(
             declaring.entry(table.named.as_str()).or_default().push(by);
         }
     }
+    let extended_by = |base: &str| -> Vec<&str> {
+        let mut by: Vec<&str> = type_references
+            .iter()
+            .filter(|reference| matches!(reference.kind, EdgeKind::Extends | EdgeKind::Implements))
+            .filter(|reference| crate::names::leaf(&reference.name).split('<').next() == Some(base))
+            .map(|reference| reference.source.as_str())
+            .filter(|source| candidate_ids.contains(source))
+            .collect();
+        by.dedup();
+        by.sort();
+        by
+    };
+    for line in FRAMEWORK_RECORDS.lines() {
+        let mut columns = line.split('\t');
+        let (Some(base), Some(table), Some(standing)) = (columns.next(), columns.next(), columns.next()) else { continue };
+        if !created.contains_key(table) {
+            continue;
+        }
+        let Some(owner) = extended_by(base).into_iter().next() else { continue };
+        admitted.insert(owner);
+        match standing {
+            "keeps" => declaring.entry(table).or_default().push(owner),
+            _ => {
+                accounted.insert(table.to_string());
+            }
+        }
+    }
     for (key, table) in &created {
         if let Some(by) = declaring.get(key.as_str()) {
             let mut by = by.clone();
@@ -4366,50 +4395,7 @@ fn entities(
             .map(str::to_string)
             .collect()
     });
-    let methods: HashMap<&str, u32> = {
-        let mut counted: HashMap<&str, u32> = HashMap::default();
-        for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::HasMethod) {
-            *counted.entry(edge.source.as_str()).or_insert(0) += 1;
-        }
-        counted
-    };
-    let mut denoting_every: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
-    for node in nodes.iter().filter(|node| node.kind.is_type()) {
-        denoting_every
-            .entry(node.name.as_str())
-            .or_default()
-            .push(node);
-    }
     let data_fields = |id: &str| fields.get(id).copied().unwrap_or(0);
-    let behaves = |id: &str| {
-        methods.get(id).copied().unwrap_or(0) > 0
-            && node_of
-                .get(id)
-                .is_some_and(|node| !node.decorators.iter().any(over_a_wire))
-    };
-    let holds_behaviour = |id: &str| {
-        let Some(node) = node_of.get(id) else {
-            return false;
-        };
-        named_fields.get(id).into_iter().flatten().any(|field| {
-            crate::entities::tokens(field.declared_as.as_deref().unwrap_or_default())
-                .into_iter()
-                .any(|word| {
-                    denoting_every.get(word).into_iter().flatten().any(|other| {
-                        (other.file == node.file || other.project == node.project)
-                            && behaves(other.id.as_str())
-                    })
-                })
-        })
-    };
-    let carries_data = |id: &str| {
-        node_of.get(id).is_some_and(|node| {
-            (matches!(node.kind, NodeKind::Interface | NodeKind::TypeAlias)
-                || methods.get(id).copied().unwrap_or(0) == 0
-                || node.decorators.iter().any(over_a_wire))
-                && !holds_behaviour(id)
-        })
-    };
     let kept_away = |place: &str| matches!(place, "cache" | "client_storage" | "file");
     let stored_away: HashSet<&str> = sightings
         .stored
@@ -4429,31 +4415,6 @@ fn entities(
         .filter(|id| data_fields(id) >= 2)
         .collect();
     round_trips.sort();
-    let declared_by_a_model: HashSet<Option<&str>> = candidates
-        .iter()
-        .filter(|node| admitted.contains(node.id.as_str()))
-        .map(|node| node.project.as_deref())
-        .chain(
-            declared_tables
-                .iter()
-                .map(|table| file_project.get(&table.file).copied()),
-        )
-        .collect();
-    let modelled_around = |id: &str| {
-        let Some(node) = node_of.get(id) else {
-            return false;
-        };
-        let project = node.project.as_deref();
-        declared_by_a_model
-            .iter()
-            .any(|held| match (project, *held) {
-                (Some(project), Some(held)) => {
-                    project == held || denoting.reaches.contains(&(project, held))
-                }
-                (None, None) => true,
-                _ => false,
-            })
-    };
     let mut keeping = crate::entities::Keeping::default();
     let mut document_ids: HashSet<&str> = HashSet::default();
     for root in round_trips {
@@ -4488,27 +4449,8 @@ fn entities(
             }
             false => {
                 admitted.insert(root);
+                admitted.extend(children.iter().copied().filter(|id| data_fields(id) >= 2));
             }
-        }
-    }
-    let wire_marked = |id: &str| {
-        node_of
-            .get(id)
-            .is_some_and(|node| node.decorators.iter().any(over_a_wire))
-    };
-    for sighting in sightings.carried.iter().chain(
-        sightings
-            .stored
-            .iter()
-            .filter(|sighting| matches!(sighting.place, "api" | "message" | "network")),
-    ) {
-        let id = sighting.node.as_str();
-        let exchanged = match sighting.place {
-            "api" | "network" => wire_marked(id),
-            _ => carries_data(id),
-        };
-        if data_fields(id) >= 2 && exchanged && !modelled_around(id) {
-            admitted.insert(id);
         }
     }
     let by_name = |held: &HashMap<String, Vec<String>>| -> HashMap<String, Vec<String>> {

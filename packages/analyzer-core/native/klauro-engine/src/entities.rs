@@ -15,25 +15,20 @@ const PATH_AT_MOST: usize = 80;
 const CLIMB_AT_MOST: usize = 8;
 const WRAPPER_ROUNDS: usize = 3;
 
-static STORES_A_VALUE: &[&str] = &[
-    "add", "append", "commit", "dump", "emit", "insert", "output", "persist", "publish", "put",
-    "save", "send", "serialize", "set", "store", "upsert", "write",
-];
 
-static READS_A_VALUE: &[&str] = &[
-    "fetch", "find", "get", "load", "lrange", "open", "parse", "pop", "query", "read", "retrieve", "select",
-];
 
-static SERIALIZES: &[&str] = &[
-    "dump", "dumps", "encode", "marshal", "serialize", "stringify", "to_bytes", "to_json", "to_string",
-    "to_string_pretty", "to_value", "to_vec", "to_vec_pretty", "to_yaml", "tojson", "tostring",
-];
 
-static DESERIALIZES: &[&str] = &[
-    "decode", "deserialize", "from_reader", "from_slice", "from_str", "from_value", "loads", "parse", "unmarshal",
-];
 
-static NOT_A_CONTENT_READ: &[&str] = &["dir", "exists", "remove", "stat"];
+
+static VALUES: &str = include_str!("../data/stored_values.tsv");
+
+fn words(kind: &'static str) -> impl Iterator<Item = &'static str> {
+    VALUES.lines().filter_map(move |line| line.strip_prefix(kind)?.strip_prefix('\t'))
+}
+
+fn named_as(kind: &'static str, called: &str) -> bool {
+    words(kind).any(|word| word.eq_ignore_ascii_case(called))
+}
 
 static OVER_A_BOUNDARY: &[&str] = &["graphql", "http", "ipc", "message", "rpc"];
 
@@ -228,10 +223,11 @@ pub fn built_from(text: &str) -> Vec<String> {
     let text = without_decoration(text);
     let literal = text.starts_with('{');
     let macro_call = text.find("!(").is_some_and(|at| text[..at].chars().all(|letter| letter.is_alphanumeric() || letter == '_'));
-    let serializing = SERIALIZES.iter().any(|word| {
-        text.match_indices(word).any(|(at, _)| {
-            let before = text[..at].chars().next_back();
-            let after = &text[at + word.len()..];
+    let lowered = text.to_ascii_lowercase();
+    let serializing = words("serializes").any(|word| {
+        lowered.match_indices(word).any(|(at, _)| {
+            let before = lowered[..at].chars().next_back();
+            let after = &lowered[at + word.len()..];
             before.is_none_or(|letter| !(letter.is_alphanumeric() || letter == '_'))
                 && (after.starts_with('(') || after.starts_with("::<"))
         })
@@ -449,13 +445,13 @@ impl<'a> Typing<'a> {
 
 fn writes_a_value(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
-    STORES_A_VALUE.iter().any(|word| operation.contains(word))
+    words("stores").any(|word| operation.contains(word))
 }
 
 fn reads_a_value(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
-    READS_A_VALUE.iter().any(|word| operation.contains(word))
-        && !NOT_A_CONTENT_READ.iter().any(|word| operation.contains(word))
+    words("reads").any(|word| operation.contains(word))
+        && !words("not_a_read").any(|word| operation.contains(word))
 }
 
 pub fn gather(
@@ -481,7 +477,7 @@ pub fn gather(
     for call in sources.calls {
         if let Some(caller) = call.caller.as_deref()
             && !call.type_arguments.is_empty()
-            && DESERIALIZES.contains(&crate::names::leaf(&call.callee))
+            && named_as("deserializes", crate::names::leaf(&call.callee))
         {
             deserializing.entry(caller).or_default().push(call);
         }

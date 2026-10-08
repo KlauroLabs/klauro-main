@@ -481,32 +481,64 @@ mod tests {
     }
 }
 
-static CREATES_A_TABLE: &[&str] = &["create_table", "createmodel", "createtable"];
-static CREATES_BY_A_SCHEMA: &[&str] = &["create"];
-static DESCRIBES_A_SCHEMA: &[&str] = &["schema"];
-static NAMES_WHAT_IS_CREATED: &[&str] = &["name", "table_name"];
 const OPENS_BESIDE_ITS_CREATION: u32 = 3;
-static SCHEMAS_MAPPING_BY_CALL: &[&str] = &[".prisma"];
-static MAPS_ITS_TABLE: &[&str] = &["map"];
-static DECLARES_A_COLUMN: &[&str] = &["column"];
+static TABLE_CALLS: &str = include_str!("../data/table_calls.tsv");
 
-fn creates_a_table(call: &crate::model::CallFact) -> bool {
+fn held(kind: &'static str, word: &str) -> bool {
+    TABLE_CALLS.lines().filter_map(|line| line.strip_prefix(kind)?.strip_prefix('\t')).any(|held| held == word)
+}
+
+fn changes_a_table(call: &crate::model::CallFact, directly: &'static str, by_a_schema: &'static str) -> bool {
     let callee = crate::names::leaf(&call.callee).to_ascii_lowercase();
-    if CREATES_A_TABLE.contains(&callee.as_str()) {
+    if held(directly, &callee) {
         return true;
     }
     let receiver = call
         .receiver
         .as_deref()
         .map(|held| crate::names::leaf(held).trim_start_matches('\\').to_ascii_lowercase());
-    CREATES_BY_A_SCHEMA.contains(&callee.as_str())
-        && receiver.is_some_and(|held| DESCRIBES_A_SCHEMA.contains(&held.as_str()))
+    held(by_a_schema, &callee) && receiver.is_some_and(|receiver| held("describes_a_schema", &receiver))
+}
+
+fn creates_a_table(call: &crate::model::CallFact) -> bool {
+    changes_a_table(call, "creates", "creates_by_a_schema")
+}
+
+fn drops_a_table(call: &crate::model::CallFact) -> bool {
+    changes_a_table(call, "drops", "drops_by_a_schema")
+}
+
+fn configured_type<'a>(
+    call: &crate::model::CallFact,
+    unit: Option<&'a crate::model::IndexNode>,
+    at_line: &rustc_hash::FxHashMap<(u32, u32), Vec<&'a crate::model::CallFact>>,
+) -> Option<String> {
+    let unit = unit?;
+    let root = call.receiver.as_deref()?.split(['.', '?', '!']).next()?;
+    let parameter = unit
+        .signature
+        .iter()
+        .flat_map(|signature| signature.parameters.iter())
+        .find(|parameter| parameter.name == root)
+        .and_then(|parameter| parameter.type_annotation.as_deref());
+    let argument_of = |annotation: &str| -> Option<String> {
+        let (_, inside) = annotation.split_once('<')?;
+        let first = inside.trim_end_matches('>').split(',').next()?.trim();
+        Some(first.rsplit('.').next().unwrap_or(first).to_string()).filter(|named| !named.is_empty())
+    };
+    parameter.and_then(argument_of).or_else(|| {
+        at_line
+            .get(&(unit.file, unit.span.line))?
+            .iter()
+            .filter(|passing| Some(crate::names::leaf(&passing.callee)) == crate::names::leaf(&unit.name).split('#').next())
+            .find_map(|passing| passing.type_arguments.first())
+            .map(|named| named.rsplit('.').next().unwrap_or(named).to_string())
+    })
 }
 
 fn named_in(literal: &str) -> Option<String> {
     let held = match literal.split_once('=') {
-        Some((key, value)) => NAMES_WHAT_IS_CREATED
-            .contains(&key.trim().to_ascii_lowercase().as_str())
+        Some((key, value)) => held("names_what_is_created", &key.trim().to_ascii_lowercase())
             .then_some(value.trim())?,
         None => literal.trim(),
     };
@@ -549,9 +581,16 @@ pub fn created_by_calls(
         .iter()
         .filter_map(|node| Some((node.id.as_str(), (node.span.line, node.parent.as_deref()?))))
         .collect();
+    let reverting: rustc_hash::FxHashSet<&str> = nodes
+        .iter()
+        .filter(|node| node.kind.is_unit() && held("reverts", &crate::names::leaf(&node.name).to_ascii_lowercase()))
+        .map(|node| node.id.as_str())
+        .collect();
+    let calls_forward: Vec<&crate::model::CallFact> = calls.iter().filter(|call| call.caller.as_deref().is_none_or(|caller| !reverting.contains(caller))).collect();
     let mut creations: Vec<(usize, Table)> = calls
         .iter()
         .enumerate()
+        .filter(|(_, call)| call.caller.as_deref().is_none_or(|caller| !reverting.contains(caller)))
         .filter(|(_, call)| creates_a_table(call))
         .filter(|(_, call)| paths.get(call.file as usize).is_some_and(|path| !crate::paths::is_test(path)))
         .filter_map(|(at, call)| {
@@ -598,10 +637,10 @@ pub fn created_by_calls(
     for call in calls {
         let in_a_schema = paths
             .get(call.file as usize)
-            .is_some_and(|path| SCHEMAS_MAPPING_BY_CALL.iter().any(|written| path.ends_with(written)));
+            .is_some_and(|path| TABLE_CALLS.lines().filter_map(|line| line.strip_prefix("schema_mapping_by_call\t")).any(|written| path.ends_with(written)));
         let Some(owner) = call.caller.as_deref() else { continue };
         if !in_a_schema
-            || !MAPS_ITS_TABLE.contains(&call.callee.as_str())
+            || !held("maps_its_table", &call.callee)
             || !holding_rows.contains(owner)
             || fields_on.contains(&(owner, call.line))
         {
@@ -620,6 +659,68 @@ pub fn created_by_calls(
                 line: call.line,
                 declared_by: Some(owner.to_string()),
                 change: Change::Created,
+            },
+        ));
+    }
+    let node_of: rustc_hash::FxHashMap<&str, &crate::model::IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut at_line: rustc_hash::FxHashMap<(u32, u32), Vec<&crate::model::CallFact>> = rustc_hash::FxHashMap::default();
+    for call in calls.iter().filter(|call| !call.type_arguments.is_empty()) {
+        at_line.entry((call.file, call.line)).or_default().push(call);
+    }
+    let mut types_named: rustc_hash::FxHashMap<&str, Vec<&crate::model::IndexNode>> = rustc_hash::FxHashMap::default();
+    for node in nodes.iter().filter(|node| node.kind.is_type()) {
+        types_named.entry(node.name.as_str()).or_default().push(node);
+    }
+    for call in calls_forward {
+        if paths.get(call.file as usize).is_none_or(|path| crate::paths::is_test(path)) {
+            continue;
+        }
+        let dropping = drops_a_table(call);
+        let mapping = held("maps_to_its_type", &crate::names::leaf(&call.callee).to_ascii_lowercase());
+        if !dropping && !mapping {
+            continue;
+        }
+        let Some(named) = call
+            .literals
+            .iter()
+            .filter(|literal| written(call, literal))
+            .filter(|literal| !spells_the_call(call, literal))
+            .find_map(|literal| named_in(literal))
+        else {
+            continue;
+        };
+        let declared_by = match mapping {
+            true => {
+                let unit = call.caller.as_deref().and_then(|caller| node_of.get(caller).copied());
+                let Some(configured) = configured_type(call, unit, &at_line) else { continue };
+                let project = unit.and_then(|unit| unit.project.as_deref());
+                let found = types_named.get(configured.as_str()).cloned().unwrap_or_default();
+                let alongside: Vec<&&crate::model::IndexNode> = found.iter().filter(|node| node.project.as_deref() == project).collect();
+                let chosen = match alongside.as_slice() {
+                    [only] => Some(only.id.clone()),
+                    _ => match found.as_slice() {
+                        [only] => Some(only.id.clone()),
+                        _ => None,
+                    },
+                };
+                let Some(chosen) = chosen else { continue };
+                Some(chosen)
+            }
+            false => None,
+        };
+        creations.push((
+            usize::MAX,
+            Table {
+                named: named.to_ascii_lowercase(),
+                columns: Vec::new(),
+                points_at: Vec::new(),
+                file: call.file,
+                line: call.line,
+                declared_by,
+                change: match dropping {
+                    true => Change::Dropped,
+                    false => Change::Created,
+                },
             },
         ));
     }
@@ -645,7 +746,7 @@ pub fn created_by_calls(
         });
         let callee = crate::names::leaf(&call.callee);
         let by_a_column = || {
-            DECLARES_A_COLUMN.contains(&callee.to_ascii_lowercase().as_str())
+            held("declares_a_column", &callee.to_ascii_lowercase())
                 .then(|| following.get(&(call.file, caller)))
                 .flatten()
                 .and_then(|held| held.iter().rev().find(|(line, _)| *line <= call.line))

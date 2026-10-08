@@ -1,0 +1,9 @@
+using Cart.Api.Repositories;
+using Cart.Api.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton<ICartRepository, RedisCartRepository>();
+builder.Services.AddSingleton<NoticeBoard>();
+var app = builder.Build();
+app.MapCart();
+app.Run();

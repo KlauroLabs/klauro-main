@@ -1,0 +1,13 @@
+IdentityUser	aspnetusers	keeps
+IdentityUser	aspnetuserclaims	part
+IdentityUser	aspnetuserlogins	part
+IdentityUser	aspnetusertokens	part
+IdentityUser	aspnetuserroles	part
+IdentityUser	aspnetroles	part
+IdentityUser	aspnetroleclaims	part
+AbstractUser	auth_user	keeps
+AbstractUser	auth_user_groups	part
+AbstractUser	auth_user_user_permissions	part
+AbstractUser	auth_group	part
+AbstractUser	auth_group_permissions	part
+AbstractUser	auth_permission	part
