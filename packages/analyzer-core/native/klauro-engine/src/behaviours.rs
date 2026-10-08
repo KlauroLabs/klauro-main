@@ -416,7 +416,19 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             settled.push(shaped);
         }
     }
-    held.flows = merged(settled, facts);
+    let mut flows = merged(settled, facts);
+    let base_of = |id: &str| id.split_once('#').map(|(base, _)| base.to_string()).unwrap_or_else(|| id.to_string());
+    let mut siblings: HashMap<String, usize> = HashMap::default();
+    for flow in &flows {
+        *siblings.entry(base_of(&flow.id)).or_default() += 1;
+    }
+    for flow in flows.iter_mut() {
+        let base = base_of(&flow.id);
+        if flow.id != base && siblings.get(&base) == Some(&1) {
+            flow.id = base;
+        }
+    }
+    held.flows = flows;
     hosting(held, facts, &project_of);
 }
 
