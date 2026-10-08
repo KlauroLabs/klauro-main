@@ -354,6 +354,7 @@ impl<'a> ServedRoutes<'a> {
             let Some(project) = owner.get(file.as_str()) else { continue };
             let shape = route_shape(path);
             match wildcard_prefix(&shape) {
+                Some("/") => {}
                 Some(prefix) => served.prefixed.push((prefix.to_string(), project, entry)),
                 None => served.exact.entry(shape).or_default().push((project, entry)),
             }
