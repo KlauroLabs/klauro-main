@@ -2105,13 +2105,52 @@ fn fetched_through_an_alias(
     (alias.stands_for.as_deref() == Some(FETCH_FUNCTION) && fetch_is_the_web(path)).then_some("api")
 }
 
+static WRAPPING_CALLS: &str = include_str!("../data/wrapping_calls.tsv");
+
+fn wrapped_bindings<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding], nodes: &'a [IndexNode]) -> HashMap<(u32, &'a str), &'a str> {
+    let wrapping: Vec<&CallFact> = calls.iter().filter(|call| WRAPPING_CALLS.lines().any(|held| held == names::leaf(&call.callee))).collect();
+    let inner_of = |call: &'a CallFact| -> Option<&'a str> {
+        call.literals
+            .first()
+            .map(String::as_str)
+            .or_else(|| call.passes.iter().find_map(|passed| passed.split_once('=').map(|(_, root)| root)))
+    };
+    let mut found: HashMap<(u32, &str), &str> = HashMap::default();
+    let variable_of: HashMap<&str, &str> = nodes.iter().filter(|node| node.kind == NodeKind::Variable).map(|node| (node.id.as_str(), node.name.as_str())).collect();
+    let mut wrapping_at: HashMap<(u32, u32), &CallFact> = HashMap::default();
+    for call in &wrapping {
+        wrapping_at.insert((call.file, call.line), call);
+        if let Some(name) = call.caller.as_deref().and_then(|caller| variable_of.get(caller))
+            && let Some(inner) = inner_of(call)
+        {
+            found.insert((call.file, name), inner);
+        }
+    }
+    for local in locals {
+        let Some(called) = local.from_call.as_deref() else { continue };
+        if !WRAPPING_CALLS.lines().any(|held| held == names::leaf(called)) {
+            continue;
+        }
+        if let Some(inner) = wrapping_at.get(&(local.file, local.line)).and_then(|call| inner_of(call)) {
+            found.insert((local.file, local.name.as_str()), inner);
+        }
+    }
+    found
+}
+
 fn bare_exit(
     call: &CallFact,
     modules: &rustc_hash::FxHashMap<(u32, String), String>,
+    wrapped: &HashMap<(u32, &str), &str>,
     path: &str,
 ) -> Option<&'static str> {
     if call.callee == "fetch" {
         return fetch_is_the_web(path).then_some("api");
+    }
+    if let Some(inner) = wrapped.get(&(call.file, call.callee.as_str()))
+        && let Some(specifier) = modules.get(&(call.file, inner.to_string()))
+    {
+        return classify_exit(inner, specifier, inner);
     }
     if let Some(specifier) = modules.get(&(call.file, call.callee.clone())) {
         return classify_exit(&call.callee, specifier, &call.callee);
@@ -2536,6 +2575,7 @@ pub fn derive(
                 .then_some(((held.file, held.unit.as_str(), held.name.as_str()), built))
         })
         .collect();
+    let wrapped = wrapped_bindings(calls, locals, nodes);
     let locals_by_unit: HashMap<(u32, &str, &str), &crate::model::LocalBinding> = locals
         .iter()
         .map(|held| ((held.file, held.unit.as_str(), held.name.as_str()), held))
@@ -3434,7 +3474,7 @@ pub fn derive(
             return (found, reach);
         }
         let Some(receiver) = call.receiver.as_deref() else {
-            let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
+            let Some(kind) = bare_exit(call, modules, &wrapped, &files[call.file as usize])
                 .or_else(|| fetched_through_an_alias(call, &files[call.file as usize], &locals_by_unit))
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
                 .or_else(|| requested_by_url(call))

@@ -33,3 +33,15 @@ fn a_call_to_another_parts_route_is_a_seam_into_the_flow_that_serves_it() {
     let checkout = flows.iter().find(|flow| flow["surface"] == "/checkout").unwrap();
     assert!(checkout["steps"].as_array().unwrap().iter().any(|step| !step["lands_in"].as_array().map(Vec::is_empty).unwrap_or(true)), "the calling step names where it lands: {checkout}");
 }
+
+#[test]
+fn starting_another_parts_program_through_a_wrapped_launcher_is_a_seam_into_that_program() {
+    let index = common::read("start_seams");
+    let seams = index["comprehension"]["seams"].as_array().unwrap();
+    let started: Vec<(&str, &str, &str)> = seams
+        .iter()
+        .map(|seam| (seam["from"].as_str().unwrap(), seam["via"].as_str().unwrap(), seam["to"].as_str().unwrap()))
+        .collect();
+    assert_eq!(started, vec![("subproject:api", "start", "subproject:indexer")]);
+    assert!(seams[0]["to_flows"].as_array().unwrap().iter().any(|flow| flow.as_str().unwrap().contains("indexer/src/main.rs")), "{seams:?}");
+}

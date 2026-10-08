@@ -103,6 +103,8 @@ pub struct Composition {
     pub promoted: Vec<crate::parent::Promoted>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub not_promoted: Vec<crate::parent::NotPromoted>,
+    #[serde(skip)]
+    pub started: HashMap<(u32, u32), String>,
 }
 
 fn rounded(value: f64) -> f64 {
@@ -667,6 +669,7 @@ fn process_seams(
     rooted: &[(Vec<String>, String)],
     constants: &Constants,
     linked: &mut HashSet<(u32, u32)>,
+    started: &mut HashMap<(u32, u32), String>,
 ) -> Vec<Seam> {
     let spawning: HashSet<(u32, u32)> = exit_points
         .iter()
@@ -718,6 +721,7 @@ fn process_seams(
         });
         let Some((target, word)) = reached else { continue };
         linked.insert((exit.file, exit.line));
+        started.insert((exit.file, exit.line), target.to_string());
         if target == *caller {
             continue;
         }
@@ -764,7 +768,8 @@ pub fn derive(
     let constants = Constants::new(locals);
     let rooted = rooted_projects(&projects);
     seams.extend(crossing_seams(files, crossings, &owner, &mut reached));
-    seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants, &mut reached));
+    let mut started: HashMap<(u32, u32), String> = HashMap::default();
+    seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants, &mut reached, &mut started));
     let links = link_coverage(files, exit_points, &owner, &reached);
     Some(Composition {
         mode: "derived",
@@ -779,6 +784,7 @@ pub fn derive(
         }),
         promoted: Vec::new(),
         not_promoted: Vec::new(),
+        started,
     })
 }
 

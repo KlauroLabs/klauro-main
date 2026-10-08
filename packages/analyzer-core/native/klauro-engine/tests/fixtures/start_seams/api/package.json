@@ -1,0 +1,1 @@
+{ "name": "jobs-api", "version": "1.0.0", "scripts": { "start": "node dist/server.js" }, "dependencies": { "express": "^4.19.0" } }

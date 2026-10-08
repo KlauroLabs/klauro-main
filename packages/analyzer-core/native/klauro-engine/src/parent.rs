@@ -693,6 +693,7 @@ mod tests {
             orphan: Some(Orphan { project: "subproject:.".to_string(), files: 3, declarations: 5 }),
             promoted: Vec::new(),
             not_promoted: Vec::new(),
+            started: Default::default(),
         }
     }
 
