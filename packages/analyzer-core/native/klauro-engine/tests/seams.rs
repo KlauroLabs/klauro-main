@@ -65,4 +65,6 @@ fn a_message_type_several_handlers_take_lands_on_the_one_whose_queue_names_the_c
         .collect();
     assert_eq!(landed.len(), 1, "{landed:?}");
     assert!(landed[0].0.contains("RebuildIndexWorker") && landed[0].1 == "channel", "{landed:?}");
+    let workers = index["partition"]["sub_projects"].as_array().unwrap().iter().find(|part| part["id"] == "subproject:Jobs.Workers").unwrap();
+    assert_eq!(workers["role"], "worker", "a declared program that only hosts background work is a worker");
 }

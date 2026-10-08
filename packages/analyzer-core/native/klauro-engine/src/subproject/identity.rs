@@ -103,7 +103,7 @@ fn kind_of(project: &SubProject, tally: &Tally, orchestrates: bool, declares_a_p
             false => ("service", format!("it serves {serving} requests, tools or commands")),
         };
     }
-    if background > 0 && (project.ship_backed || project.runnable) && serving == 0 {
+    if background > 0 && (project.ship_backed || project.runnable || declares_a_program) && serving == 0 {
         return ("worker", format!("it runs {background} scheduled, message or start-up jobs and serves nothing directly"));
     }
     if !project.consumed_by.is_empty() || !project.imported_by.is_empty() || tally.of_kinds(&["export"]) > 0 {
