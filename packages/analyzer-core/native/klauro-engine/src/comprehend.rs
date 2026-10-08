@@ -4439,6 +4439,7 @@ fn entities(
     round_trips.sort();
     let mut keeping = crate::entities::Keeping::default();
     let mut document_ids: HashSet<&str> = HashSet::default();
+    let mut held_in: HashMap<&str, String> = HashMap::default();
     for root in round_trips {
         let Some(node) = node_of.get(root) else {
             continue;
@@ -4471,7 +4472,11 @@ fn entities(
             }
             false => {
                 admitted.insert(root);
-                admitted.extend(children.iter().copied().filter(|id| data_fields(id) >= 2));
+                for child in children.iter().copied().filter(|id| data_fields(id) >= 2) {
+                    if admitted.insert(child) {
+                        held_in.insert(child, unquoted(&node.name).to_string());
+                    }
+                }
             }
         }
     }
@@ -4602,7 +4607,7 @@ fn entities(
             terminality: None,
             unshipped: None,
             persisted_by: persisted.get(node.id.as_str()).cloned(),
-            part_of: None,
+            part_of: held_in.get(node.id.as_str()).cloned(),
             standing: None,
         })
         .map(|mut entity| {

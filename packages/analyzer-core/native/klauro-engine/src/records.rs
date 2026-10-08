@@ -6,30 +6,10 @@ use crate::comprehend::{Comprehension, Entity};
 const FIELDS_TOLD: usize = 8;
 const MEMBERS_TOLD: usize = 6;
 const KEEPERS_TOLD: usize = 3;
+const FLOWS_TOLD: usize = 3;
 
 pub const ABOUT: &str = "domain";
 pub const BOOKKEEPING: &str = "operational";
-
-fn kept_on_its_own(entity: &Entity) -> bool {
-    !entity.written_by.is_empty() || !entity.read_by.is_empty() || entity.addressed_by > 0
-}
-
-fn members(entities: &mut [Entity]) {
-    let at: HashMap<String, usize> = entities.iter().enumerate().map(|(at, entity)| (entity.declared_as.clone(), at)).collect();
-    let mut owner: Vec<Option<String>> = vec![None; entities.len()];
-    for entity in entities.iter() {
-        for reference in &entity.references {
-            let Some(&child) = at.get(&reference.entity) else { continue };
-            if entities[child].declared_as == entity.declared_as || kept_on_its_own(&entities[child]) || owner[child].is_some() {
-                continue;
-            }
-            owner[child] = Some(entity.declared_as.clone());
-        }
-    }
-    for (entity, part_of) in entities.iter_mut().zip(owner) {
-        entity.part_of = part_of;
-    }
-}
 
 fn root_of<'a>(entities: &'a [Entity], at: &HashMap<&str, usize>, mut entity: &'a Entity) -> &'a Entity {
     let mut seen: HashSet<&str> = HashSet::default();
@@ -42,7 +22,7 @@ fn root_of<'a>(entities: &'a [Entity], at: &HashMap<&str, usize>, mut entity: &'
     entity
 }
 
-fn told(entity: &Entity, number: usize, held_by: &HashMap<&str, Vec<&str>>) -> String {
+fn told(entity: &Entity, number: usize, held_by: &HashMap<&str, Vec<&str>>, used_in: &HashMap<&str, Vec<&str>>) -> String {
     let fields: Vec<&str> = entity.named_fields.iter().take(FIELDS_TOLD).map(|field| field.name.as_str()).collect();
     let made_of: Vec<&str> = held_by.get(entity.declared_as.as_str()).into_iter().flatten().take(MEMBERS_TOLD).copied().collect();
     let keepers: Vec<&str> = entity
@@ -59,15 +39,26 @@ fn told(entity: &Entity, number: usize, held_by: &HashMap<&str, Vec<&str>>) -> S
     if !made_of.is_empty() {
         said.push_str(&format!(" | made of: {}", made_of.iter().map(|named| crate::names::spoken_as(named)).collect::<Vec<_>>().join(", ")));
     }
-    if !keepers.is_empty() {
+    if let Some(flows) = used_in.get(entity.declared_as.as_str()) {
+        said.push_str(&format!(" | used when: {}", flows.join("; ")));
+    } else if !keepers.is_empty() {
         said.push_str(&format!(" | kept by: {}", keepers.join(", ")));
     }
     said
 }
 
 pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str>) {
-    members(&mut comprehension.entities);
     let entities = &comprehension.entities;
+    let mut used_in: HashMap<&str, Vec<&str>> = HashMap::default();
+    for flow in &comprehension.flows {
+        let Some(named) = flow.name.as_deref() else { continue };
+        for object in flow.steps.iter().filter_map(|step| step.object.as_deref()) {
+            let held = used_in.entry(object).or_default();
+            if held.len() < FLOWS_TOLD && !held.contains(&named) {
+                held.push(named);
+            }
+        }
+    }
     let at: HashMap<&str, usize> = entities.iter().enumerate().map(|(at, entity)| (entity.declared_as.as_str(), at)).collect();
     let mut held_by: HashMap<&str, Vec<&str>> = HashMap::default();
     for entity in entities {
@@ -82,7 +73,7 @@ pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str
     let mut asked: Vec<(String, String)> = Vec::new();
     let mut listed: Vec<(String, Vec<usize>)> = Vec::new();
     for (part, positions) in by_part {
-        let lines: Vec<String> = positions.iter().enumerate().map(|(number, position)| told(&entities[*position], number + 1, &held_by)).collect();
+        let lines: Vec<String> = positions.iter().enumerate().map(|(number, position)| told(&entities[*position], number + 1, &held_by, &used_in)).collect();
         let named = part_names.get(part.as_str()).copied().unwrap_or(part.as_str());
         let key = format!("{part}\u{1}{}", lines.join("\n"));
         asked.push((key.clone(), format!("Part: {named}\n{}", lines.join("\n"))));
