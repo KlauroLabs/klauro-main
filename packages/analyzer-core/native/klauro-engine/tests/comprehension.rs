@@ -265,3 +265,16 @@ fn a_helper_that_only_juggles_files_is_one_step_and_names_are_not_effects() {
     let filing: Vec<&(String, String)> = steps.iter().filter(|(_, said)| said.to_lowercase().contains("snapshot") || said.contains("file")).collect();
     assert_eq!(filing.len(), 1, "storing the snapshot is one step: {steps:?}");
 }
+
+#[test]
+fn another_parts_library_is_one_step_at_the_call_keeping_only_what_it_hands_on() {
+    let index = common::read("seam_parts");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/orders/{id}/refund")
+        .expect("refunding is a flow");
+    let kinds: Vec<&str> = flow["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
+    assert!(kinds.iter().filter(|kind| !matches!(**kind, "raise" | "respond")).count() <= 1, "the outbox's own bookkeeping is not this flow's steps: {kinds:?}");
+}

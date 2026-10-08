@@ -18,4 +18,8 @@ app.MapPost("/orders/{id}/settle", async (int id, bool approved, IEventBus event
         await eventBus.PublishAsync(new OrderRefused(id));
     }
 });
+app.MapPost("/orders/{id}/refund", async (int id, Outbox outbox) =>
+{
+    await outbox.SaveAndPublish(new OrderPaid(id));
+});
 app.Run();

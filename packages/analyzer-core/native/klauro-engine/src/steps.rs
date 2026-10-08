@@ -657,6 +657,38 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if let Some(target) = target
+                && !self.nodes[target as usize].id.starts_with("package:")
+                && !self.nodes[target as usize].id.starts_with("runtime:")
+                && matches!(self.nodes[target as usize].kind, crate::model::NodeKind::Function | crate::model::NodeKind::Method)
+                && self.nodes[target as usize].project.is_some()
+                && *self.home.borrow() != self.nodes[target as usize].project
+                && !keeping_calls.iter().any(|(held, ..)| *held == target)
+            {
+                let mut within: Vec<Action> = Vec::new();
+                if visited.insert(target) {
+                    self.walk(target, depth + 1, context, &here, visited, &mut within);
+                }
+                let (handing, rest): (Vec<Action>, Vec<Action>) =
+                    within.into_iter().partition(|action| matches!(action.kind, "hand_off" | "send" | "notify"));
+                let strongest = ["remove", "keep", "change", "call", "read"]
+                    .into_iter()
+                    .find(|kind| rest.iter().any(|action| action.kind == *kind));
+                if let Some(kind) = strongest.filter(|_| handing.is_empty()) {
+                    actions.push(Action {
+                        kind,
+                        object: None,
+                        doing: Some(spoken(&self.nodes[target as usize].name)),
+                        when: context,
+                        arms: here.clone(),
+                        writes: rest.iter().any(|action| action.writes),
+                        unit,
+                        line: shown_line(line),
+                    });
+                }
+                actions.extend(handing);
+                continue;
+            }
+            if let Some(target) = target
                 && let Some((_, verb, kept)) = keeping_calls.iter().find(|(held, ..)| *held == target)
             {
                 let mut within: Vec<Action> = Vec::new();
