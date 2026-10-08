@@ -1478,6 +1478,18 @@ fn read_it() {
                 found.messages.iter().filter(|message| message.kind == "event").map(|message| message.message.as_str()).collect()
             })
             .unwrap_or_default(),
+        &index
+            .patterns
+            .as_ref()
+            .map(|found| {
+                found
+                    .messages
+                    .iter()
+                    .filter(|message| matches!(message.kind, "command" | "query"))
+                    .map(|message| (message.message.as_str(), message.handlers.iter().map(String::as_str).collect()))
+                    .collect()
+            })
+            .unwrap_or_default(),
         &open_calls,
         &index.locals,
     );

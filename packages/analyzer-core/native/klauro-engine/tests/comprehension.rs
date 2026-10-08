@@ -151,3 +151,25 @@ fn a_call_through_a_shared_base_does_not_reach_every_subclass_override() {
     let close = units("/close");
     assert!(close.iter().any(|unit| unit.contains("NightlyWorker")), "an abstract member still reaches its override: {close:?}");
 }
+
+#[test]
+fn a_command_sent_through_a_mediator_is_a_step_and_its_handler_acts_on_the_record_its_repository_keeps() {
+    let index = common::read("mediated");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/refunds/{orderId}")
+        .expect("issuing a refund is a flow");
+    let steps: Vec<(String, String)> = flow["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["kind"].as_str().unwrap().to_string(), step["object"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    let expected: Vec<(String, String)> = [("send", "IssueRefundCommand"), ("read", "Refund"), ("keep", "Refund"), ("respond", "")]
+        .iter()
+        .map(|(kind, object)| (kind.to_string(), object.to_string()))
+        .collect();
+    assert_eq!(steps, expected, "one step per action: the dispatcher, the repository's internals and the commit are not steps");
+}

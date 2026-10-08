@@ -1964,6 +1964,7 @@ pub fn derive(
     type_references: &[crate::model::TypeReferenceFact],
     metrics: &[crate::model::UnitMetricsEntry],
     events: &HashSet<&str>,
+    requests: &HashMap<&str, Vec<&str>>,
     open_calls: &HashMap<String, u32>,
     locals: &[LocalBinding],
 ) -> Comprehension {
@@ -2377,6 +2378,12 @@ pub fn derive(
             }
         }
     }
+    let keepers: HashSet<&str> = roles
+        .roles
+        .iter()
+        .filter(|role| matches!(role.role, "repository" | "data-context"))
+        .map(|role| role.node.as_str())
+        .collect();
     let reader = crate::steps::Reader::new(
         nodes,
         &position_of,
@@ -2387,6 +2394,8 @@ pub fn derive(
         &held,
         metrics,
         events,
+        requests,
+        &keepers,
     );
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();

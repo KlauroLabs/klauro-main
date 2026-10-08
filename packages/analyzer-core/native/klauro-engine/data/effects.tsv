@@ -4,4 +4,4 @@ whole	read	executereader,executescalar,exists,keyexists,stringgetlease
 whole	write	executenonquery
 word	delete	clear,del,delete,destroy,drop,evict,expire,flush,purge,remove,rm,rmdir,truncate,unlink
 word	send	dispatch,emit,enqueue,notify,publish,send
-word	write	add,append,commit,copy,create,decrement,increment,insert,merge,mkdir,move,patch,persist,post,push,put,rename,replace,save,set,store,update,upsert,write
+word	write	add,append,commit,copy,create,decrement,increment,insert,merge,mkdir,move,patch,persist,post,push,put,register,rename,replace,save,set,store,update,upsert,write

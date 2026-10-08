@@ -48,7 +48,7 @@ pub(crate) fn words_of(operation: &str) -> Vec<String> {
     words
 }
 
-fn by_words(operation: &str) -> Option<&'static str> {
+pub(crate) fn by_words(operation: &str) -> Option<&'static str> {
     let words = words_of(operation);
     let whole: String = words.concat();
     if let Some(rule) = rules().iter().find(|rule| rule.scope == "whole" && rule.words.contains(&whole.as_str())) {

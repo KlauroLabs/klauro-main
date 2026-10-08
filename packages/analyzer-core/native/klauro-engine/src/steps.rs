@@ -48,6 +48,7 @@ struct Action {
     doing: Option<String>,
     when: &'static str,
     arms: Vec<(u64, u16)>,
+    writes: bool,
     unit: u32,
     line: u32,
 }
@@ -62,6 +63,8 @@ pub struct Reader<'a> {
     held: &'a HashSet<&'a str>,
     writes_fields: HashSet<&'a str>,
     events: &'a HashSet<&'a str>,
+    requests: &'a HashMap<&'a str, Vec<&'a str>>,
+    keepers: &'a HashSet<&'a str>,
     member_of: HashMap<(&'a str, &'a str), u32>,
     callers: HashMap<u32, u32>,
     cut: std::cell::Cell<bool>,
@@ -147,6 +150,16 @@ fn when_of(context: &CallContext) -> &'static str {
     }
 }
 
+fn keeping_verb(method: &str) -> &'static str {
+    let words = crate::effects::words_of(method);
+    match crate::effects::by_words(method) {
+        Some("delete") => "remove",
+        Some("write") if words.iter().any(|word| matches!(word.as_str(), "update" | "set" | "patch" | "replace" | "merge")) => "change",
+        Some("write" | "send") => "keep",
+        _ => "read",
+    }
+}
+
 fn inherited(outer: &'static str, inner: &'static str) -> &'static str {
     match (outer, inner) {
         ("on_failure", _) | (_, "on_failure") => "on_failure",
@@ -212,6 +225,7 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
         "change" => "Change",
         "remove" => "Remove",
         "hand_off" => "Hand off",
+        "send" => "Send",
         "call" => "Call",
         "keep" => "Keep",
         "respond" => "Respond with",
@@ -255,6 +269,8 @@ impl<'a> Reader<'a> {
         held: &'a HashSet<&'a str>,
         metrics: &'a [UnitMetricsEntry],
         events: &'a HashSet<&'a str>,
+        requests: &'a HashMap<&'a str, Vec<&'a str>>,
+        keepers: &'a HashSet<&'a str>,
     ) -> Self {
         let writes_fields: HashSet<&str> = metrics
             .iter()
@@ -292,7 +308,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, events, member_of, callers, cut: std::cell::Cell::new(false) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -422,23 +438,67 @@ impl<'a> Reader<'a> {
         self.held.get(owner.name.as_str()).copied()
     }
 
+    fn keeps(&self, target: u32) -> bool {
+        let owner_keeps = |unit: u32| {
+            self.nodes[unit as usize]
+                .parent
+                .as_deref()
+                .is_some_and(|parent| self.keepers.contains(parent))
+        };
+        owner_keeps(target) || self.next.get(&target).into_iter().flatten().any(|inner| owner_keeps(*inner))
+    }
+
+    fn kept_by(&self, call: &CallFact, calls: &[&CallFact]) -> Option<String> {
+        let held = |named: &str| self.held.get(crate::names::leaf(named).split('<').next().unwrap_or_default()).map(|record| record.to_string());
+        calls
+            .iter()
+            .filter(|other| other.line == call.line && other.constructs)
+            .find_map(|other| held(&other.callee))
+            .or_else(|| call.type_arguments.iter().find_map(|argument| held(argument)))
+            .or_else(|| {
+                call.literals.iter().find_map(|literal| {
+                    let bare = literal.trim().trim_start_matches(['_', '@', '$']);
+                    self.held.iter().copied().filter(|record| record.starts_with(char::is_uppercase)).find(|record| record.eq_ignore_ascii_case(bare)).map(str::to_string)
+                })
+            })
+            .or_else(|| self.named_within(crate::names::leaf(&call.callee)))
+            .or_else(|| self.named_within(crate::names::leaf(call.receiver.as_deref()?)))
+    }
+
+    fn named_within(&self, written: &str) -> Option<String> {
+        let words: String = crate::effects::words_of(written).concat();
+        let mut named: Vec<&str> = self
+            .held
+            .iter()
+            .copied()
+            .filter(|record| record.starts_with(char::is_uppercase))
+            .filter(|record| {
+                let spoken = record.to_ascii_lowercase();
+                let last = crate::effects::words_of(record).pop().unwrap_or_default();
+                words.contains(&spoken) || words.contains(&singular(&spoken)) || (last.len() > 3 && words.contains(&last))
+            })
+            .collect();
+        named.sort_by_key(|record| std::cmp::Reverse(record.len()));
+        named.first().map(|record| record.to_string())
+    }
+
     fn operating_on_a_record(&self, target: u32, when: &'static str, line: u32, unit: u32) -> Option<Action> {
         let node = &self.nodes[target as usize];
         if self.events.contains(node.name.as_str()) && (node.kind.is_type() || self.record_owning(target).is_none()) {
-            return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, arms: Vec::new(), unit, line });
+            return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, arms: Vec::new(), writes: false, unit, line });
         }
         if node.kind.is_type() {
             let record = self.held.get(node.name.as_str()).copied()?;
-            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), unit, line });
+            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), writes: false, unit, line });
         }
         let record = self.record_owning(target)?;
         if node.name == record {
-            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), unit, line });
+            return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), writes: false, unit, line });
         }
         if !self.writes_fields.contains(node.id.as_str()) {
             return None;
         }
-        Some(Action { kind: "change", object: Some(record.to_string()), doing: Some(spoken(&node.name)), when, arms: Vec::new(), unit, line })
+        Some(Action { kind: "change", object: Some(record.to_string()), doing: Some(spoken(&node.name)), when, arms: Vec::new(), writes: false, unit, line })
     }
 
     fn walk(&self, unit: u32, depth: u32, when: &'static str, arms: &[(u64, u16)], visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
@@ -460,10 +520,40 @@ impl<'a> Reader<'a> {
         let mut handing_on: Vec<&CallFact> = Vec::new();
         let mut class_calls: Vec<(u32, u32, &'static str, &'a str)> = Vec::new();
         let mut library_calls: Vec<(u32, u32, String)> = Vec::new();
+        let mut request_calls: Vec<(u32, u32, &'a str)> = Vec::new();
+        let mut keeping_calls: Vec<(u32, &'static str, Option<String>)> = Vec::new();
+        let mut requesting_lines: HashSet<u32> = HashSet::default();
+        for call in calls.iter().filter(|call| call.constructs) {
+            let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
+            if let Some((message, handlers)) = self.requests.get_key_value(named) {
+                requesting_lines.insert(call.line);
+                request_calls.push((call.line, call.column, message));
+                at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
+                for handler in handlers {
+                    let Some(position) = self.position_of.get(handler).copied() else { continue };
+                    if let Some(at) = targets.iter().position(|target| *target == position) {
+                        targets.remove(at);
+                        at_line.push((call.line, call.column + 1, Some(position), when_of(&call.context), None, None));
+                    }
+                }
+            }
+        }
         for call in calls {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
+            if call.constructs && self.requests.contains_key(named) {
+                continue;
+            }
+            if requesting_lines.contains(&call.line) {
+                if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
+                    targets.remove(at);
+                }
+                continue;
+            }
             if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
                 let target = targets.remove(at);
+                if self.keeps(target) {
+                    keeping_calls.push((target, keeping_verb(named), self.kept_by(call, calls)));
+                }
                 at_line.push((call.line, call.column, Some(target), when_of(&call.context), None, Some(call)));
             } else if a_check(&call.callee) {
                 at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
@@ -517,13 +607,43 @@ impl<'a> Reader<'a> {
                 if REFRESHES.contains(&operation.as_str()) {
                     continue;
                 }
-                if COMMITS.contains(&operation.as_str())
-                    && actions.iter().rev().take_while(|held| held.unit == unit).any(|held| matches!(held.kind, "change" | "create" | "remove"))
-                {
+                if COMMITS.contains(&operation.as_str()) {
+                    actions.push(Action { kind: "commit", object: exit.service.clone(), doing: None, when: context, arms: here.clone(), writes: true, unit, line: shown_line(line) });
                     continue;
                 }
                 if let Some((kind, object)) = self.action_of(exit) {
-                    actions.push(Action { kind, object, doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
+                    let writes = matches!(exit.does.unwrap_or_else(|| crate::effects::does(exit)), "write" | "delete" | "send" | "start");
+                    actions.push(Action { kind, object, doing: None, when: context, arms: here.clone(), writes, unit, line: shown_line(line) });
+                }
+                continue;
+            }
+            if let Some(target) = target
+                && let Some((_, verb, kept)) = keeping_calls.iter().find(|(held, ..)| *held == target)
+            {
+                let mut within: Vec<Action> = Vec::new();
+                if visited.insert(target) {
+                    self.walk(target, depth + 1, context, &here, visited, &mut within);
+                }
+                let removes = within.iter().any(|action| action.kind == "remove");
+                let stores = within.iter().any(|action| action.kind == "keep");
+                let writes = within.iter().any(|action| matches!(action.kind, "change" | "commit"));
+                let kind = match (removes, stores, writes, within.is_empty()) {
+                    (true, ..) => "remove",
+                    (false, true, ..) => "keep",
+                    (false, false, true, _) if *verb != "read" => verb,
+                    (false, false, true, _) => "change",
+                    (false, false, false, true) => verb,
+                    (false, false, false, false) => "read",
+                };
+                let object = kept.clone().or_else(|| {
+                    within
+                        .iter()
+                        .filter_map(|action| action.object.clone())
+                        .find(|object| self.held.contains(object.as_str()))
+                        .or_else(|| within.iter().find_map(|action| action.object.clone()))
+                });
+                if object.is_some() {
+                    actions.push(Action { kind, object, doing: None, when: context, arms: here.clone(), writes: kind != "read", unit, line: shown_line(line) });
                 }
                 continue;
             }
@@ -534,7 +654,7 @@ impl<'a> Reader<'a> {
                         && reached.id.starts_with("package:")
                         && let Some(doing) = acted_through_a_library(crate::names::leaf(&reached.name))
                     {
-                        actions.push(Action { kind: "do", object: None, doing: Some(doing), when: context, arms: here.clone(), unit, line: shown_line(line) });
+                        actions.push(Action { kind: "do", object: None, doing: Some(doing), when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
                         continue;
                     }
                     if let Some(mut action) = self.operating_on_a_record(target, context, shown_line(line), unit) {
@@ -548,15 +668,13 @@ impl<'a> Reader<'a> {
                             let mut within: Vec<Action> = Vec::new();
                             self.walk(target, depth + 1, context, &here, visited, &mut within);
                             let checking = a_check(named);
-                            let matters = within.iter().any(|action| match action.kind {
-                                "hand_off" | "raise" => true,
-                                "change" | "remove" | "create" => {
-                                    action.object.as_deref().is_some_and(|object| self.held.contains(object))
-                                }
-                                "call" => true,
-                                "read" | "check" => false,
+                            let persists = within.iter().any(|action| match action.kind {
+                                "hand_off" | "raise" | "send" | "keep" | "remove" | "commit" => true,
+                                "change" => action.object.as_deref().is_some_and(|object| self.held.contains(object)) || action.writes,
+                                "call" => action.writes,
                                 _ => false,
                             });
+                            let matters = persists;
                             let looked_up = within.iter().find_map(|action| {
                                 (action.kind == "read").then_some(action.object.as_deref()).flatten().filter(|object| self.held.contains(object)).map(str::to_string)
                             });
@@ -568,7 +686,7 @@ impl<'a> Reader<'a> {
                                     object: looked_up,
                                     doing: None,
                                     when: context,
-                                    arms: here.clone(),
+                                    arms: here.clone(), writes: false,
                                     unit,
                                     line: shown_line(line),
                                 }),
@@ -577,7 +695,7 @@ impl<'a> Reader<'a> {
                                     object: checking.then(|| spoken(named)),
                                     doing: (!checking).then(|| spoken(named)),
                                     when: context,
-                                    arms: here.clone(),
+                                    arms: here.clone(), writes: false,
                                     unit,
                                     line: shown_line(line),
                                 }),
@@ -589,22 +707,28 @@ impl<'a> Reader<'a> {
                 }
                 None => {
                     if let Some(call) = call {
+                        if let Some((_, _, message)) =
+                            request_calls.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column)
+                        {
+                            actions.push(Action { kind: "send", object: Some(message.to_string()), doing: None, when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
+                            continue;
+                        }
                         if let Some((_, _, doing)) =
                             library_calls.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column)
                         {
-                            actions.push(Action { kind: "do", object: None, doing: Some(doing.clone()), when: context, arms: here.clone(), unit, line: shown_line(line) });
+                            actions.push(Action { kind: "do", object: None, doing: Some(doing.clone()), when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
                             continue;
                         }
                         if let Some((_, _, kind, record)) =
                             class_calls.iter().find(|(held_line, held_column, ..)| *held_line == call.line && *held_column == call.column)
                         {
                             if !exits.iter().any(|exit| exit.line == call.line) {
-                                actions.push(Action { kind, object: Some(record.to_string()), doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
+                                actions.push(Action { kind, object: Some(record.to_string()), doing: None, when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
                             }
                             continue;
                         }
                         let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default().to_string();
-                        actions.push(Action { kind: "check", object: Some(named), doing: None, when: context, arms: here.clone(), unit, line: shown_line(line) });
+                        actions.push(Action { kind: "check", object: Some(named), doing: None, when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
                     }
                 }
             }
@@ -625,7 +749,7 @@ impl<'a> Reader<'a> {
                 object: Some(guarded.join(", ")),
                 doing: None,
                 when: "always",
-                arms: Vec::new(),
+                arms: Vec::new(), writes: false,
                 unit: start,
                 line: first_line,
             });
@@ -648,14 +772,31 @@ impl<'a> Reader<'a> {
                 object: returned,
                 doing: None,
                 when: "always",
-                arms: Vec::new(),
+                arms: Vec::new(), writes: false,
                 unit: start,
                 line: self.nodes[start as usize].span.end_line,
             });
         }
+        let mut settled: Vec<Action> = Vec::new();
+        for mut action in actions {
+            let changed = settled.iter().any(|held| matches!(held.kind, "change" | "create" | "remove" | "keep"));
+            match action.kind {
+                "commit" if changed => continue,
+                "commit" => action.kind = "change",
+                "create" if settled.last().is_some_and(|last| last.kind == "keep" && last.object == action.object) => continue,
+                "keep" if settled.last().is_some_and(|last| last.kind == "create" && last.object == action.object) => {
+                    settled.pop();
+                }
+                "keep" | "read" if action.object.is_none() && settled.last().is_some_and(|last| last.line == action.line && last.unit == action.unit) => continue,
+                "keep" | "read" if settled.iter().rev().take_while(|last| last.line == action.line && last.unit == action.unit).any(|last| matches!(last.kind, "hand_off" | "send")) => continue,
+                "keep" | "read" if action.object.is_none() => continue,
+                _ => {}
+            }
+            settled.push(action);
+        }
         let mut steps: Vec<LogicalStep> = Vec::new();
         let mut last_when: Vec<&'static str> = Vec::new();
-        for action in actions {
+        for action in settled {
             let node = &self.nodes[action.unit as usize];
             let region = Region { unit: node.id.clone(), file: node.file, start_line: action.line, end_line: action.line };
             let armed: Vec<String> = action.arms.iter().map(|(branch, arm)| format!("{branch:x}.{arm}")).collect();
@@ -663,7 +804,6 @@ impl<'a> Reader<'a> {
                 && last.kind == action.kind
                 && last.object == action.object
                 && last.doing == action.doing
-                && last.when == action.when
                 && last.arms == armed
             {
                 match last.regions.iter_mut().find(|held| held.unit == region.unit) {
