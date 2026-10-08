@@ -32,6 +32,8 @@ pub struct LogicalStep {
     pub regions: Vec<Region>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lands_in: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1096,6 +1098,7 @@ impl<'a> Reader<'a> {
                 arms: armed,
                 regions: vec![region],
                 description: None,
+                lands_in: Vec::new(),
             });
         }
         let edges = steps

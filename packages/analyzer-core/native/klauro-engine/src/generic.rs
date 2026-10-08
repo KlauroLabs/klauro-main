@@ -114,7 +114,7 @@ pub struct Extractor<'a> {
     facts: FileFacts,
     metrics: HashMap<String, UnitMetrics>,
     types_by_name: HashMap<String, String>,
-    remembered: HashMap<String, String>,
+    remembered: HashMap<(Option<String>, String), String>,
     labelled: HashMap<usize, (String, String, Vec<String>)>,
     last_receiver: Option<String>,
     visited_as_an_arm: rustc_hash::FxHashSet<usize>,
@@ -1738,7 +1738,7 @@ impl<'a> Extractor<'a> {
         })
     }
 
-    fn literals_of<'t>(&self, arguments: impl Iterator<Item = Node<'t>>) -> Vec<String> {
+    fn literals_of<'t>(&self, arguments: impl Iterator<Item = Node<'t>>, within: Option<&String>) -> Vec<String> {
         arguments
             .take(8)
             .filter_map(|argument| {
@@ -1761,7 +1761,11 @@ impl<'a> Extractor<'a> {
                 }
                 match written_as_text(raw) {
                     true => (value.len() <= TEXT_AT_MOST).then(|| value.to_string()),
-                    false => match self.remembered.get(value) {
+                    false => match self
+                        .remembered
+                        .get(&(within.cloned(), value.to_string()))
+                        .or_else(|| self.remembered.get(&(None, value.to_string())))
+                    {
                         Some(written) => Some(written.clone()),
                         None => (value.len() <= WORD_AT_MOST
                             && !value.contains(char::is_whitespace))
@@ -1933,7 +1937,7 @@ impl<'a> Extractor<'a> {
             if written_as_text(raw) {
                 let written = trim_quotes(raw).trim().to_string();
                 if !written.is_empty() && written.len() <= TEXT_AT_MOST {
-                    self.remembered.insert(name.clone(), written.clone());
+                    self.remembered.insert((scope.callable.clone(), name.clone()), written.clone());
                     self.facts.locals.push(LocalBinding {
                         file: self.file,
                         unit: owner.clone(),
@@ -2802,7 +2806,7 @@ impl<'a> Extractor<'a> {
             .or_else(|| value.and_then(|held| self.joined_written(held)))
             .filter(|written: &String| !written.is_empty() && written.len() <= TEXT_AT_MOST);
         if let Some(written) = written_value.clone() {
-            self.remembered.insert(name.clone(), written);
+            self.remembered.insert((scope.callable.clone(), name.clone()), written);
         }
         if let Some(value) = value
             && let Some((_, kind)) = self
@@ -3324,7 +3328,7 @@ impl<'a> Extractor<'a> {
         let literals = match arguments {
             Some(arguments) => {
                 let mut cursor = arguments.walk();
-                self.literals_of(arguments.named_children(&mut cursor))
+                self.literals_of(arguments.named_children(&mut cursor), scope.callable.as_ref())
             }
             None => {
                 let mut cursor = node.walk();
@@ -3332,7 +3336,7 @@ impl<'a> Extractor<'a> {
                     .named_children(&mut cursor)
                     .filter(|child| Some(child.id()) != function.map(|found| found.id()))
                     .collect();
-                self.literals_of(direct.into_iter())
+                self.literals_of(direct.into_iter(), scope.callable.as_ref())
             }
         };
         let mut literals = literals;

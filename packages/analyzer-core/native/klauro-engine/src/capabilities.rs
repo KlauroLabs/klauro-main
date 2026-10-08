@@ -1993,6 +1993,7 @@ mod command_family_tests {
             arms: Vec::new(),
             regions: Vec::new(),
             description: None,
+            lands_in: Vec::new(),
         }
     }
 

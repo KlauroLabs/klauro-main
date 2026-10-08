@@ -1770,7 +1770,11 @@ fn groups_of<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]
             continue;
         };
         let within = call.receiver.as_deref().map(names::root);
-        groups.insert((held.file, held.unit.as_str(), held.name.as_str()), (prefix, within));
+        let unit = match held.unit.is_empty() {
+            true => call.caller.as_deref().unwrap_or_default(),
+            false => held.unit.as_str(),
+        };
+        groups.insert((held.file, unit, held.name.as_str()), (prefix, within));
     }
     groups
 }
@@ -1923,7 +1927,7 @@ type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
 
 fn calls_by_line<'a>(calls: &'a [CallFact], wanted: &HashSet<(u32, u32)>) -> CallsByLine<'a> {
     let mut held: CallsByLine = HashMap::default();
-    for call in calls.iter().filter(|call| wanted.contains(&(call.file, call.line))) {
+    for call in calls.iter().filter(|call| (0..=REGISTRATION_OPENS_ABOVE).any(|below| wanted.contains(&(call.file, call.line + below)))) {
         held.entry((call.file, call.line, names::leaf(&call.callee).to_ascii_lowercase()))
             .or_insert(call);
     }
@@ -2044,7 +2048,7 @@ impl Gathering<'_> {
 
     fn prefix_at(&self, file: u32, line: u32, registrar: &str) -> Option<String> {
         let verb = names::leaf(registrar).to_ascii_lowercase();
-        let call = self.by_line.get(&(file, line, verb))?;
+        let call = (0..=REGISTRATION_OPENS_ABOVE).find_map(|above| self.by_line.get(&(file, line.checked_sub(above)?, verb.clone())))?;
         let caller = call.caller.as_deref()?;
         let chained = enclosing_groups(caller, &self.opened, &self.parents);
         let local = call.receiver.as_deref().and_then(|receiver| prefix_of(&self.groups, file, caller, names::root(receiver), 0));
@@ -2054,6 +2058,8 @@ impl Gathering<'_> {
         }
     }
 }
+
+const REGISTRATION_OPENS_ABOVE: u32 = 3;
 
 static OPENS_A_CONNECTION: &[&str] = &["EventSource", "WebSocket"];
 static SAID_OVER_A_CONNECTION: &[&str] = &["close", "send"];

@@ -488,6 +488,7 @@ mod tests {
             arms: arms.iter().map(|arm| arm.to_string()).collect(),
             regions: Vec::new(),
             description: None,
+            lands_in: Vec::new(),
         }
     }
 

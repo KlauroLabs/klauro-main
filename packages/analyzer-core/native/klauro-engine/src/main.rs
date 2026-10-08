@@ -86,6 +86,7 @@ mod principles;
 mod schema_files;
 mod scope;
 mod screens;
+mod seams;
 mod sdk;
 mod shared;
 mod service_catalog;
@@ -1609,6 +1610,9 @@ fn read_it() {
         };
         behaviours::settle(&mut comprehension, &facts);
         records::settle(&mut comprehension, &facts.part_names);
+        let testing: rustc_hash::FxHashSet<&str> = split.sub_projects.iter().filter(|part| part.role == "test suite").map(|part| part.id.as_str()).collect();
+        let part_of_file: rustc_hash::FxHashMap<u32, &str> = index.nodes.iter().filter_map(|node| Some((node.file, node.project.as_deref()?))).collect();
+        seams::join(&mut comprehension, &index.entry_points, &index.exit_points, &part_of_file, &testing);
     }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(

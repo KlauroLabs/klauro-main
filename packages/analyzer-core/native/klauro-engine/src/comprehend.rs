@@ -222,6 +222,8 @@ pub struct Comprehension {
     pub derivation: Option<crate::parent::Summary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub set_aside: Vec<crate::behaviours::SetAside>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub seams: Vec<crate::seams::Seam>,
 }
 
 static GENERIC: &[&str] = &[
@@ -2931,6 +2933,7 @@ pub fn derive(
         semantic_coverage: None,
         derivation: None,
         set_aside: Vec::new(),
+        seams: Vec::new(),
     }
 }
 
