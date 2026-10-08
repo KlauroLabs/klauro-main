@@ -613,14 +613,30 @@ impl<'a> Resolver<'a> {
         if name.is_empty() {
             return None;
         }
+        let a_type = |found: &u32| self.symbols.nodes[*found as usize].kind.is_type();
         self.bindings
             .imported
             .get(&(file, name))
             .copied()
-            .or_else(|| self.symbols.in_scope(file, name))
-            .or_else(|| self.symbols.unique_type.get(name).copied())
-            .or_else(|| self.seen_from(file, name))
-            .filter(|found| self.symbols.nodes[*found as usize].kind.is_type())
+            .filter(a_type)
+            .or_else(|| self.symbols.in_scope(file, name).filter(a_type))
+            .or_else(|| self.symbols.unique_type.get(name).copied().filter(a_type))
+            .or_else(|| self.qualified(annotation, name))
+            .or_else(|| self.seen_from(file, name).filter(a_type))
+    }
+
+    fn qualified(&self, annotation: &str, name: &str) -> Option<u32> {
+        let written = annotation.trim().split('<').next().unwrap_or_default();
+        let (qualifier, _) = written.rsplit_once('.')?;
+        let leaf = name.rsplit('.').next().unwrap_or(name);
+        let mut found = self.types_named.get(leaf)?.iter().copied().filter(|candidate| {
+            let declared = self.namespaces.get(self.symbols.nodes[*candidate as usize].file as usize).copied().unwrap_or_default();
+            !declared.is_empty() && (declared == qualifier || qualifier.ends_with(&format!(".{declared}")) || declared.ends_with(&format!(".{qualifier}")))
+        });
+        match (found.next(), found.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     }
 
     fn handed_to_an_enclosing_type(&self, owner: u32, name: &str, bare: &str) -> Option<&'a str> {

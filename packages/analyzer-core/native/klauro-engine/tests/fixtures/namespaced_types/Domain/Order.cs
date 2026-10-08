@@ -12,4 +12,6 @@ public class Order
 
     public string Buyer { get; private set; }
     public int Total { get; private set; }
+
+    public void Close() => Total = 0;
 }
