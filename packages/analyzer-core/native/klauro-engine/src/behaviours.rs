@@ -114,7 +114,66 @@ fn set_aside_because(flow: &Flow, facts: &Facts) -> Option<&'static str> {
     None
 }
 
-fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, landing: &HashMap<&str, String>, one: bool) -> String {
+struct Known<'a> {
+    calls_of: HashMap<&'a str, Vec<&'a crate::model::CallFact>>,
+    named: HashMap<&'a str, Vec<&'a IndexNode>>,
+    node_of: HashMap<&'a str, &'a IndexNode>,
+    paths: HashMap<u32, &'a str>,
+}
+
+impl<'a> Known<'a> {
+    fn new(facts: &Facts<'a>) -> Self {
+        let mut calls_of: HashMap<&str, Vec<&crate::model::CallFact>> = HashMap::default();
+        for call in facts.calls {
+            if let Some(caller) = call.caller.as_deref() {
+                calls_of.entry(caller).or_default().push(call);
+            }
+        }
+        let mut named: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+        for node in facts.nodes.iter().filter(|node| node.kind.is_unit()) {
+            named.entry(node.name.as_str()).or_default().push(node);
+        }
+        let node_of = facts.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+        let paths = facts.nodes.iter().filter(|node| node.kind == crate::model::NodeKind::Module).map(|node| (node.file, node.id.as_str())).collect();
+        Known { calls_of, named, node_of, paths }
+    }
+
+    fn standing_for(&self, step: &crate::steps::LogicalStep) -> Option<String> {
+        let doing = step.doing.as_deref()?;
+        let region = step.regions.first()?;
+        let call = self.calls_of.get(region.unit.as_str())?.iter().find(|call| crate::steps::spoken(crate::names::leaf(&call.callee)) == doing)?;
+        let leaf = crate::names::leaf(&call.callee);
+        let qualifier = call.callee.strip_suffix(leaf).map(|held| held.trim_end_matches([':', '.'])).unwrap_or_default();
+        let qualifier = qualifier.rsplit([':', '.']).next().unwrap_or_default();
+        let candidates = self.named.get(leaf)?;
+        let stem_of = |node: &IndexNode| -> String {
+            let path = self.paths.get(&node.file).copied().unwrap_or_default();
+            let file = path.rsplit('/').next().unwrap_or(path);
+            file.split('.').next().unwrap_or(file).to_string()
+        };
+        let chosen = candidates
+            .iter()
+            .find(|node| !qualifier.is_empty() && stem_of(node) == qualifier)
+            .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))?;
+        let owner = chosen
+            .parent
+            .as_deref()
+            .and_then(|parent| self.node_of.get(parent))
+            .filter(|parent| parent.kind.is_type())
+            .map(|parent| crate::steps::spoken(&parent.name))
+            .unwrap_or_else(|| crate::steps::spoken(&stem_of(chosen)));
+        let makes = chosen.signature.as_ref().and_then(|signature| signature.return_type.as_deref()).filter(|returned| returned.len() <= STANDING_TOLD_AT_MOST);
+        let mut said = format!("{} in {}", crate::steps::spoken(leaf), owner.to_lowercase());
+        if let Some(makes) = makes {
+            said.push_str(&format!(", makes {makes}"));
+        }
+        Some(said)
+    }
+}
+
+const STANDING_TOLD_AT_MOST: usize = 60;
+
+fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, landing: &HashMap<&str, String>, one: bool) -> String {
     let part = flow.project.as_deref().map(|held| facts.part_names.get(held).copied().unwrap_or(held)).unwrap_or_default();
     let mut lines = vec![format!("Part: {part}"), format!("Trigger: {}", trigger_of(flow, entry))];
     if matches!(flow.kind, "message" | "event") {
@@ -130,7 +189,8 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, landing: &HashMa
             true => String::new(),
             false => format!(", branch {}", step.arms.join(" ")),
         };
-        lines.push(format!("{}: {} ({}, {}{arms})", step.id, step.label, step.kind, step.when));
+        let standing = known.standing_for(step).map(|said| format!(" — {said}")).unwrap_or_default();
+        lines.push(format!("{}: {}{standing} ({}, {}{arms})", step.id, step.label, step.kind, step.when));
     }
     for into in &flow.leads_into {
         if let Some(landed) = landing.get(into.as_str()) {
@@ -328,6 +388,7 @@ fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
 pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let entry_of: HashMap<&str, &EntryPoint> = facts.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect();
     let project_of: HashMap<&str, Option<&str>> = facts.nodes.iter().map(|node| (node.id.as_str(), node.project.as_deref())).collect();
+    let known = Known::new(facts);
     let landing: HashMap<&str, String> = facts
         .entries
         .iter()
@@ -360,7 +421,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     }
     let first: Vec<(String, String)> = kept
         .iter()
-        .map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &landing, false)))
+        .map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, false)))
         .collect();
     let answers = crate::memory::each("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, asked_all);
     let mut again: Vec<(String, String)> = Vec::new();
@@ -378,7 +439,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             }
         }
         if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow, &deciding) {
-            again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &landing, true)));
+            again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, true)));
         }
     }
     let single = crate::memory::each("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, asked_all);

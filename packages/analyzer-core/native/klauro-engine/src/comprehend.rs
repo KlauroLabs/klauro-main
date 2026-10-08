@@ -2696,10 +2696,17 @@ pub fn derive(
                 ("read", _, [one]) | ("read", [one], []) => Some(one),
                 _ => None,
             };
-            if let Some(record) = only {
-                step.object = Some(record.clone());
-                step.doing = None;
-                step.label = crate::steps::labelled(step.kind, Some(record));
+            match only {
+                Some(record) => {
+                    step.object = Some(record.clone());
+                    step.doing = None;
+                    step.label = crate::steps::labelled(step.kind, Some(record));
+                }
+                None if step.object.is_none() && step.doing.is_some() && matches!(step.kind, "keep" | "change" | "remove" | "read" | "create") => {
+                    step.kind = "do";
+                    step.label = step.doing.clone().unwrap_or_default();
+                }
+                None => {}
             }
         }
         let summary = summarised(entry, &named, &writes, &reads, &reaching);

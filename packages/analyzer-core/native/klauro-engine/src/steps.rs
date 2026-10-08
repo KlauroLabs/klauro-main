@@ -207,7 +207,7 @@ fn plain_type(written: &str) -> Option<String> {
     (!says_nothing).then_some(named)
 }
 
-fn spoken(named: &str) -> String {
+pub(crate) fn spoken(named: &str) -> String {
     let mut words: Vec<String> = Vec::new();
     let mut held = String::new();
     let mut before: Option<char> = None;

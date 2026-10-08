@@ -136,6 +136,7 @@ pub fn published(
             let direct = received
                 .get(type_named(written))
                 .copied()
+                .filter(|_| type_named(written).starts_with(char::is_uppercase))
                 .or_else(|| typed.get(&(caller, written.trim())).and_then(|held| received.get(held).copied()));
             match direct {
                 Some(message) => messages.push(message),
