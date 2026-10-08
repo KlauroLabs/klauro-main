@@ -337,15 +337,15 @@ fn wildcard_prefix(shape: &str) -> Option<&str> {
     shape.strip_suffix('*').filter(|prefix| prefix.ends_with('/'))
 }
 
-struct ServedRoutes<'a> {
+pub struct ServedRoutes<'a> {
     exact: HashMap<String, Vec<(&'a str, &'a EntryPoint)>>,
     prefixed: Vec<(String, &'a str, &'a EntryPoint)>,
 }
 
 impl<'a> ServedRoutes<'a> {
-    fn new(files: &'a [String], entry_points: &'a [EntryPoint], owner: &HashMap<&'a str, &'a str>) -> Self {
+    pub fn new(files: &'a [String], entry_points: &'a [EntryPoint], owner: &HashMap<&'a str, &'a str>) -> Self {
         let mut served = ServedRoutes { exact: HashMap::default(), prefixed: Vec::new() };
-        for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
+        for entry in entry_points.iter().filter(|entry| matches!(entry.kind, "http" | "rpc")) {
             let (Some(path), Some(file)) = (entry.path.as_deref(), files.get(entry.file as usize)) else {
                 continue;
             };
@@ -359,7 +359,20 @@ impl<'a> ServedRoutes<'a> {
         served
     }
 
-    fn answering(&self, shape: &str, asked: Option<&str>) -> Vec<(&'a str, &'a EntryPoint)> {
+    pub fn landing(&self, exit: &ExitPoint, addressed: &str) -> Vec<(&'a str, &'a EntryPoint)> {
+        let asked = verb_of(&exit.operation).or_else(|| HTTP_VERBS.iter().copied().find(|verb| exit.method.is_some_and(|method| method.eq_ignore_ascii_case(verb))));
+        let mut matching = self.answering(&route_shape(addressed), asked);
+        if asked.is_none() && matches!(exit.does, Some("write" | "send" | "delete")) {
+            matching.retain(|(_, entry)| !entry.method.as_deref().is_some_and(|method| method.eq_ignore_ascii_case("GET")));
+        }
+        let parts: HashSet<&str> = matching.iter().map(|(part, _)| *part).collect();
+        match parts.len() == 1 && (asked.is_some() || matching.len() == 1) {
+            true => matching,
+            false => Vec::new(),
+        }
+    }
+
+    pub fn answering(&self, shape: &str, asked: Option<&str>) -> Vec<(&'a str, &'a EntryPoint)> {
         let exact: Vec<(&str, &EntryPoint)> = self
             .exact
             .get(shape)
@@ -400,8 +413,8 @@ fn http_seams(
         };
         let Some(caller) = owner.get(file.as_str()) else { continue };
         let asked = verb_of(&exit.operation);
-        let matching = served.answering(&route_shape(addressed), asked);
-        if matching.is_empty() || (asked.is_none() && matching.len() != 1) {
+        let matching = served.landing(exit, addressed);
+        if matching.is_empty() {
             continue;
         }
         linked.insert((exit.file, exit.line));

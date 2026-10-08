@@ -18,52 +18,18 @@ pub struct Seam {
     pub to_flows: Vec<String>,
 }
 
-fn segments(path: &str) -> Vec<String> {
-    let bare = path.split(['?', '#']).next().unwrap_or(path);
-    let bare = match bare.find("://") {
-        Some(at) => bare[at + 3..].split_once('/').map(|(_, rest)| rest).unwrap_or(""),
-        None => bare,
-    };
-    bare.split('/').filter(|segment| !segment.is_empty()).map(|segment| segment.to_ascii_lowercase()).collect()
-}
-
-fn variable(segment: &str) -> bool {
-    segment.starts_with('{') || segment.starts_with(':') || segment.starts_with('[') || segment.starts_with('<')
-}
-
-fn matches(called: &[String], route: &[String]) -> bool {
-    let optional_tail = route.last().is_some_and(|last| last.ends_with("?}"));
-    let fits = called.len() == route.len() || (optional_tail && called.len() + 1 == route.len());
-    fits && called.iter().zip(route.iter()).all(|(asked, served)| asked == served || variable(asked) || variable(served))
-}
-
-fn closeness(called: &[String], route: &[String]) -> usize {
-    called
-        .iter()
-        .zip(route.iter())
-        .map(|(asked, served)| match (variable(asked), variable(served)) {
-            (false, false) => 2,
-            (true, true) => 2,
-            (false, true) => 1,
-            (true, false) => 0,
-        })
-        .sum()
-}
-
-pub fn join(comprehension: &mut Comprehension, entries: &[EntryPoint], exits: &[ExitPoint], part_of_file: &HashMap<u32, &str>, testing: &HashSet<&str>) {
+pub fn join(comprehension: &mut Comprehension, entries: &[EntryPoint], exits: &[ExitPoint], files: &[String], part_of_file: &HashMap<u32, &str>, testing: &HashSet<&str>) {
     let mut leaving: HashMap<&str, Vec<&ExitPoint>> = HashMap::default();
     for exit in exits.iter().filter(|exit| matches!(exit.kind, "api" | "network")) {
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
-    let routes: Vec<(&EntryPoint, Vec<String>, &str)> = entries
+    let owner: HashMap<&str, &str> = files
         .iter()
-        .filter(|entry| matches!(entry.kind, "http" | "rpc"))
-        .filter_map(|entry| {
-            let part = part_of_file.get(&entry.file).copied()?;
-            (!testing.contains(part)).then_some(())?;
-            Some((entry, segments(entry.path.as_deref()?), part))
-        })
+        .enumerate()
+        .filter_map(|(at, path)| Some((path.as_str(), part_of_file.get(&(at as u32)).copied()?)))
+        .filter(|(_, part)| !testing.contains(part))
         .collect();
+    let served = crate::composition::ServedRoutes::new(files, entries, &owner);
     let mut landing: HashMap<String, Vec<String>> = HashMap::default();
     for flow in &comprehension.flows {
         landing.entry(flow.entry_point.clone()).or_default().push(flow.id.clone());
@@ -88,30 +54,11 @@ pub fn join(comprehension: &mut Comprehension, entries: &[EntryPoint], exits: &[
         called.dedup_by(|left, right| left.id == right.id);
         for exit in called {
             let Some(path) = exit.addressed.as_deref().filter(|path| path.contains('/')) else { continue };
-            let asked = segments(path);
-            if asked.is_empty() {
+            let found = served.landing(exit, path);
+            if found.iter().any(|(part, _)| *part == home.as_str()) {
                 continue;
             }
-            let method = exit.method.as_deref().map(str::to_ascii_uppercase);
-            let mut found: Vec<&(&EntryPoint, Vec<String>, &str)> = routes
-                .iter()
-                .filter(|(entry, route, part)| {
-                    *part != home.as_str()
-                        && matches(&asked, route)
-                        && match (method.as_deref(), entry.method.as_deref()) {
-                            (Some(asked), Some(served)) => asked.eq_ignore_ascii_case(served),
-                            (None, Some(served)) => !(matches!(exit.does, Some("write" | "send" | "delete")) && served.eq_ignore_ascii_case("GET")),
-                            _ => true,
-                        }
-                })
-                .collect();
-            let best = found.iter().map(|(_, route, _)| closeness(&asked, route)).max().unwrap_or(0);
-            found.retain(|(_, route, _)| closeness(&asked, route) == best);
-            let parts: HashSet<&str> = found.iter().map(|(_, _, part)| *part).collect();
-            if parts.len() != 1 {
-                continue;
-            }
-            for (entry, _, part) in found {
+            for (part, entry) in found {
                 let step = flow
                     .steps
                     .iter_mut()
