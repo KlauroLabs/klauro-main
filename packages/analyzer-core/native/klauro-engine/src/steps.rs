@@ -65,9 +65,11 @@ pub struct Reader<'a> {
     throws: HashMap<&'a str, &'a [String]>,
     events: &'a HashSet<&'a str>,
     requests: &'a HashMap<&'a str, Vec<&'a str>>,
+    raised: &'a HashMap<&'a str, Vec<&'a str>>,
     keepers: &'a HashSet<&'a str>,
     member_of: HashMap<(&'a str, &'a str), u32>,
     callers: HashMap<u32, u32>,
+    constructors: HashMap<u32, Vec<u32>>,
     cut: std::cell::Cell<bool>,
     home: std::cell::RefCell<Option<String>>,
 }
@@ -292,6 +294,7 @@ impl<'a> Reader<'a> {
         metrics: &'a [UnitMetricsEntry],
         events: &'a HashSet<&'a str>,
         requests: &'a HashMap<&'a str, Vec<&'a str>>,
+        raised: &'a HashMap<&'a str, Vec<&'a str>>,
         keepers: &'a HashSet<&'a str>,
     ) -> Self {
         let writes_fields: HashSet<&str> = metrics
@@ -335,7 +338,13 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        let mut constructors: HashMap<u32, Vec<u32>> = HashMap::default();
+        for (at, node) in nodes.iter().enumerate().filter(|(_, node)| node.kind == crate::model::NodeKind::Constructor) {
+            if let Some(owner) = node.parent.as_deref().and_then(|parent| position_of.get(parent)) {
+                constructors.entry(*owner).or_default().push(at as u32);
+            }
+        }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -583,6 +592,19 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        for call in calls.iter().filter(|call| call.constructs) {
+            let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
+            for handler in self.raised.get(named).into_iter().flatten() {
+                let Some(position) = self.position_of.get(handler).copied() else { continue };
+                if visited.contains(&position) || !sent_to.insert(position) {
+                    continue;
+                }
+                if let Some(at) = targets.iter().position(|target| *target == position) {
+                    targets.remove(at);
+                }
+                at_line.push((call.line, call.column + 1, Some(position), when_of(&call.context), None, None));
+            }
+        }
         let thrown_here: &[String] = self.throws.get(id).copied().unwrap_or_default();
         let mut refusals: Vec<(u32, u32, String, Option<String>)> = Vec::new();
         let mut navigations: Vec<(u32, u32, Option<String>)> = Vec::new();
@@ -770,6 +792,22 @@ impl<'a> Reader<'a> {
                         actions.push(action);
                     }
                     let before = actions.len();
+                    let built = &self.nodes[target as usize];
+                    if built.kind.is_type()
+                        && let Some(made_by) = self.constructors.get(&target)
+                        && visited.insert(target)
+                    {
+                        let own = built.name.as_str();
+                        for constructor in made_by {
+                            if !visited.insert(*constructor) {
+                                continue;
+                            }
+                            let mut within: Vec<Action> = Vec::new();
+                            self.walk(*constructor, depth + 1, context, &here, visited, &mut within);
+                            actions.extend(within.into_iter().filter(|action| !(matches!(action.kind, "change" | "create" | "read") && action.object.as_deref() == Some(own))));
+                        }
+                        continue;
+                    }
                     if visited.insert(target) {
                         let shared = self.callers.get(&target).copied().unwrap_or(0) >= SHARED_BY;
                         let named = self.nodes[target as usize].name.as_str();

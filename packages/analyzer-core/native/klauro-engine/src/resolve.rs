@@ -602,6 +602,9 @@ struct Resolver<'a> {
     by_path: &'a HashMap<&'a str, u32>,
     aliases: &'a crate::alias::Aliases,
     inherits: std::sync::OnceLock<HashMap<u32, Vec<u32>>>,
+    namespaces: &'a [&'a str],
+    using: HashMap<u32, Vec<&'a str>>,
+    using_everywhere: HashMap<usize, Vec<&'a str>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -670,13 +673,40 @@ impl<'a> Resolver<'a> {
     }
 
     fn seen_from(&self, file: u32, name: &str) -> Option<u32> {
-        let mut seen = self
+        let seen: Vec<u32> = self
             .types_named
             .get(name)?
             .iter()
             .copied()
-            .filter(|found| self.visible.can_see(file, self.symbols.nodes[*found as usize].file));
-        match (seen.next(), seen.next()) {
+            .filter(|found| self.visible.can_see(file, self.symbols.nodes[*found as usize].file))
+            .collect();
+        match seen.as_slice() {
+            [only] => Some(*only),
+            [] => None,
+            _ => self.nearest_by_namespace(file, seen.iter().copied()),
+        }
+    }
+
+    fn namespace_tier(&self, file: u32, declared_in: u32) -> Option<u8> {
+        let declared = self.namespaces.get(declared_in as usize).copied().filter(|held| !held.is_empty())?;
+        let own = self.namespaces.get(file as usize).copied().unwrap_or_default();
+        if own == declared || own.strip_prefix(declared).is_some_and(|rest| rest.starts_with('.')) {
+            return Some(0);
+        }
+        if self.using.get(&file).into_iter().flatten().any(|used| *used == declared) {
+            return Some(1);
+        }
+        let everywhere = self.visible.root_of(file).and_then(|root| self.using_everywhere.get(&root));
+        everywhere.into_iter().flatten().any(|used| *used == declared).then_some(2)
+    }
+
+    fn nearest_by_namespace(&self, file: u32, candidates: impl Iterator<Item = u32>) -> Option<u32> {
+        let tiered: Vec<(u8, u32)> = candidates
+            .filter_map(|found| Some((self.namespace_tier(file, self.symbols.nodes[found as usize].file)?, found)))
+            .collect();
+        let nearest = tiered.iter().map(|(tier, _)| *tier).min()?;
+        let mut at_nearest = tiered.iter().filter(|(tier, _)| *tier == nearest).map(|(_, found)| *found);
+        match (at_nearest.next(), at_nearest.next()) {
             (Some(only), None) => Some(only),
             _ => None,
         }
@@ -929,7 +959,25 @@ impl<'a> Resolver<'a> {
         {
             return Origin::Declared(found);
         }
+        if name.starts_with(char::is_uppercase)
+            && let Some(found) = self.through_a_used_namespace(file, name)
+        {
+            return Origin::Declared(found);
+        }
         Origin::Unknown
+    }
+
+    fn through_a_used_namespace(&self, file: u32, name: &str) -> Option<u32> {
+        self.namespaces.get(file as usize).filter(|held| !held.is_empty())?;
+        let language = self.languages.get(file as usize)?;
+        let candidates = self
+            .types_named
+            .get(name)?
+            .iter()
+            .copied()
+            .filter(|found| self.symbols.nodes[*found as usize].name == name)
+            .filter(|found| self.languages.get(self.symbols.nodes[*found as usize].file as usize) == Some(language));
+        self.nearest_by_namespace(file, candidates)
     }
 
     fn global_module(&self, file: u32, name: &str) -> Option<u32> {
@@ -1956,7 +2004,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             types_named.entry(leaf).or_default().push(at as u32);
         }
     }
-    let resolver = Resolver {
+    let mut resolver = Resolver {
         symbols,
         bindings,
         runtime: externals::sorted_runtime_globals(),
@@ -1967,7 +2015,20 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         by_path: &by_path,
         aliases: &aliases,
         inherits: std::sync::OnceLock::new(),
+        namespaces: index.namespaces,
+        using: HashMap::default(),
+        using_everywhere: HashMap::default(),
     };
+    for import in index.imports {
+        let used = import.specifier.trim().trim_start_matches("global ").trim_start_matches("static ").trim();
+        resolver.using.entry(import.file).or_default().push(used);
+        if import.everywhere
+            && let Some(root) = resolver.visible.root_of(import.file)
+        {
+            resolver.using_everywhere.entry(root).or_default().push(used);
+        }
+    }
+    let resolver = resolver;
     let symbols = &resolver.symbols;
 
     let mut external_nodes: HashMap<String, IndexNode> = HashMap::default();

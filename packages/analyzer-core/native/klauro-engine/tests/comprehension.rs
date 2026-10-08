@@ -329,3 +329,18 @@ fn a_command_handled_in_a_library_part_is_still_the_flows_own_work() {
         .collect();
     assert!(kinds.contains(&("keep".to_string(), "Refund".to_string())), "the handler's work belongs to the flow that sent its command: {kinds:?}");
 }
+
+#[test]
+fn an_event_raised_while_building_a_record_runs_its_in_process_handler_inside_the_flow() {
+    let index = common::read("domain_events");
+    let selling = index["comprehension"]["flows"].as_array().unwrap().iter().find(|flow| flow["surface"] == "/sales").expect("the route is a flow");
+    let steps: Vec<(&str, &str)> = selling["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["kind"].as_str().unwrap(), step["object"].as_str().unwrap_or_default()))
+        .collect();
+    let raised = steps.iter().position(|step| *step == ("raise", "SaleStarted")).unwrap_or_else(|| panic!("{steps:?}"));
+    let registered = steps.iter().position(|step| *step == ("create", "Shopper")).unwrap_or_else(|| panic!("{steps:?}"));
+    assert!(raised < registered, "{steps:?}");
+}

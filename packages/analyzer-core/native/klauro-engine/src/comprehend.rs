@@ -140,6 +140,10 @@ pub struct Entity {
     pub unshipped: Option<crate::entry_exit::Unshipped>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persisted_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standing: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1969,6 +1973,7 @@ pub fn derive(
     metrics: &[crate::model::UnitMetricsEntry],
     events: &HashSet<&str>,
     requests: &HashMap<&str, Vec<&str>>,
+    raised: &HashMap<&str, Vec<&str>>,
     open_calls: &HashMap<String, u32>,
     locals: &[LocalBinding],
 ) -> Comprehension {
@@ -2388,6 +2393,12 @@ pub fn derive(
         .filter(|role| matches!(role.role, "repository" | "data-context"))
         .map(|role| role.node.as_str())
         .collect();
+    let entered: HashSet<&str> = entry_points.iter().map(|entry| entry.handler.as_str()).collect();
+    let in_process: HashMap<&str, Vec<&str>> = raised
+        .iter()
+        .map(|(event, handlers)| (*event, handlers.iter().copied().filter(|handler| !entered.contains(handler)).collect::<Vec<&str>>()))
+        .filter(|(_, handlers)| !handlers.is_empty())
+        .collect();
     let reader = crate::steps::Reader::new(
         nodes,
         &position_of,
@@ -2399,6 +2410,7 @@ pub fn derive(
         metrics,
         events,
         requests,
+        &in_process,
         &keepers,
     );
     let mut flows = Vec::with_capacity(served.len());
@@ -4590,6 +4602,8 @@ fn entities(
             terminality: None,
             unshipped: None,
             persisted_by: persisted.get(node.id.as_str()).cloned(),
+            part_of: None,
+            standing: None,
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity
@@ -4628,6 +4642,8 @@ fn entities(
             terminality: None,
             unshipped: None,
             persisted_by: model.evidence.clone(),
+            part_of: None,
+            standing: None,
         });
     }
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
@@ -4782,6 +4798,8 @@ fn entities(
             terminality: None,
             unshipped: None,
             persisted_by: None,
+            part_of: None,
+            standing: None,
         });
     }
     let record_of: HashMap<String, String> = entities
@@ -4851,6 +4869,8 @@ fn entities(
             terminality: None,
             unshipped: None,
             persisted_by: None,
+            part_of: None,
+            standing: None,
         });
     }
     let known: HashMap<String, String> = entities

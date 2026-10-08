@@ -67,6 +67,7 @@ mod names;
 mod namespaced;
 mod paths;
 mod reach;
+mod records;
 mod render_tree;
 mod published;
 mod requests;
@@ -1495,6 +1496,18 @@ fn read_it() {
                     .collect()
             })
             .unwrap_or_default(),
+        &index
+            .patterns
+            .as_ref()
+            .map(|found| {
+                found
+                    .messages
+                    .iter()
+                    .filter(|message| message.kind == "event")
+                    .map(|message| (message.message.as_str(), message.handlers.iter().map(String::as_str).collect()))
+                    .collect()
+            })
+            .unwrap_or_default(),
         &open_calls,
         &index.locals,
     );
@@ -1595,6 +1608,7 @@ fn read_it() {
                 .unwrap_or_default(),
         };
         behaviours::settle(&mut comprehension, &facts);
+        records::settle(&mut comprehension, &facts.part_names);
     }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(

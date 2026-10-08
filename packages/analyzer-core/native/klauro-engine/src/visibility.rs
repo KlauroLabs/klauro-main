@@ -92,6 +92,10 @@ impl Visibility {
         Visibility { root_of_file, sees }
     }
 
+    pub fn root_of(&self, file: u32) -> Option<usize> {
+        self.root_of_file.get(file as usize).copied().flatten()
+    }
+
     pub fn can_see(&self, from_file: u32, to_file: u32) -> bool {
         let from = self.root_of_file.get(from_file as usize).copied().flatten();
         let to = self.root_of_file.get(to_file as usize).copied().flatten();

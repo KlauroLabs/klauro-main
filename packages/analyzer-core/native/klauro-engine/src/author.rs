@@ -817,6 +817,19 @@ Group together only the ones a person could not tell apart: the same action on t
 Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
 When in doubt keep them apart. Every number appears in exactly one group.";
 
+pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the code that keeps it. \
+Some are what the system is about: things its users create, own or work with and would know by name. \
+Others are the system's own bookkeeping, kept only so the software itself runs: locks, caches, attempts and retries, logs and audit trails of its own operations, messages waiting to be sent, keys that stop one request being handled twice, indexes and manifests, sign-in sessions, tokens and throttles. \
+List the numbers of the bookkeeping records. When in doubt, a record is what the system is about.";
+
+pub fn bookkeeping_of(prompt: &str) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"bookkeeping\":[2,5]}}");
+    answered::<serde_json::Value>(&asked, 400, &proposing(), "bookkeeping", 1, DESCRIBING_ASK)
+}
+
 pub fn behaviours_of(prompt: &str) -> Option<serde_json::Value> {
     if !asked() {
         return None;
@@ -1504,6 +1517,11 @@ fn shaped(of: &str) -> serde_json::Value {
                 "required": ["name", "outcome", "steps"],
             }}},
             "required": ["behaviours"],
+        }),
+        "bookkeeping" => serde_json::json!({
+            "type": "object",
+            "properties": {"bookkeeping": {"type": "array", "items": {"type": "integer"}}},
+            "required": ["bookkeeping"],
         }),
         "together" => serde_json::json!({
             "type": "object",

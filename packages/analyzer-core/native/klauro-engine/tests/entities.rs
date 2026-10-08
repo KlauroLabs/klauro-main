@@ -66,6 +66,9 @@ fn a_flow_that_only_answers_with_a_body_writes_no_record() {
 fn a_document_kept_in_a_key_value_store_is_a_record_with_its_items_and_a_body_held_in_memory_is_not() {
     let index = common::read("kv_basket");
     assert_eq!(named(index["comprehension"]["entities"].as_array().unwrap()), vec!["CartLine", "CustomerCart"]);
+    let line = index["comprehension"]["entities"].as_array().unwrap().iter().find(|entity| entity["declared_as"] == "CartLine").unwrap();
+    assert_eq!(line["part_of"], "CustomerCart", "an item nothing keeps on its own is part of the record that holds it");
+    assert!(line["standing"].is_null(), "whether a record is what the system is about is a model's judgement, absent without one");
     let kept: Vec<(&str, &str)> = index["comprehension"]["flows"]
         .as_array()
         .unwrap()
