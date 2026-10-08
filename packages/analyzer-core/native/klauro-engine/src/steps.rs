@@ -554,6 +554,7 @@ impl<'a> Reader<'a> {
         let mut request_calls: Vec<(u32, u32, &'a str)> = Vec::new();
         let mut keeping_calls: Vec<(u32, &'static str, Option<String>)> = Vec::new();
         let mut requesting_lines: HashSet<u32> = HashSet::default();
+        let mut sent_to: HashSet<u32> = HashSet::default();
         for call in calls.iter().filter(|call| call.constructs) {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
             if let Some((message, handlers)) = self.requests.get_key_value(named) {
@@ -564,6 +565,7 @@ impl<'a> Reader<'a> {
                     let Some(position) = self.position_of.get(handler).copied() else { continue };
                     if let Some(at) = targets.iter().position(|target| *target == position) {
                         targets.remove(at);
+                        sent_to.insert(position);
                         at_line.push((call.line, call.column + 1, Some(position), when_of(&call.context), None, None));
                     }
                 }
@@ -674,6 +676,7 @@ impl<'a> Reader<'a> {
                 && matches!(self.nodes[target as usize].kind, crate::model::NodeKind::Function | crate::model::NodeKind::Method)
                 && self.nodes[target as usize].project.is_some()
                 && *self.home.borrow() != self.nodes[target as usize].project
+                && !sent_to.contains(&target)
                 && !keeping_calls.iter().any(|(held, ..)| *held == target)
             {
                 let mut within: Vec<Action> = Vec::new();

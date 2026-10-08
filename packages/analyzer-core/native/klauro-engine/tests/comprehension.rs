@@ -311,3 +311,21 @@ fn the_same_behaviour_on_two_routes_of_one_resource_is_one_flow_entered_both_way
     assert_eq!(flows.len(), 1, "{flows:#?}");
     assert_eq!(flows[0]["entered_by"].as_array().map(Vec::len), Some(1));
 }
+
+#[test]
+fn a_command_handled_in_a_library_part_is_still_the_flows_own_work() {
+    let index = common::read("mediated_parts");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/refunds/{orderId}")
+        .expect("issuing a refund is a flow");
+    let kinds: Vec<(String, String)> = flow["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["kind"].as_str().unwrap().to_string(), step["object"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    assert!(kinds.contains(&("keep".to_string(), "Refund".to_string())), "the handler's work belongs to the flow that sent its command: {kinds:?}");
+}
