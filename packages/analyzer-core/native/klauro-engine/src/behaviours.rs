@@ -181,6 +181,7 @@ fn alternatives(behaviours: &[Behaviour], flow: &Flow) -> bool {
         held.steps
             .iter()
             .filter_map(|said| flow.steps.iter().find(|step| step.id == said.id))
+            .filter(|step| OUTCOMES.contains(&step.kind))
             .flat_map(|step| step.arms.iter().map(String::as_str))
             .collect()
     };
