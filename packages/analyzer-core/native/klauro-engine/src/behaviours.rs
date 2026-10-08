@@ -26,6 +26,7 @@ pub struct Facts<'a> {
     pub consumed: HashSet<&'a str>,
     pub calling: HashSet<&'a str>,
     pub calls: &'a [crate::model::CallFact],
+    pub handled_by: HashMap<&'a str, Vec<&'a str>>,
 }
 
 static HOSTING: &str = include_str!("../data/hosting_calls.tsv");
@@ -180,14 +181,14 @@ fn decided_in(arm: &str) -> Option<u64> {
     u64::from_str_radix(branch_of(arm), 16).ok().map(|branch| branch >> 32)
 }
 
-fn alternatives(behaviours: &[Behaviour], flow: &Flow, handler_file: Option<u32>) -> bool {
+fn alternatives(behaviours: &[Behaviour], flow: &Flow, deciding: &HashSet<u64>) -> bool {
     let arms_of = |held: &Behaviour| -> Vec<&str> {
         held.steps
             .iter()
             .filter_map(|said| flow.steps.iter().find(|step| step.id == said.id))
             .filter(|step| OUTCOMES.contains(&step.kind))
             .flat_map(|step| step.arms.iter().map(String::as_str))
-            .filter(|arm| handler_file.is_some_and(|file| decided_in(arm) == Some(file as u64)))
+            .filter(|arm| decided_in(arm).is_some_and(|file| deciding.contains(&file)))
             .collect()
     };
     let owned: Vec<Vec<&str>> = behaviours.iter().map(arms_of).collect();
@@ -363,8 +364,18 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let mut again: Vec<(String, String)> = Vec::new();
     for flow in &kept {
         let Some(answer) = answers.get(&flow.id) else { continue };
-        let handler_file = flow.path.first().and_then(|start| node_of.get(start.unit.as_str())).map(|node| node.file);
-        if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow, handler_file) {
+        let mut deciding: HashSet<u64> = HashSet::default();
+        if let Some(node) = flow.path.first().and_then(|start| node_of.get(start.unit.as_str())) {
+            deciding.insert(node.file as u64);
+        }
+        for step in flow.steps.iter().filter(|step| step.kind == "send") {
+            for handler in step.object.as_deref().and_then(|object| facts.handled_by.get(object)).into_iter().flatten() {
+                if let Some(node) = node_of.get(handler) {
+                    deciding.insert(node.file as u64);
+                }
+            }
+        }
+        if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow, &deciding) {
             again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &landing, true)));
         }
     }
@@ -459,5 +470,91 @@ fn hosting<'a>(held: &mut Comprehension, facts: &Facts<'a>, project_of: &HashMap
         {
             flow.runs_in = Some(part.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(id: &str, kind: &'static str, arms: &[&str]) -> crate::steps::LogicalStep {
+        crate::steps::LogicalStep {
+            id: id.to_string(),
+            kind,
+            label: id.to_string(),
+            object: None,
+            doing: None,
+            when: if arms.is_empty() { "always" } else { "conditionally" },
+            arms: arms.iter().map(|arm| arm.to_string()).collect(),
+            regions: Vec::new(),
+            description: None,
+        }
+    }
+
+    fn flow(steps: Vec<crate::steps::LogicalStep>) -> Flow {
+        Flow {
+            summary: String::new(),
+            writes: Vec::new(),
+            reads: Vec::new(),
+            reaches: Vec::new(),
+            id: "flow".to_string(),
+            entry_point: "entry".to_string(),
+            kind: "http",
+            method: Some("POST".to_string()),
+            operation: String::new(),
+            surface: None,
+            plays: None,
+            standing: "terminal",
+            confidence: 1.0,
+            unsettled: None,
+            open: 0,
+            cut: false,
+            name: None,
+            description: None,
+            grounding: None,
+            path: Vec::new(),
+            steps,
+            step_edges: Vec::new(),
+            units: 1,
+            rank: 0,
+            stages: Vec::new(),
+            changes: Vec::new(),
+            leads_into: Vec::new(),
+            project: None,
+            unshipped: None,
+            entered_by: Vec::new(),
+            runs_in: None,
+        }
+    }
+
+    fn behaviour(ids: &[&str]) -> Behaviour {
+        Behaviour { name: String::new(), outcome: String::new(), steps: ids.iter().map(|id| Said { id: id.to_string(), said: String::new() }).collect() }
+    }
+
+    const HERE: &str = "500000010.1";
+    const THERE: &str = "500000010.2";
+    const ELSEWHERE: &str = "900000010.2";
+
+    #[test]
+    fn outcomes_on_two_arms_of_the_handlers_own_decision_are_alternatives() {
+        let flow = flow(vec![step("s1", "read", &[]), step("s2", "keep", &[HERE]), step("s3", "refuse", &[THERE])]);
+        let deciding: HashSet<u64> = [5].into_iter().collect();
+        assert!(alternatives(&[behaviour(&["s1", "s2"]), behaviour(&["s1", "s3"])], &flow, &deciding));
+    }
+
+    #[test]
+    fn a_side_with_no_outcome_of_its_own_is_not_an_alternative() {
+        let flow = flow(vec![step("s1", "read", &[HERE]), step("s2", "keep", &[THERE])]);
+        let deciding: HashSet<u64> = [5].into_iter().collect();
+        assert!(!alternatives(&[behaviour(&["s1"]), behaviour(&["s2"])], &flow, &deciding));
+    }
+
+    #[test]
+    fn a_decision_made_somewhere_the_trigger_does_not_decide_is_not_a_split() {
+        let flow = flow(vec![step("s1", "keep", &["900000010.1"]), step("s2", "keep", &[ELSEWHERE])]);
+        let deciding: HashSet<u64> = [5].into_iter().collect();
+        assert!(!alternatives(&[behaviour(&["s1"]), behaviour(&["s2"])], &flow, &deciding));
+        let sent: HashSet<u64> = [5, 9].into_iter().collect();
+        assert!(alternatives(&[behaviour(&["s1"]), behaviour(&["s2"])], &flow, &sent), "a sent command's handler decides for the flow");
     }
 }

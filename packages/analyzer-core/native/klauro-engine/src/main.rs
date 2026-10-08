@@ -1581,6 +1581,17 @@ fn read_it() {
                 .collect(),
             calling: index.calls.iter().filter_map(|call| call.caller.as_deref()).collect(),
             calls: &index.calls,
+            handled_by: index
+                .patterns
+                .as_ref()
+                .map(|found| {
+                    found
+                        .messages
+                        .iter()
+                        .map(|message| (message.message.as_str(), message.handlers.iter().map(String::as_str).collect()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         behaviours::settle(&mut comprehension, &facts);
     }
