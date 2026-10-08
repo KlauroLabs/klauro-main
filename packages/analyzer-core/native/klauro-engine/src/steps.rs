@@ -82,6 +82,7 @@ pub struct Reader<'a> {
 }
 
 const CARRIED_AT_MOST: u32 = 1;
+const HELPER_ACTIONS_AT_MOST: usize = 5;
 static STRONGER: &[&str] = &["keep", "change", "create", "remove", "read"];
 const PROGRAM_NAMED_AT_MOST: usize = 40;
 static ANOTHER_PROGRAM: &str = "another program";
@@ -692,6 +693,7 @@ impl<'a> Reader<'a> {
         let calls = self.calls_of.get(id).map(Vec::as_slice).unwrap_or_default();
         let exits = self.leaving.get(id).map(Vec::as_slice).unwrap_or_default();
         let mut targets: Vec<u32> = self.next.get(&unit).cloned().unwrap_or_default();
+
         targets.retain(|target| !visited.contains(target));
         let mut at_line: Vec<(u32, u32, Option<u32>, &'static str, Option<&ExitPoint>, Option<&CallFact>)> = Vec::new();
         for exit in exits {
@@ -950,7 +952,7 @@ impl<'a> Reader<'a> {
                                 "call" => action.writes,
                                 _ => false,
                             });
-                            let matters = persists;
+                            let matters = persists || reached.callback_of.is_some();
                             let looked_up = within.iter().find_map(|action| {
                                 (action.kind == "read").then_some(action.object.as_deref()).flatten().filter(|object| self.held.contains(object)).map(str::to_string)
                             });
@@ -985,7 +987,9 @@ impl<'a> Reader<'a> {
                                     || action.object.as_deref().is_some_and(|object| self.held.contains(object))
                             });
                             let own = !reached.id.starts_with("package:") && !reached.id.starts_with("runtime:");
-                            if about_records || !own || within.len() < 2 {
+                            let unnamed = reached.callback_of.is_some();
+                            let a_body_of_work = depth == 0 && within.len() > HELPER_ACTIONS_AT_MOST;
+                            if about_records || !own || within.len() < 2 || a_body_of_work || unnamed {
                                 actions.extend(within);
                             } else {
                                 let strongest = ["remove", "keep", "change", "create", "call", "read"]
