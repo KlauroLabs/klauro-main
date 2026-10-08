@@ -69,6 +69,7 @@ pub struct Reader<'a> {
     member_of: HashMap<(&'a str, &'a str), u32>,
     callers: HashMap<u32, u32>,
     cut: std::cell::Cell<bool>,
+    home: std::cell::RefCell<Option<String>>,
 }
 
 static HANDS_ON: &[&str] = &["dispatch", "emit", "execute", "handle", "invoke", "publish", "raise", "send", "sendasync", "publishasync", "dispatchasync", "trigger"];
@@ -316,7 +317,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -453,7 +454,12 @@ impl<'a> Reader<'a> {
                 .as_deref()
                 .is_some_and(|parent| self.keepers.contains(parent))
         };
-        owner_keeps(target) || self.next.get(&target).into_iter().flatten().any(|inner| owner_keeps(*inner))
+        let declared_only = self.nodes[target as usize]
+            .parent
+            .as_deref()
+            .and_then(|parent| self.position_of.get(parent))
+            .is_some_and(|owner| self.nodes[*owner as usize].kind == crate::model::NodeKind::Interface);
+        owner_keeps(target) || (declared_only && self.next.get(&target).into_iter().flatten().any(|inner| owner_keeps(*inner)))
     }
 
     fn kept_by(&self, call: &CallFact, calls: &[&CallFact]) -> Option<String> {
@@ -565,7 +571,8 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if call.constructs && thrown_here.iter().any(|thrown| crate::names::leaf(thrown) == named) {
-                if inherited(when, when_of(&call.context)) == "always" {
+                let at_home = *self.home.borrow() == node.project;
+                if depth <= 1 && at_home && inherited(when, when_of(&call.context)) == "always" {
                     let said = call.literals.iter().find(|literal| literal.contains(' ')).map(|literal| literal.trim_matches(['"', '\'', '$']).to_string());
                     refusals.push((call.line, call.column, named.to_string(), said));
                     at_line.push((call.line, call.column, None, "always", None, Some(call)));
@@ -738,6 +745,7 @@ impl<'a> Reader<'a> {
                             self.walk(target, depth + 1, context, &here, visited, &mut within);
                             let about_records = within.iter().any(|action| {
                                 matches!(action.kind, "hand_off" | "raise" | "send" | "notify" | "refuse" | "respond")
+                                    || (action.kind == "call" && action.writes)
                                     || action.object.as_deref().is_some_and(|object| self.held.contains(object))
                             });
                             let own = !reached.id.starts_with("package:") && !reached.id.starts_with("runtime:");
@@ -809,6 +817,7 @@ impl<'a> Reader<'a> {
             return (Vec::new(), Vec::new(), false);
         };
         self.cut.set(false);
+        *self.home.borrow_mut() = self.nodes[start as usize].project.clone();
         let mut actions: Vec<Action> = Vec::new();
         let first_line = self.nodes[start as usize].span.line;
         if !entry.guards.is_empty() {
@@ -850,6 +859,11 @@ impl<'a> Reader<'a> {
         for mut action in actions {
             let changed = settled.iter().any(|held| matches!(held.kind, "change" | "create" | "remove" | "keep"));
             if action.kind == "respond" && settled.iter().any(|held| held.kind == "refuse" && held.when == "always") {
+                continue;
+            }
+            if action.kind == "notify"
+                && settled.iter().rev().take_while(|last| last.unit == action.unit && last.line == action.line).any(|last| matches!(last.kind, "hand_off" | "send"))
+            {
                 continue;
             }
             match action.kind {

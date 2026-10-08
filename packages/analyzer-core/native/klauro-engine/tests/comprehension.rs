@@ -96,6 +96,7 @@ fn a_flow_ends_where_its_message_lands_in_another_part() {
     let paying = flows.iter().find(|flow| flow["surface"] == "/orders/{id}/pay").expect("paying is a flow");
     let kinds: Vec<&str> = paying["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
     assert!(!kinds.iter().any(|kind| matches!(*kind, "change" | "create")), "the shipment is the shipping part's work, not this flow's: {kinds:?}");
+    assert!(!kinds.contains(&"refuse"), "a library's own failure is not this flow's refusal: {kinds:?}");
     let landing: Vec<&str> = paying["leads_into"].as_array().unwrap().iter().map(|into| into.as_str().unwrap()).collect();
     assert_eq!(landing.len(), 1, "{landing:?}");
     assert!(landing[0].starts_with("entry:Shipping/OrderPaidHandler.cs:function:Handle") && landing[0].contains("OrderPaidHandler:message"), "{landing:?}");
