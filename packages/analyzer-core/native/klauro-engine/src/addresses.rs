@@ -288,19 +288,38 @@ pub fn through_wrappers(
     for call in calls {
         calls_at.entry((call.file, call.line)).or_default().push(call);
     }
+    let mut local_in: HashMap<(&str, &str), &LocalBinding> = HashMap::default();
+    for local in locals {
+        local_in.entry((local.unit.as_str(), local.name.as_str())).or_insert(local);
+    }
     let mut asking: HashMap<&str, (usize, String, String)> = HashMap::default();
     for exit in exits.iter().filter(|exit| exit.kind == "api" && exit.addressed.is_none()) {
         let Some(unit) = node_of.get(exit.source.as_str()).filter(|node| node.kind.is_unit()) else { continue };
         let Some(called) = calls_at.get(&(exit.file, exit.line)) else { continue };
-        let position = called
+        let parameter_of = |named: &str| -> Option<usize> {
+            let parameters = &unit.signature.as_ref()?.parameters;
+            let named = named.trim();
+            let standing_for = local_in
+                .get(&(unit.id.as_str(), named))
+                .and_then(|local| local.from_call.as_deref().or(local.written.as_deref()))
+                .map(|from| from.split(['.', '(', '{', '$', ' ']).find(|part| !part.is_empty()).unwrap_or_default());
+            parameters.iter().position(|held| held.name == named || Some(held.name.as_str()) == standing_for)
+        };
+        let asked: Vec<&&CallFact> = called
             .iter()
             .filter(|call| crate::names::leaf(&call.callee).split('<').next() == exit.operation.split('<').next())
+            .collect();
+        let position = asked
+            .iter()
             .flat_map(|call| call.literals.iter())
-            .find_map(|literal| {
-                parameter_standing_in(literal, unit).map(|(at, offset)| (at, &literal[..offset])).or_else(|| {
-                    let parameters = &unit.signature.as_ref()?.parameters;
-                    parameters.iter().position(|held| held.name == literal.trim()).map(|at| (at, ""))
-                })
+            .find_map(|literal| parameter_standing_in(literal, unit).map(|(at, offset)| (at, &literal[..offset])).or_else(|| parameter_of(literal).map(|at| (at, ""))))
+            .or_else(|| {
+                asked
+                    .iter()
+                    .flat_map(|call| call.passes.iter())
+                    .filter_map(|passed| passed.split_once('='))
+                    .filter(|(at, _)| *at == "0")
+                    .find_map(|(_, root)| parameter_of(root).map(|at| (at, "")))
             });
         if let Some((position, before)) = position {
             let standing = Standing {
@@ -332,10 +351,6 @@ pub fn through_wrappers(
         }
         None
     };
-    let mut local_in: HashMap<(&str, &str), &LocalBinding> = HashMap::default();
-    for local in locals {
-        local_in.entry((local.unit.as_str(), local.name.as_str())).or_insert(local);
-    }
     let mut made = Vec::new();
     let mut relayed: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
     for (position, call) in calls.iter().enumerate() {

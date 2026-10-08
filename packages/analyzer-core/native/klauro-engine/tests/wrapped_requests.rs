@@ -21,6 +21,7 @@ fn a_call_to_a_request_wrapper_asks_the_route_and_method_it_names() {
     let held = asked("request-wrapper");
     assert!(held.contains(&("cancelOrder".into(), "POST".into(), "/api/orders/{id}/cancel".into())), "{held:?}");
     assert!(held.contains(&("listOrders".into(), "GET".into(), "/api/orders".into())), "{held:?}");
+    assert!(held.contains(&("archiveReport".into(), "POST".into(), "/api/reports/{id}/archive".into())), "a wrapper over a renamed fetch takes the address its caller builds in a local: {held:?}");
 }
 
 #[test]

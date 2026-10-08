@@ -2142,10 +2142,16 @@ fn bare_exit(
     call: &CallFact,
     modules: &rustc_hash::FxHashMap<(u32, String), String>,
     wrapped: &HashMap<(u32, &str), &str>,
+    imported_as: &HashMap<(u32, &str), &str>,
     path: &str,
 ) -> Option<&'static str> {
     if call.callee == "fetch" {
         return fetch_is_the_web(path).then_some("api");
+    }
+    if let Some(original) = imported_as.get(&(call.file, call.callee.as_str()))
+        && let Some(specifier) = modules.get(&(call.file, call.callee.clone()))
+    {
+        return classify_exit(original, specifier, original);
     }
     if let Some(inner) = wrapped.get(&(call.file, call.callee.as_str()))
         && let Some(specifier) = modules.get(&(call.file, inner.to_string()))
@@ -2576,6 +2582,15 @@ pub fn derive(
         })
         .collect();
     let wrapped = wrapped_bindings(calls, locals, nodes);
+    let imported_as: HashMap<(u32, &str), &str> = imports
+        .iter()
+        .flat_map(|import| {
+            import.names.iter().filter_map(move |name| {
+                let original = name.imported.as_deref().filter(|original| *original != name.local)?;
+                Some(((import.file, name.local.as_str()), original))
+            })
+        })
+        .collect();
     let locals_by_unit: HashMap<(u32, &str, &str), &crate::model::LocalBinding> = locals
         .iter()
         .map(|held| ((held.file, held.unit.as_str(), held.name.as_str()), held))
@@ -3474,7 +3489,7 @@ pub fn derive(
             return (found, reach);
         }
         let Some(receiver) = call.receiver.as_deref() else {
-            let Some(kind) = bare_exit(call, modules, &wrapped, &files[call.file as usize])
+            let Some(kind) = bare_exit(call, modules, &wrapped, &imported_as, &files[call.file as usize])
                 .or_else(|| fetched_through_an_alias(call, &files[call.file as usize], &locals_by_unit))
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
                 .or_else(|| requested_by_url(call))
