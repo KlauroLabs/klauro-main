@@ -80,6 +80,11 @@ fn a_document_kept_in_a_key_value_store_is_a_record_with_its_items_and_a_body_he
         .filter(|(kind, _)| matches!(*kind, "keep" | "read" | "remove"))
         .collect();
     assert!(kept.contains(&("keep", "CustomerCart")) && kept.contains(&("read", "CustomerCart")) && kept.contains(&("remove", "CustomerCart")), "{kept:?}");
+    let previewing = index["comprehension"]["flows"].as_array().unwrap().iter().find(|flow| flow["surface"] == "/preview").expect("the preview is a flow");
+    assert!(
+        previewing["steps"].as_array().unwrap().iter().all(|step| step["object"] != "CustomerCart"),
+        "a same-named shape built in memory is not the stored record: {previewing}"
+    );
 }
 
 fn references<'a>(held: &'a [Value], entity: &str) -> Vec<(&'a str, &'a str, &'a str)> {

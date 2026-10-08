@@ -71,6 +71,7 @@ pub struct Reader<'a> {
     callers: HashMap<u32, u32>,
     constructors: HashMap<u32, Vec<u32>>,
     kept_in: HashMap<&'a str, Option<&'a str>>,
+    declared_as: &'a HashMap<&'a str, HashSet<&'a str>>,
     carrying: std::cell::RefCell<Vec<(Option<&'a str>, u32)>>,
     depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
@@ -303,6 +304,7 @@ impl<'a> Reader<'a> {
         keepers: &'a HashSet<&'a str>,
         writing_in: &'a HashMap<&'a str, Vec<&'a str>>,
         reading_in: &'a HashMap<&'a str, Vec<&'a str>>,
+        declared_as: &'a HashMap<&'a str, HashSet<&'a str>>,
     ) -> Self {
         let writes_fields: HashSet<&str> = metrics
             .iter()
@@ -368,7 +370,7 @@ impl<'a> Reader<'a> {
                 _ => (unit, None),
             })
             .collect();
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -509,7 +511,15 @@ impl<'a> Reader<'a> {
         let parent = self.position_of.get(node.parent.as_deref()?)?;
         let owner = &self.nodes[*parent as usize];
         (owner.kind.is_type()).then_some(())?;
-        self.held.get(owner.name.as_str()).copied()
+        self.record_declared_by(owner)
+    }
+
+    fn record_declared_by(&self, node: &IndexNode) -> Option<&'a str> {
+        let record = self.held.get(node.name.as_str()).copied()?;
+        match self.declared_as.get(record) {
+            Some(declared) if !declared.contains(node.id.as_str()) => None,
+            _ => Some(record),
+        }
     }
 
     fn keeps(&self, target: u32) -> bool {
@@ -578,7 +588,7 @@ impl<'a> Reader<'a> {
             return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, arms: Vec::new(), writes: false, unit, line });
         }
         if node.kind.is_type() {
-            let record = self.held.get(node.name.as_str()).copied()?;
+            let record = self.record_declared_by(node)?;
             return Some(Action { kind: "create", object: Some(record.to_string()), doing: None, when, arms: Vec::new(), writes: false, unit, line });
         }
         let record = self.record_owning(target)?;

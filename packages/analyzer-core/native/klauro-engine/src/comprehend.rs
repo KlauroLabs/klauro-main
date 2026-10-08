@@ -2155,6 +2155,12 @@ pub fn derive(
         .iter()
         .map(|entity| entity.declared_as.as_str())
         .collect();
+    let mut declared_as: HashMap<&str, HashSet<&str>> = HashMap::default();
+    for entity in &entities_first {
+        if let Some(at) = entity.declared_in.as_deref() {
+            declared_as.entry(entity.declared_as.as_str()).or_default().insert(at);
+        }
+    }
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::default();
     let mut read_of: HashMap<&str, Vec<&str>> = HashMap::default();
     let spoken_of: HashMap<&str, &str> = nodes
@@ -2414,6 +2420,7 @@ pub fn derive(
         &keepers,
         &entity_of,
         &read_of,
+        &declared_as,
     );
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();
