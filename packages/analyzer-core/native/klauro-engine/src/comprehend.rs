@@ -2412,6 +2412,8 @@ pub fn derive(
         requests,
         &in_process,
         &keepers,
+        &entity_of,
+        &read_of,
     );
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();
@@ -2671,6 +2673,22 @@ pub fn derive(
         writes.sort();
         reads.retain(|held| !writes.contains(held));
         reads.sort();
+        let mut logical = logical;
+        for step in logical.iter_mut() {
+            if step.object.as_deref().is_some_and(|object| held.contains(object)) {
+                continue;
+            }
+            let only = match (step.kind, writes.as_slice(), reads.as_slice()) {
+                ("keep" | "change" | "remove", [one], _) => Some(one),
+                ("read", _, [one]) | ("read", [one], []) => Some(one),
+                _ => None,
+            };
+            if let Some(record) = only {
+                step.object = Some(record.clone());
+                step.doing = None;
+                step.label = crate::steps::labelled(step.kind, Some(record));
+            }
+        }
         let summary = summarised(entry, &named, &writes, &reads, &reaching);
         let hands_on = logical
             .iter()

@@ -70,9 +70,14 @@ pub struct Reader<'a> {
     member_of: HashMap<(&'a str, &'a str), u32>,
     callers: HashMap<u32, u32>,
     constructors: HashMap<u32, Vec<u32>>,
+    kept_in: HashMap<&'a str, Option<&'a str>>,
+    carrying: std::cell::RefCell<Vec<(Option<&'a str>, u32)>>,
+    depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
     home: std::cell::RefCell<Option<String>>,
 }
+
+const CARRIED_AT_MOST: u32 = 1;
 
 static HANDS_ON: &[&str] = &["dispatch", "emit", "execute", "handle", "invoke", "publish", "raise", "send", "sendasync", "publishasync", "dispatchasync", "trigger"];
 
@@ -220,7 +225,7 @@ fn spoken(named: &str) -> String {
     said
 }
 
-fn labelled(kind: &str, object: Option<&str>) -> String {
+pub(crate) fn labelled(kind: &str, object: Option<&str>) -> String {
     let verb = match kind {
         "create" => "Create",
         "raise" => "Raise",
@@ -296,6 +301,8 @@ impl<'a> Reader<'a> {
         requests: &'a HashMap<&'a str, Vec<&'a str>>,
         raised: &'a HashMap<&'a str, Vec<&'a str>>,
         keepers: &'a HashSet<&'a str>,
+        writing_in: &'a HashMap<&'a str, Vec<&'a str>>,
+        reading_in: &'a HashMap<&'a str, Vec<&'a str>>,
     ) -> Self {
         let writes_fields: HashSet<&str> = metrics
             .iter()
@@ -344,7 +351,24 @@ impl<'a> Reader<'a> {
                 constructors.entry(*owner).or_default().push(at as u32);
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        let mut touched_in: HashMap<&str, Vec<&str>> = HashMap::default();
+        for (unit, records) in writing_in.iter().chain(reading_in.iter()) {
+            let held = touched_in.entry(*unit).or_default();
+            for record in records {
+                if !held.contains(record) {
+                    held.push(record);
+                }
+            }
+        }
+        let kept_in: HashMap<&str, Option<&str>> = touched_in
+            .into_iter()
+            .filter(|(_, records)| !records.is_empty())
+            .map(|(unit, records)| match records.as_slice() {
+                [only] => (unit, Some(*only)),
+                _ => (unit, None),
+            })
+            .collect();
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -375,6 +399,15 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn carried(&self) -> Option<String> {
+        self.carrying
+            .borrow()
+            .last()
+            .filter(|(_, at)| self.depth_now.get() <= at + CARRIED_AT_MOST)
+            .and_then(|(record, _)| *record)
+            .map(str::to_string)
+    }
+
     fn action_of(&self, exit: &ExitPoint) -> Option<(&'static str, Option<String>)> {
         let does = exit.does.unwrap_or_else(|| crate::effects::does(exit));
         let service = exit.service.clone();
@@ -391,7 +424,12 @@ impl<'a> Reader<'a> {
             "message" => Some(("hand_off", Some(exit.addressed.clone().unwrap_or_else(|| exit.name.clone())).filter(|held| !held.is_empty()).or(service))),
             "api" | "network" => Some(("call", service.or_else(|| exit.addressed.clone()).or_else(|| Some(exit.target.clone())))),
             "cache" | "client_storage" | "file" => {
-                let place = service.or_else(|| Some(match exit.kind {
+                let carried = self.carried();
+                let own = self.exit_records.get(exit.id.as_str()).and_then(|within| match within.as_slice() {
+                    [only] => Some((*only).to_string()),
+                    _ => None,
+                });
+                let place = own.or(carried).or(service).or_else(|| Some(match exit.kind {
                     "client_storage" => "the device".to_string(),
                     "file" => "a file".to_string(),
                     _ => "the cache".to_string(),
@@ -558,6 +596,21 @@ impl<'a> Reader<'a> {
             self.cut.set(true);
             return;
         }
+        let node = &self.nodes[unit as usize];
+        let id = node.id.as_str();
+        let carried = self.kept_in.get(id).copied();
+        if let Some(record) = carried {
+            self.carrying.borrow_mut().push((record, depth));
+        }
+        let was = self.depth_now.replace(depth);
+        self.walking(unit, depth, when, arms, visited, actions);
+        self.depth_now.set(was);
+        if carried.is_some() {
+            self.carrying.borrow_mut().pop();
+        }
+    }
+
+    fn walking(&self, unit: u32, depth: u32, when: &'static str, arms: &[(u64, u16)], visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
         let node = &self.nodes[unit as usize];
         let id = node.id.as_str();
         let calls = self.calls_of.get(id).map(Vec::as_slice).unwrap_or_default();

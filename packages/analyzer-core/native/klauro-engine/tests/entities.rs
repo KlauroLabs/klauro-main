@@ -39,6 +39,8 @@ fn a_record_is_linked_to_the_flows_that_write_it_and_the_flows_that_read_it() {
     let listing = flows.iter().find(|flow| flow["id"] == "flow:entry:src/server.ts:callback:app.get").unwrap();
     assert_eq!(strings(&listing["reads"]), vec!["AccountWorkspace"]);
     assert_eq!(workspace["project"], registering["project"]);
+    let kept: Vec<(&str, &str)> = registering["steps"].as_array().unwrap().iter().filter_map(|step| Some((step["kind"].as_str()?, step["object"].as_str()?))).collect();
+    assert!(kept.contains(&("keep", "AccountUser")), "a write through a shared helper names the record the flow keeps, not the helper: {kept:?}");
 }
 
 #[test]
