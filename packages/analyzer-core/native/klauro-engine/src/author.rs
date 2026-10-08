@@ -821,17 +821,18 @@ pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a so
 For each record decide who it is kept for. \
 about: the system exists to keep it for its users. Users create, own, ask for, pay, receive or are told about it, choose from it (kinds, categories, brands), or link it from another service; movements of money or goods and the plans behind them are always about. \
 bookkeeping: the software keeps it only for itself and no user ever sees it: locks, caches, attempts and retries, logs of its own operations, messages queued to send, keys that stop one request being handled twice, indexes and manifests, sign-in sessions, tokens and throttles, switches and settings that steer the software. \
-When in doubt, answer about. Give one answer per record, in the order listed.";
+A record that a flow named after a person's own request creates or changes (claiming, registering, reporting, ordering) is about, even when it works like a lock or a log. \
+When in doubt, answer about. Answer every record by its number.";
 
 pub fn bookkeeping_of(prompt: &str, records: usize) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"kinds\":[\"about\",\"bookkeeping\"]}}");
+    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"kinds\":[{{\"n\":1,\"kind\":\"about\"}},{{\"n\":2,\"kind\":\"bookkeeping\"}}]}}");
     for _ in 0..RECORDS_ASKED_AT_MOST {
-        let answer = answered::<serde_json::Value>(&asked, 300 + 12 * records as u32, &proposing(), "kinds", records, DESCRIBING_ASK)?;
-        let told = answer["kinds"].as_array().map(|kinds| kinds.len()).unwrap_or(0);
-        if told == records {
+        let answer = answered::<serde_json::Value>(&asked, 300 + 20 * records as u32, &proposing(), "kinds", records, DESCRIBING_ASK)?;
+        let told: std::collections::BTreeSet<u64> = answer["kinds"].as_array().into_iter().flatten().filter_map(|kind| kind["n"].as_u64()).collect();
+        if (1..=records as u64).all(|number| told.contains(&number)) {
             return Some(answer);
         }
     }
@@ -1530,7 +1531,7 @@ fn shaped(of: &str) -> serde_json::Value {
         }),
         "kinds" => serde_json::json!({
             "type": "object",
-            "properties": {"kinds": {"type": "array", "items": {"type": "string", "enum": ["about", "bookkeeping"]}}},
+            "properties": {"kinds": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "kind": {"type": "string", "enum": ["about", "bookkeeping"]}}, "required": ["n", "kind"]}}},
             "required": ["kinds"],
         }),
         "together" => serde_json::json!({

@@ -7,6 +7,7 @@ const FIELDS_TOLD: usize = 8;
 const MEMBERS_TOLD: usize = 6;
 const KEEPERS_TOLD: usize = 3;
 const FLOWS_TOLD: usize = 3;
+const RECORDS_PER_ASK: usize = 8;
 
 pub const ABOUT: &str = "domain";
 pub const BOOKKEEPING: &str = "operational";
@@ -73,7 +74,11 @@ pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str
     let mut asked: Vec<(String, String)> = Vec::new();
     let mut listed: Vec<(String, Vec<usize>)> = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::default();
-    for (part, positions) in by_part {
+    let chunks: Vec<(String, Vec<usize>)> = by_part
+        .into_iter()
+        .flat_map(|(part, positions)| positions.chunks(RECORDS_PER_ASK).map(|chunk| (part.clone(), chunk.to_vec())).collect::<Vec<_>>())
+        .collect();
+    for (part, positions) in chunks {
         let lines: Vec<String> = positions.iter().enumerate().map(|(number, position)| told(&entities[*position], number + 1, &held_by, &used_in)).collect();
         let named = part_names.get(part.as_str()).copied().unwrap_or(part.as_str());
         let key = format!("{part}\u{1}{}", lines.join("\n"));
@@ -92,13 +97,10 @@ pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str
     let mut standing: HashMap<String, &'static str> = HashMap::default();
     for (key, positions) in listed {
         let Some(answer) = answered.get(&key) else { continue };
-        let kinds: Vec<String> = serde_json::from_value(answer["kinds"].clone()).unwrap_or_default();
-        if kinds.len() != positions.len() {
-            continue;
-        }
-        for (kind, position) in kinds.iter().zip(positions.iter()) {
-            let said = match kind.as_str() {
-                "bookkeeping" => BOOKKEEPING,
+        for kind in answer["kinds"].as_array().into_iter().flatten() {
+            let Some(position) = kind["n"].as_u64().and_then(|number| positions.get((number as usize).checked_sub(1)?)) else { continue };
+            let said = match kind["kind"].as_str() {
+                Some("bookkeeping") => BOOKKEEPING,
                 _ => ABOUT,
             };
             standing.insert(entities[*position].declared_as.clone(), said);
