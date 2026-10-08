@@ -180,21 +180,21 @@ fn alternatives(behaviours: &[Behaviour], flow: &Flow) -> bool {
         && (0..owned.len()).all(|left| (0..owned.len()).filter(|right| *right != left).all(|right| apart(&owned[left], &owned[right])))
 }
 
-fn worded(flow: &Flow, behaviour: &Behaviour) -> Vec<crate::steps::LogicalStep> {
-    let mut seen: HashSet<&str> = HashSet::default();
-    let mut kept = Vec::new();
-    for said in &behaviour.steps {
-        let Some(step) = flow.steps.iter().find(|step| step.id == said.id) else { continue };
-        if !seen.insert(step.id.as_str()) {
-            continue;
-        }
-        let mut step = step.clone();
-        if !said.said.trim().is_empty() {
-            step.description = Some(said.said.trim().to_string());
-        }
-        kept.push(step);
-    }
-    kept
+const OUTCOMES: &[&str] = &["keep", "change", "create", "remove", "send", "hand_off", "notify", "refuse", "raise"];
+
+fn worded(flow: &Flow, behaviour: &Behaviour, alone: bool) -> Vec<crate::steps::LogicalStep> {
+    let said_of: HashMap<&str, &str> = behaviour.steps.iter().map(|said| (said.id.as_str(), said.said.trim())).collect();
+    flow.steps
+        .iter()
+        .filter(|step| said_of.contains_key(step.id.as_str()) || (alone && OUTCOMES.contains(&step.kind)))
+        .map(|step| {
+            let mut step = step.clone();
+            if let Some(said) = said_of.get(step.id.as_str()).filter(|said| !said.is_empty()) {
+                step.description = Some(said.to_string());
+            }
+            step
+        })
+        .collect()
 }
 
 fn merge_class(flow: &Flow) -> (&'static str, String, bool) {
@@ -244,8 +244,8 @@ fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
     let mut out = Vec::new();
     let mut asked: Vec<(String, String)> = Vec::new();
     let mut waiting: Vec<(String, Vec<Flow>)> = Vec::new();
-    for ((project, _), joined) in by_part {
-        if joined.len() < 2 {
+    for ((project, (kind, ..)), joined) in by_part {
+        if joined.len() < 2 || matches!(kind, "message" | "event" | "schedule" | "background") {
             out.extend(joined);
             continue;
         }
@@ -367,6 +367,10 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             }
             continue;
         }
+        let owned: Vec<Vec<&str>> = behaviours.iter().map(|held| held.steps.iter().map(|said| said.id.as_str()).collect()).collect();
+        if owned.len() > 1 && owned.iter().all(|held| held == &owned[0]) {
+            behaviours.truncate(1);
+        }
         let several = behaviours.len() > 1;
         for (at, behaviour) in behaviours.iter().enumerate() {
             let mut shaped = flow.clone();
@@ -375,7 +379,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             }
             shaped.name = Some(behaviour.name.trim().to_string()).filter(|held| !held.is_empty());
             shaped.description = Some(behaviour.outcome.trim().to_string()).filter(|held| !held.is_empty());
-            let steps = worded(&flow, behaviour);
+            let steps = worded(&flow, behaviour, !several);
             if !steps.is_empty() || flow.steps.is_empty() {
                 shaped.steps = steps;
                 shaped.step_edges = shaped
