@@ -207,3 +207,16 @@ fn a_repository_call_names_the_record_its_receiver_names_in_full() {
     assert_eq!(read_of("/refunds/queued"), vec!["QueuedRefund".to_string()]);
     assert_eq!(read_of("/refunds/audit"), vec!["AuditRefund".to_string()]);
 }
+
+#[test]
+fn reading_one_record_on_either_arm_of_a_decision_is_one_step() {
+    let index = common::read("mediated");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/refunds/lookup/{orderId}")
+        .expect("looking up a refund is a flow");
+    let reads = flow["steps"].as_array().unwrap().iter().filter(|step| step["kind"] == "read").count();
+    assert_eq!(reads, 1, "{flow}");
+}

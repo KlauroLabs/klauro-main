@@ -825,8 +825,10 @@ impl<'a> Reader<'a> {
                 && last.kind == action.kind
                 && last.object == action.object
                 && last.doing == action.doing
-                && last.arms == armed
+                && (last.arms == armed || action.kind == "read")
             {
+                let shared = last.arms.iter().zip(armed.iter()).take_while(|(left, right)| left == right).count();
+                last.arms.truncate(shared);
                 match last.regions.iter_mut().find(|held| held.unit == region.unit) {
                     Some(held) => {
                         held.start_line = held.start_line.min(region.start_line);
