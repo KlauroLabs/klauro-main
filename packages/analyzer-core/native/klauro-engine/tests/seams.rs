@@ -54,3 +54,15 @@ fn starting_a_program_is_a_step_that_names_the_program_and_checking_for_a_file_i
     assert!(steps.iter().any(|(kind, object)| *kind == "run" && !object.is_empty() && *object != "another program"), "{steps:?}");
     assert!(steps.iter().all(|(kind, _)| *kind != "read"), "an existence check prepares, it reads no record: {steps:?}");
 }
+
+#[test]
+fn a_message_type_several_handlers_take_lands_on_the_one_whose_queue_names_the_channel() {
+    let index = common::read("channel_seams");
+    let seams = index["comprehension"]["seams"].as_array().unwrap();
+    let landed: Vec<(&str, &str)> = seams
+        .iter()
+        .map(|seam| (seam["to_entry"].as_str().unwrap(), seam["by"].as_str().unwrap()))
+        .collect();
+    assert_eq!(landed.len(), 1, "{landed:?}");
+    assert!(landed[0].0.contains("RebuildIndexWorker") && landed[0].1 == "channel", "{landed:?}");
+}
