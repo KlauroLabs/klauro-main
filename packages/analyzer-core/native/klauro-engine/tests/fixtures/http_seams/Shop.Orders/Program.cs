@@ -5,4 +5,5 @@ api.MapGet("/summary",
     [Produces("application/json")]
     () => Results.Ok("summary"));
 api.MapPost("/", (string item) => Results.Created("/api/orders/1", item));
+api.MapGet("/latest", () => Results.Ok("latest"));
 app.Run();

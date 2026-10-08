@@ -25,6 +25,7 @@ fn a_call_to_another_parts_route_is_a_seam_into_the_flow_that_serves_it() {
         vec![
             ("/cart/count".to_string(), "/Cart/GetCart".to_string(), "subproject:Shop.Cart".to_string(), into("/Cart/GetCart")),
             ("/checkout".to_string(), "POST /api/orders".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders")),
+            ("/orders/latest".to_string(), "GET /api/orders/latest".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders/latest")),
             ("/orders/summary".to_string(), "GET /api/orders/summary".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders/summary")),
             ("/orders/{id}".to_string(), "GET /api/orders/{id:int}".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders/{id:int}")),
         ],

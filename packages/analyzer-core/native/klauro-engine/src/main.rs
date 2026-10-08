@@ -1106,7 +1106,7 @@ fn read_it() {
     }
     let asked_before = index.exit_points.len();
     let constants = constants::Constants::new(&index.locals);
-    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths, &constants);
+    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths, &constants, &index.edges, &index.locals);
     addresses::rebase(&mut index.exit_points, &index.calls, &index.locals, &index.nodes, &constants);
     if index.exit_points.len() > asked_before {
         index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));

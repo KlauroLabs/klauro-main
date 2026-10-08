@@ -272,34 +272,36 @@ pub fn rebase(exits: &mut [ExitPoint], calls: &[CallFact], locals: &[LocalBindin
     }
 }
 
+static HTTP_VERBS: &[&str] = &["delete", "get", "patch", "post", "put"];
+
 pub fn through_wrappers(
     exits: &mut Vec<ExitPoint>,
     calls: &[CallFact],
     nodes: &[IndexNode],
     files: &[String],
     constants: &Constants,
+    edges: &[crate::model::IndexEdge],
+    locals: &[LocalBinding],
 ) {
     let node_of: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let mut declared: HashMap<&str, u32> = HashMap::default();
-    for node in nodes.iter().filter(|node| node.kind.is_unit()) {
-        *declared.entry(node.name.as_str()).or_insert(0) += 1;
-    }
     let mut calls_at: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
     for call in calls {
         calls_at.entry((call.file, call.line)).or_default().push(call);
     }
-    let mut asking: HashMap<&str, (usize, String)> = HashMap::default();
+    let mut asking: HashMap<&str, (usize, String, String)> = HashMap::default();
     for exit in exits.iter().filter(|exit| exit.kind == "api" && exit.addressed.is_none()) {
         let Some(unit) = node_of.get(exit.source.as_str()).filter(|node| node.kind.is_unit()) else { continue };
-        if declared.get(unit.name.as_str()) != Some(&1) {
-            continue;
-        }
         let Some(called) = calls_at.get(&(exit.file, exit.line)) else { continue };
         let position = called
             .iter()
             .filter(|call| crate::names::leaf(&call.callee).split('<').next() == exit.operation.split('<').next())
             .flat_map(|call| call.literals.iter())
-            .find_map(|literal| parameter_standing_in(literal, unit).map(|(at, offset)| (at, &literal[..offset])));
+            .find_map(|literal| {
+                parameter_standing_in(literal, unit).map(|(at, offset)| (at, &literal[..offset])).or_else(|| {
+                    let parameters = &unit.signature.as_ref()?.parameters;
+                    parameters.iter().position(|held| held.name == literal.trim()).map(|at| (at, ""))
+                })
+            });
         if let Some((position, before)) = position {
             let standing = Standing {
                 file: exit.file,
@@ -308,34 +310,86 @@ pub fn through_wrappers(
                 node: Some(unit),
             };
             let base = path_of_a_base(&constants.expand(&standing, before.trim_end_matches('$'))).unwrap_or_default();
-            asking.entry(unit.name.as_str()).or_insert((position, base));
+            asking.entry(unit.id.as_str()).or_insert((position, base, exit.operation.clone()));
         }
     }
     if asking.is_empty() {
         return;
     }
+    let mut dispatched_to: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == crate::model::EdgeKind::Calls) {
+        dispatched_to.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+    }
+    let reaching = |caller: &str, named: &str| -> Option<&str> {
+        let direct = dispatched_to.get(caller).into_iter().flatten().copied().filter(|target| node_of.get(target).is_some_and(|node| node.name == named));
+        for target in direct {
+            if asking.contains_key(target) {
+                return Some(target);
+            }
+            if let Some(below) = dispatched_to.get(target).into_iter().flatten().copied().find(|below| asking.contains_key(below)) {
+                return Some(below);
+            }
+        }
+        None
+    };
+    let mut local_in: HashMap<(&str, &str), &LocalBinding> = HashMap::default();
+    for local in locals {
+        local_in.entry((local.unit.as_str(), local.name.as_str())).or_insert(local);
+    }
     let mut made = Vec::new();
     let mut relayed: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
     for (position, call) in calls.iter().enumerate() {
-        let Some((at, base)) = asking.get(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default()).map(|(at, base)| (*at, base.as_str())) else {
-            continue;
-        };
         let Some(caller) = call.caller.as_deref().filter(|caller| node_of.get(caller).is_some_and(|node| node.kind.is_unit())) else {
             continue;
         };
-        let held = |literal: &String| as_a_path(&plainly_placed(literal));
-        let template = match call.literals.len() == call.argument_count as usize {
-            true => call.literals.get(at),
-            false => call.literals.first().filter(|first| at == 0 && held(first).is_some()),
+        let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
+        let Some(wrapper) = reaching(caller, named) else { continue };
+        let (at, base, operation) = &asking[wrapper];
+        let standing = Standing { file: call.file, unit: caller, owner: owner_of(caller, &node_of), node: node_of.get(caller).copied() };
+        let held = |literal: &str| {
+            (!literal.contains('"')).then(|| as_a_path(&plainly_placed(&constants.expand(&standing, literal)))).flatten()
         };
-        let Some(path) = template.and_then(held).map(|path| joined_under(base, &path)) else { continue };
+        let embedded = |literal: &str| -> Option<String> {
+            let opened = literal.find('(')?;
+            let callee = literal[..opened].rsplit(['{', ' ', '.']).next()?.trim();
+            calls_at
+                .iter()
+                .filter(|((file, line), _)| *file == call.file && *line <= call.line)
+                .flat_map(|(_, held)| held.iter())
+                .filter(|built| built.caller.as_deref() == Some(caller) && crate::names::leaf(&built.callee) == callee)
+                .max_by_key(|built| built.line)?
+                .literals
+                .iter()
+                .find_map(|literal| held(literal))
+        };
+        let template = match call.literals.len() == call.argument_count as usize {
+            true => call.literals.get(*at),
+            false => call.literals.first().filter(|first| *at == 0 && held(first).is_some()),
+        };
+        let through_a_local = |written: &str| -> Option<String> {
+            let local = local_in.get(&(caller, written.trim()))?;
+            calls_at
+                .get(&(local.file, local.line))
+                .into_iter()
+                .flatten()
+                .flat_map(|built| built.literals.iter())
+                .find_map(|literal| held(literal))
+                .or_else(|| local.written.as_deref().and_then(|text| held(text).or_else(|| embedded(text))))
+        };
+        let Some(path) = template
+            .and_then(|written| held(written).or_else(|| through_a_local(written)).or_else(|| embedded(written)))
+            .map(|path| joined_under(base, &path))
+        else {
+            continue;
+        };
         let method = call
             .literals
             .iter()
             .find_map(|literal| literal.strip_prefix("method="))
-            .unwrap_or("GET")
-            .to_string();
-        relayed.insert(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default());
+            .map(str::to_string)
+            .or_else(|| HTTP_VERBS.iter().find(|verb| operation.to_ascii_lowercase().starts_with(*verb)).map(|verb| verb.to_ascii_uppercase()))
+            .unwrap_or_else(|| "GET".to_string());
+        relayed.insert(wrapper);
         made.push(ExitPoint {
             id: format!("exit:{}:{}:request", files[call.file as usize], position),
             kind: "api",
@@ -354,12 +408,7 @@ pub fn through_wrappers(
             does: None,
         });
     }
-    exits.retain(|exit| {
-        let relays = exit.kind == "api"
-            && exit.addressed.is_none()
-            && node_of.get(exit.source.as_str()).is_some_and(|unit| relayed.contains(unit.name.as_str()) && asking.contains_key(unit.name.as_str()));
-        !relays
-    });
+    exits.retain(|exit| !(exit.kind == "api" && exit.addressed.is_none() && relayed.contains(exit.source.as_str())));
     exits.extend(made);
 }
 
