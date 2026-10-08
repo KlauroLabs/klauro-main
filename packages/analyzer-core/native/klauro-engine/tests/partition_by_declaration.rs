@@ -67,3 +67,9 @@ fn a_project_is_labelled_by_what_it_does_not_by_a_stored_type() {
     assert_eq!(project(&all, "packages/d")["status"], "module", "declared, owned, not reached");
     assert_eq!(project(&all, "packages/b")["status"], "module");
 }
+
+#[test]
+fn a_part_whose_code_builds_on_a_test_library_is_a_test_suite_whatever_documents_sit_beside_it() {
+    let all = projects("browser_journeys");
+    assert_eq!(project(&all, "")["role"], "test suite");
+}

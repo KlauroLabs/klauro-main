@@ -1637,6 +1637,7 @@ fn read_it() {
             files: index.files.iter().map(|file| (file.path.as_str(), file.language)).collect(),
             entry_points: &index.entry_points,
             exit_points: &index.exit_points,
+            testing: index.imports.iter().filter(|import| dependencies::tests_with(&import.specifier)).map(|import| import.file).collect(),
             products: &comprehension.products,
             capabilities: &comprehension.capabilities,
             repository,

@@ -237,10 +237,6 @@ static GENERIC: &[&str] = &[
     "wmain",
 ];
 
-pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
-    changes(exit)
-}
-
 const FIELDS_TOLD: usize = 10;
 
 const INHERITED_AT_MOST: usize = 4;

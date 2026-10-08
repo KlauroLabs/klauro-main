@@ -467,6 +467,10 @@ fn named_as(package: &str, prefix: &str) -> bool {
         && bounded(package, prefix)
 }
 
+pub fn tests_with(specifier: &str) -> bool {
+    package_of(specifier).and_then(classify).is_some_and(|known| known.category == "test")
+}
+
 fn classify(package: &str) -> Option<&'static Known> {
     CATALOG
         .iter()

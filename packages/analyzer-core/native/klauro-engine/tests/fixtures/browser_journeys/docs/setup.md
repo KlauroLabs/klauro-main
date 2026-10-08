@@ -1,0 +1,3 @@
+# setup
+
+How setup works.

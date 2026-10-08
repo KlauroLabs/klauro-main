@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use rayon::prelude::*;
 
 use crate::comprehend::{Capability, Product};
 use crate::entry_exit::{EntryPoint, ExitPoint};
-use crate::paths::{contains, file_of, is_test};
+use crate::paths::{contains, file_of, is_hand_written_code, is_test};
 use crate::subproject::{Partition, SubProject};
 
 const SERVING_KINDS: &[&str] = &["http", "rpc", "graphql", "tool", "cli"];
@@ -23,6 +23,7 @@ pub struct Facts<'a> {
     pub scope: &'a str,
     pub deployables: &'a [crate::scope::Deployable],
     pub spelled: &'a BTreeMap<String, String>,
+    pub testing: HashSet<u32>,
 }
 
 #[derive(Default)]
@@ -377,10 +378,14 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
             .or(residue)
     };
     let mut tallies: Vec<Tally> = partition.sub_projects.iter().map(|_| Tally::default()).collect();
-    for (path, language) in &facts.files {
+    for (file, (path, language)) in facts.files.iter().enumerate() {
         let Some(at) = deepest(path) else { continue };
+        let testing = is_test(path) || facts.testing.contains(&(file as u32));
+        if !testing && !is_hand_written_code(path) {
+            continue;
+        }
         tallies[at].files_seen += 1;
-        if is_test(path) {
+        if testing {
             tallies[at].test_files += 1;
             continue;
         }

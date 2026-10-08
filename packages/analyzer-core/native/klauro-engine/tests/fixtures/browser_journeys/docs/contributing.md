@@ -1,0 +1,3 @@
+# contributing
+
+How contributing works.
