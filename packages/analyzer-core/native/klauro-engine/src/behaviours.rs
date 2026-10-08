@@ -220,10 +220,12 @@ fn worded(flow: &Flow, behaviour: &Behaviour, alone: bool) -> Vec<crate::steps::
         .collect()
 }
 
-fn merge_class(flow: &Flow) -> (&'static str, String, bool) {
+type MergeClass = (&'static str, String, bool, Option<String>);
+
+fn merge_class(flow: &Flow) -> MergeClass {
     let method = flow.method.clone().filter(|_| ROUTES.contains(&flow.kind)).unwrap_or_default();
     let action = flow.kind == "ui" && flow.operation.contains('.') && !flow.operation.starts_with('/');
-    (flow.kind, method, action)
+    (flow.kind, method, action, flow.unshipped.as_ref().map(|unshipped| unshipped.role.to_string()))
 }
 
 fn stem(flow: &Flow) -> String {
@@ -260,7 +262,7 @@ fn joined(flows: Vec<Flow>) -> Vec<Flow> {
 }
 
 fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
-    let mut by_part: std::collections::BTreeMap<(Option<String>, (&'static str, String, bool)), Vec<Flow>> = std::collections::BTreeMap::new();
+    let mut by_part: std::collections::BTreeMap<(Option<String>, MergeClass), Vec<Flow>> = std::collections::BTreeMap::new();
     for flow in flows {
         by_part.entry((flow.project.clone(), merge_class(&flow))).or_default().push(flow);
     }
@@ -557,5 +559,13 @@ mod tests {
         assert!(!alternatives(&[behaviour(&["s1"]), behaviour(&["s2"])], &flow, &deciding));
         let sent: HashSet<u64> = [5, 9].into_iter().collect();
         assert!(alternatives(&[behaviour(&["s1"]), behaviour(&["s2"])], &flow, &sent), "a sent command's handler decides for the flow");
+    }
+
+    #[test]
+    fn a_flow_from_code_that_never_ships_is_never_offered_to_merge_with_a_product_flow() {
+        let product = flow(Vec::new());
+        let mut bench = flow(Vec::new());
+        bench.unshipped = Some(crate::entry_exit::Unshipped { role: "benchmark", basis: "shipping-evidence", evidence: String::new() });
+        assert_ne!(merge_class(&product), merge_class(&bench));
     }
 }
