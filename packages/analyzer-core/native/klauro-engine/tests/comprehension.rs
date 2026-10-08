@@ -220,3 +220,26 @@ fn reading_one_record_on_either_arm_of_a_decision_is_one_step() {
     let reads = flow["steps"].as_array().unwrap().iter().filter(|step| step["kind"] == "read").count();
     assert_eq!(reads, 1, "{flow}");
 }
+
+#[test]
+fn a_route_that_always_refuses_says_why_and_never_responds() {
+    let index = common::read("mediated");
+    let steps_of = |surface: &str| -> Vec<(String, String)> {
+        index["comprehension"]["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|flow| flow["surface"] == surface)
+            .unwrap_or_else(|| panic!("{surface} is a flow"))["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| (step["kind"].as_str().unwrap().to_string(), step["doing"].as_str().unwrap_or_default().to_string()))
+            .collect()
+    };
+    assert_eq!(
+        steps_of("/refunds/legacy"),
+        vec![("refuse".to_string(), "Legacy refunds are disabled, use the new refunds route.".to_string())]
+    );
+    assert!(steps_of("/refunds/{orderId}/approve").iter().all(|(kind, _)| kind != "refuse"), "a refusal on one arm is not the behaviour");
+}

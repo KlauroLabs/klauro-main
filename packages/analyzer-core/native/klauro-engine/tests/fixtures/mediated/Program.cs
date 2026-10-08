@@ -17,4 +17,16 @@ app.MapGet("/refunds/lookup/{orderId}", async (int orderId, bool latest, RefundR
         return await refunds.Find(orderId - 1);
     }
 });
+app.MapPost("/refunds/legacy", (int orderId) =>
+{
+    throw new InvalidOperationException("Legacy refunds are disabled, use the new refunds route.");
+});
+app.MapPost("/refunds/{orderId}/approve", async (int orderId, RefundRepository refunds) =>
+{
+    if (orderId <= 0)
+    {
+        throw new ArgumentException("The order is not known to us.");
+    }
+    return await refunds.Find(orderId);
+});
 app.Run();

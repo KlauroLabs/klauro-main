@@ -62,6 +62,7 @@ pub struct Reader<'a> {
     exit_records: &'a HashMap<&'a str, Vec<&'a str>>,
     held: &'a HashSet<&'a str>,
     writes_fields: HashSet<&'a str>,
+    throws: HashMap<&'a str, &'a [String]>,
     events: &'a HashSet<&'a str>,
     requests: &'a HashMap<&'a str, Vec<&'a str>>,
     keepers: &'a HashSet<&'a str>,
@@ -227,6 +228,7 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
         "hand_off" => "Hand off",
         "send" => "Send",
         "notify" => "Notify",
+        "refuse" => "Refuse",
         "call" => "Call",
         "keep" => "Keep",
         "respond" => "Respond with",
@@ -278,6 +280,11 @@ impl<'a> Reader<'a> {
             .filter(|entry| !entry.metrics.writes.is_empty())
             .map(|entry| entry.unit.as_str())
             .collect();
+        let throws: HashMap<&str, &[String]> = metrics
+            .iter()
+            .filter(|entry| !entry.metrics.throws.is_empty())
+            .map(|entry| (entry.unit.as_str(), entry.metrics.throws.as_slice()))
+            .collect();
         let mut calls_of: HashMap<&str, Vec<&CallFact>> = HashMap::default();
         for call in calls {
             if let Some(caller) = call.caller.as_deref() {
@@ -309,7 +316,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, keepers, member_of, callers, cut: std::cell::Cell::new(false) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -550,9 +557,19 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        let thrown_here: &[String] = self.throws.get(id).copied().unwrap_or_default();
+        let mut refusals: Vec<(u32, u32, String, Option<String>)> = Vec::new();
         for call in calls {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
             if call.constructs && self.requests.contains_key(named) {
+                continue;
+            }
+            if call.constructs && thrown_here.iter().any(|thrown| crate::names::leaf(thrown) == named) {
+                if when_of(&call.context) == "always" {
+                    let said = call.literals.iter().find(|literal| literal.contains(' ')).map(|literal| literal.trim_matches(['"', '\'', '$']).to_string());
+                    refusals.push((call.line, call.column, named.to_string(), said));
+                    at_line.push((call.line, call.column, None, "always", None, Some(call)));
+                }
                 continue;
             }
             if requesting_lines.contains(&call.line) {
@@ -728,6 +745,12 @@ impl<'a> Reader<'a> {
                 }
                 None => {
                     if let Some(call) = call {
+                        if let Some((_, _, thrown, said)) =
+                            refusals.iter().find(|(held_line, held_column, ..)| *held_line == call.line && *held_column == call.column)
+                        {
+                            actions.push(Action { kind: "refuse", object: Some(thrown.clone()), doing: said.clone(), when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
+                            continue;
+                        }
                         if let Some((_, _, message)) =
                             request_calls.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column)
                         {
@@ -801,6 +824,9 @@ impl<'a> Reader<'a> {
         let mut settled: Vec<Action> = Vec::new();
         for mut action in actions {
             let changed = settled.iter().any(|held| matches!(held.kind, "change" | "create" | "remove" | "keep"));
+            if action.kind == "respond" && settled.iter().any(|held| held.kind == "refuse" && held.when == "always") {
+                continue;
+            }
             match action.kind {
                 "commit" if changed => continue,
                 "commit" => action.kind = "change",
