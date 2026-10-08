@@ -68,6 +68,7 @@ mod namespaced;
 mod paths;
 mod reach;
 mod records;
+mod rpc_clients;
 mod render_tree;
 mod published;
 mod requests;
@@ -1098,6 +1099,11 @@ fn read_it() {
     }
     addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
     requests::fold(&mut index.exit_points, &index.calls);
+    {
+        let spelled: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let called = rpc_clients::exits(&index.entry_points, &index.calls, &index.nodes, &index.locals, &index.imports, &spelled);
+        index.exit_points.extend(called);
+    }
     let asked_before = index.exit_points.len();
     let constants = constants::Constants::new(&index.locals);
     addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths, &constants);

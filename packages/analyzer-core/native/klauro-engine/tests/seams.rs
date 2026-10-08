@@ -23,11 +23,12 @@ fn a_call_to_another_parts_route_is_a_seam_into_the_flow_that_serves_it() {
     assert_eq!(
         seams,
         vec![
+            ("/cart/count".to_string(), "/Cart/GetCart".to_string(), "subproject:Shop.Cart".to_string(), into("/Cart/GetCart")),
             ("/checkout".to_string(), "POST /api/orders".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders")),
             ("/orders/summary".to_string(), "GET /api/orders/summary".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders/summary")),
             ("/orders/{id}".to_string(), "GET /api/orders/{id:int}".to_string(), "subproject:Shop.Orders".to_string(), into("/api/orders/{id:int}")),
         ],
-        "a group's prefix reaches every route on it, a path variable lands on a route variable, and each method keeps its own local"
+        "a group's prefix reaches every route on it, a path variable lands on a route variable, each method keeps its own local, and a generated service client lands on the service's rpc"
     );
     let checkout = flows.iter().find(|flow| flow["surface"] == "/checkout").unwrap();
     assert!(checkout["steps"].as_array().unwrap().iter().any(|step| !step["lands_in"].as_array().map(Vec::is_empty).unwrap_or(true)), "the calling step names where it lands: {checkout}");

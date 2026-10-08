@@ -2063,6 +2063,15 @@ impl<'a> Extractor<'a> {
             }
             return;
         }
+        if let Some((alias, target)) = aliased_import(text) {
+            let before = self.facts.imports.len();
+            self.record_import(&target, node);
+            if let Some(recorded) = self.facts.imports.get_mut(before) {
+                let imported = target.rsplit(['.', ':']).next().unwrap_or(target.as_str()).to_string();
+                recorded.names = vec![ImportSpecifier { local: alias, imported: Some(imported), namespace: false, default_import: false }];
+            }
+            return;
+        }
         let specifier = import_specifier(text);
         self.record_import(&specifier, node);
     }
@@ -3674,6 +3683,22 @@ fn reads_as_a_module(specifier: &str) -> bool {
     specifier
         .chars()
         .all(|letter| !letter.is_whitespace() && !matches!(letter, '"' | '\'' | '!' | '=' | '<' | '>'))
+}
+
+fn aliased_import(text: &str) -> Option<(String, String)> {
+    let mut cleaned = text.trim();
+    while let Some(rest) = IMPORT_WORDS
+        .iter()
+        .find_map(|word| cleaned.strip_prefix(word))
+        .filter(|rest| rest.starts_with(|next: char| next.is_whitespace()))
+    {
+        cleaned = rest.trim_start();
+    }
+    let (alias, target) = cleaned.trim_end_matches(';').split_once('=')?;
+    let alias = alias.trim();
+    let target = target.trim();
+    let plain = |held: &str, extra: &[char]| !held.is_empty() && held.chars().all(|letter| letter.is_alphanumeric() || letter == '_' || extra.contains(&letter));
+    (plain(alias, &[]) && plain(target, &['.', ':', '<', '>', ',', ' '])).then(|| (alias.to_string(), target.to_string()))
 }
 
 fn import_specifier(text: &str) -> String {

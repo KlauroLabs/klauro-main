@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option csharp_namespace = "Shop.Cart.Grpc";
+
+package CartApi;
+
+service Cart {
+    rpc GetCart(GetCartRequest) returns (CartResponse) {}
+}
+
+message GetCartRequest {
+    string shopper = 1;
+}
+
+message CartResponse {
+    int32 lines = 1;
+}
