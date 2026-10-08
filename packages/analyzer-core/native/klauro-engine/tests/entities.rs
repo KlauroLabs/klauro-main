@@ -196,7 +196,11 @@ fn a_view_with_more_fields_than_the_model_it_shares_a_name_with_never_replaces_t
 #[test]
 fn tables_map_to_the_types_their_mappings_configure_and_a_dropped_or_framework_table_is_no_record_of_its_own() {
     let held = entities("entities/ef_records");
-    assert_eq!(named(&held), vec!["AuditEntry", "Order", "ShopUser"], "a reverted or later-dropped table and the framework's own tables are not records");
+    assert_eq!(named(&held), vec!["AuditEntry", "Order", "ShippingLabel", "ShopUser", "Tag"], "a reverted, dropped or linking table and the framework's own tables are no record of their own");
+    let label = held.iter().find(|entity| entity["declared_as"] == "ShippingLabel").unwrap();
+    assert!(label["named_fields"].as_array().unwrap().iter().any(|field| field["name"] == "trackingcode"), "a renamed table still belongs to the set named after it: {label}");
+    let order = held.iter().find(|entity| entity["declared_as"] == "Order").unwrap();
+    assert!(order["references"].as_array().unwrap().iter().any(|reference| reference["entity"] == "Tag" && reference["cardinality"] == "N:M"), "a table of two keys links the records it keys: {order}");
     let user = held.iter().find(|entity| entity["declared_as"] == "ShopUser").unwrap();
     let fields: Vec<&str> = user["named_fields"].as_array().unwrap().iter().filter_map(|field| field["name"].as_str()).collect();
     assert!(fields.contains(&"email") && fields.contains(&"DisplayName"), "the framework's user table folds into the type that extends it: {fields:?}");

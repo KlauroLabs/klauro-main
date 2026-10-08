@@ -4313,7 +4313,7 @@ fn entities(
     let mut tabled: HashMap<&str, String> = HashMap::default();
     let mut accounted: HashSet<String> = HashSet::default();
     let candidate_ids: HashSet<&str> = candidates.iter().map(|node| node.id.as_str()).collect();
-    let mut declaring: HashMap<&str, Vec<&str>> = HashMap::default();
+    let mut declaring: HashMap<String, Vec<&str>> = HashMap::default();
     for table in declared_tables {
         let Some(by) = table.declared_by.as_deref() else {
             continue;
@@ -4323,7 +4323,7 @@ fn entities(
             _ => by,
         };
         if candidate_ids.contains(by) {
-            declaring.entry(table.named.as_str()).or_default().push(by);
+            declaring.entry(same_record(unquoted(&table.named))).or_default().push(by);
         }
     }
     let extended_by = |base: &str| -> Vec<&str> {
@@ -4347,18 +4347,28 @@ fn entities(
         let Some(owner) = extended_by(base).into_iter().next() else { continue };
         admitted.insert(owner);
         match standing {
-            "keeps" => declaring.entry(table).or_default().push(owner),
+            "keeps" => declaring.entry(same_record(table)).or_default().push(owner),
             _ => {
                 accounted.insert(table.to_string());
             }
         }
     }
     for (key, table) in &created {
-        if let Some(by) = declaring.get(key.as_str()) {
+        if let Some(by) = declaring.get(&same_record(unquoted(key))) {
             let mut by = by.clone();
             by.sort();
             if let Some(first) = by.first() {
-                tabled.insert(first, key.clone());
+                let fuller = tabled
+                    .get(first)
+                    .and_then(|held| created.get(held))
+                    .is_none_or(|held| table.columns.len() > held.columns.len());
+                if fuller {
+                    if let Some(was) = tabled.insert(first, key.clone()) {
+                        accounted.insert(was);
+                    }
+                } else {
+                    accounted.insert(key.clone());
+                }
             }
             accounted.extend(by.iter().skip(1).map(|_| key.clone()));
             admitted.extend(by);
@@ -4773,6 +4783,41 @@ fn entities(
             unshipped: None,
             persisted_by: None,
         });
+    }
+    let record_of: HashMap<String, String> = entities
+        .iter()
+        .map(|entity| (same_record(&entity.declared_as), entity.declared_as.clone()))
+        .collect();
+    let keyed = |column: &str| -> Option<String> {
+        let lowered = column.to_ascii_lowercase();
+        let stem = lowered.strip_suffix("_id").or_else(|| lowered.strip_suffix("id"))?;
+        record_of.get(&same_record(stem)).cloned()
+    };
+    let mut linking: Vec<(String, String, String)> = Vec::new();
+    created.retain(|named, table| {
+        let linked: Vec<String> = table.columns.iter().filter_map(|column| keyed(&column.named)).collect();
+        let a_link = linked.len() >= 2 && linked.len() == table.columns.len();
+        if a_link {
+            for (at, one) in linked.iter().enumerate() {
+                for other in linked.iter().skip(at + 1) {
+                    linking.push((named.clone(), one.clone(), other.clone()));
+                }
+            }
+        }
+        !a_link
+    });
+    for (named, one, other) in linking {
+        for (from, to) in [(&one, &other), (&other, &one)] {
+            if let Some(entity) = entities.iter_mut().find(|entity| &entity.declared_as == from) {
+                entity.references.push(Reference {
+                    field: named.clone(),
+                    entity: to.clone(),
+                    many: true,
+                    cardinality: Some(crate::entities::orm::MANY_TO_MANY),
+                    declared_by: "link table",
+                });
+            }
+        }
     }
     for (named, table) in created {
         entities.push(Entity {

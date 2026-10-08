@@ -14,6 +14,8 @@ public class OrderConfiguration : IEntityTypeConfiguration<Order>
 public class OrdersContext(DbContextOptions<OrdersContext> options) : IdentityDbContext<ShopUser>(options)
 {
     public DbSet<Order> Orders { get; set; }
+    public DbSet<ShippingLabel> PrintedLabels { get; set; }
+    public DbSet<Tag> Tags { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

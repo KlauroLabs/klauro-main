@@ -316,7 +316,7 @@ const RESERVED: &[&str] = &[
 ];
 
 fn spoken(word: &str) -> Option<String> {
-    let word = word.trim_matches(['"', '`', '[', ']', '\'', ',', ';', '(']);
+    let word = word.trim_matches(['"', '`', '[', ']', '\'', ',', ';', '(', ')']);
     if word.is_empty() || word.len() > 64 {
         return None;
     }
@@ -677,6 +677,30 @@ pub fn created_by_calls(
         }
         let dropping = drops_a_table(call);
         let mapping = held("maps_to_its_type", &crate::names::leaf(&call.callee).to_ascii_lowercase());
+        let renaming = held("renames", &crate::names::leaf(&call.callee).to_ascii_lowercase());
+        if renaming {
+            let valued = |kind: &'static str| {
+                call.literals.iter().find_map(|literal| {
+                    let (key, value) = literal.split_once('=')?;
+                    held(kind, &key.trim().to_ascii_lowercase()).then(|| named_in(value)).flatten()
+                })
+            };
+            if let (Some(from), Some(to)) = (valued("names_what_is_created"), valued("names_what_it_becomes")) {
+                creations.push((
+                    usize::MAX,
+                    Table {
+                        named: from.to_ascii_lowercase(),
+                        columns: Vec::new(),
+                        points_at: Vec::new(),
+                        file: call.file,
+                        line: call.line,
+                        declared_by: None,
+                        change: Change::RenamedTo(to.to_ascii_lowercase()),
+                    },
+                ));
+            }
+            continue;
+        }
         if !dropping && !mapping {
             continue;
         }
@@ -768,6 +792,41 @@ pub fn created_by_calls(
         }
     }
     creations.into_iter().map(|(_, table)| table).collect()
+}
+
+pub fn collected(nodes: &[crate::model::IndexNode], paths: &[&str]) -> Vec<Table> {
+    let mut types_named: rustc_hash::FxHashMap<&str, Vec<&crate::model::IndexNode>> = rustc_hash::FxHashMap::default();
+    for node in nodes.iter().filter(|node| node.kind.is_type()) {
+        types_named.entry(node.name.as_str()).or_default().push(node);
+    }
+    let mut found = Vec::new();
+    for node in nodes.iter().filter(|node| node.kind == crate::model::NodeKind::Property) {
+        if paths.get(node.file as usize).is_none_or(|path| crate::paths::is_test(path)) {
+            continue;
+        }
+        let Some((collection, inside)) = node.type_annotation.as_deref().and_then(|annotation| annotation.split_once('<')) else { continue };
+        if !held("collects_its_table", &crate::names::leaf(collection.trim()).to_ascii_lowercase()) {
+            continue;
+        }
+        let kept = inside.trim_end_matches('>').trim();
+        let kept = kept.rsplit('.').next().unwrap_or(kept);
+        let candidates = types_named.get(kept).cloned().unwrap_or_default();
+        let alongside: Vec<&crate::model::IndexNode> = candidates.iter().copied().filter(|candidate| candidate.project == node.project).collect();
+        let chosen = match (alongside.as_slice(), candidates.as_slice()) {
+            ([only], _) | ([], [only]) => only.id.clone(),
+            _ => continue,
+        };
+        found.push(Table {
+            named: node.name.to_ascii_lowercase(),
+            columns: Vec::new(),
+            points_at: Vec::new(),
+            file: node.file,
+            line: node.span.line,
+            declared_by: Some(chosen),
+            change: Change::Created,
+        });
+    }
+    found
 }
 
 pub static NAMES_ITS_TABLE: &[&str] = &["$table", "__tablename__", "_table_name", "db_table", "table_name"];

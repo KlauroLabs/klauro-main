@@ -18,3 +18,10 @@ reverts	down
 reverts	downgrade
 reverts	rollback
 reverts	revert
+collects_its_table	dbset
+collects_its_table	idbset
+collects_its_table	objectset
+renames	renametable
+renames	rename_table
+names_what_it_becomes	newname
+names_what_it_becomes	new_name

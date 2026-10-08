@@ -624,6 +624,7 @@ fn read_it() {
 
     let spelled_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     declared_tables.extend(tables::created_by_calls(&index.calls, &index.nodes, &index.locals, &spelled_paths));
+    declared_tables.extend(tables::collected(&index.nodes, &spelled_paths));
     let declared_tables = tables::standing(declared_tables, &spelled_paths);
     for (position, file) in index.files.iter_mut().enumerate() {
         file.extracted = extracted_files.contains(&(position as u32));
