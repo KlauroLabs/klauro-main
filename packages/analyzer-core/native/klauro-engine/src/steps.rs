@@ -475,10 +475,21 @@ impl<'a> Reader<'a> {
             .filter(|record| record.starts_with(char::is_uppercase))
             .filter(|record| {
                 let spoken = record.to_ascii_lowercase();
-                let last = crate::effects::words_of(record).pop().unwrap_or_default();
-                words.contains(&spoken) || words.contains(&singular(&spoken)) || (last.len() > 3 && words.contains(&last))
+                words.contains(&spoken) || words.contains(&singular(&spoken))
             })
             .collect();
+        if named.is_empty() {
+            named = self
+                .held
+                .iter()
+                .copied()
+                .filter(|record| record.starts_with(char::is_uppercase))
+                .filter(|record| {
+                    let last = crate::effects::words_of(record).pop().unwrap_or_default();
+                    last.len() > 3 && words.contains(&last)
+                })
+                .collect();
+        }
         named.sort_by_key(|record| std::cmp::Reverse(record.len()));
         named.first().map(|record| record.to_string())
     }

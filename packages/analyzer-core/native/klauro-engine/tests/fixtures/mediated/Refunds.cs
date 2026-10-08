@@ -39,4 +39,6 @@ public class IssueRefundCommandHandler(RefundRepository refunds) : IRequestHandl
 public class ShopContext : DbContext
 {
     public DbSet<Refund> Refunds => Set<Refund>();
+    public DbSet<QueuedRefund> QueuedRefunds => Set<QueuedRefund>();
+    public DbSet<AuditRefund> AuditRefunds => Set<AuditRefund>();
 }

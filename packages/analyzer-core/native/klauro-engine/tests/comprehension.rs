@@ -186,3 +186,24 @@ fn telling_listeners_through_the_parts_own_code_is_a_step() {
     let kinds: Vec<&str> = flow["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"notify"), "{kinds:?}");
 }
+
+#[test]
+fn a_repository_call_names_the_record_its_receiver_names_in_full() {
+    let index = common::read("mediated");
+    let read_of = |surface: &str| -> Vec<String> {
+        index["comprehension"]["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|flow| flow["surface"] == surface)
+            .unwrap_or_else(|| panic!("{surface} is a flow"))["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|step| step["kind"] == "read")
+            .map(|step| step["object"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(read_of("/refunds/queued"), vec!["QueuedRefund".to_string()]);
+    assert_eq!(read_of("/refunds/audit"), vec!["AuditRefund".to_string()]);
+}
