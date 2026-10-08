@@ -1,5 +1,5 @@
-first	prepare	begin,close,connect,dispose,open,prepare
-whole	prepare	addparameter,addwithvalue,createcommand
+first	prepare	access,begin,close,connect,dispose,ensure,lstat,mkdir,mkdtemp,open,prepare,realpath,stat
+whole	prepare	addparameter,addwithvalue,createcommand,existssync,pathexists,pathexistssync
 whole	read	executereader,executescalar,exists,keyexists,stringgetlease
 whole	write	executenonquery
 word	delete	clear,del,delete,destroy,drop,evict,expire,flush,purge,remove,rm,rmdir,truncate,unlink

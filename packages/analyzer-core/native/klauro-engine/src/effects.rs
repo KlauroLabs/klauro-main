@@ -132,7 +132,7 @@ pub fn published(
         }
         let Some(caller) = call.caller.as_deref() else { continue };
         let mut messages: Vec<&str> = Vec::new();
-        for written in &call.literals {
+        for written in call.literals.iter().filter(|written| !written.trim_start().starts_with(['/', '"', '\'', '`']) && !written.trim().contains(char::is_whitespace)) {
             let direct = received
                 .get(type_named(written))
                 .copied()

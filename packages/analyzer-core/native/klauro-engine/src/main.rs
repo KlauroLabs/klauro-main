@@ -1472,6 +1472,14 @@ fn read_it() {
     index.health = Some(health);
 
     let comprehend_started = Instant::now();
+    let programs: rustc_hash::FxHashMap<(u32, u32), String> = match (index.composition.as_ref(), index.partition.as_ref()) {
+        (Some(composition), Some(split)) => composition
+            .started
+            .iter()
+            .filter_map(|(at, part)| Some((*at, split.sub_projects.iter().find(|held| &held.id == part)?.display_name.clone())))
+            .collect(),
+        _ => rustc_hash::FxHashMap::default(),
+    };
     let comprehension = comprehend::derive(
         &index.nodes,
         &paths,
@@ -1517,6 +1525,7 @@ fn read_it() {
             .unwrap_or_default(),
         &open_calls,
         &index.locals,
+        &programs,
     );
     if audit::asked() {
         let looked = audit::look(
@@ -1620,7 +1629,7 @@ fn read_it() {
         let part_of_file: rustc_hash::FxHashMap<u32, &str> = index.nodes.iter().filter_map(|node| Some((node.file, node.project.as_deref()?))).collect();
         let none = rustc_hash::FxHashMap::default();
         let started = index.composition.as_ref().map(|composition| &composition.started).unwrap_or(&none);
-        seams::join(&mut comprehension, &index.entry_points, &index.exit_points, &paths, &part_of_file, &testing, started, &index.nodes, &index.edges);
+        seams::join(&mut comprehension, &index.entry_points, &index.exit_points, &paths, &part_of_file, &testing, started, &index.nodes, &index.edges, &index.calls);
     }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(

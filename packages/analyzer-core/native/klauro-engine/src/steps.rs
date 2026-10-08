@@ -74,6 +74,7 @@ pub struct Reader<'a> {
     constructors: HashMap<u32, Vec<u32>>,
     kept_in: HashMap<&'a str, Option<&'a str>>,
     declared_as: &'a HashMap<&'a str, HashSet<&'a str>>,
+    programs: &'a HashMap<(u32, u32), String>,
     carrying: std::cell::RefCell<Vec<(Option<&'a str>, u32)>>,
     depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
@@ -81,6 +82,10 @@ pub struct Reader<'a> {
 }
 
 const CARRIED_AT_MOST: u32 = 1;
+static STRONGER: &[&str] = &["keep", "change", "create", "remove", "read"];
+const PROGRAM_NAMED_AT_MOST: usize = 40;
+static ANOTHER_PROGRAM: &str = "another program";
+static PROGRAM_NAMING: &str = include_str!("../data/program_naming.tsv");
 
 static HANDS_ON: &[&str] = &["dispatch", "emit", "execute", "handle", "invoke", "publish", "raise", "send", "sendasync", "publishasync", "dispatchasync", "trigger"];
 
@@ -242,6 +247,7 @@ pub(crate) fn labelled(kind: &str, object: Option<&str>) -> String {
         "refuse" => "Refuse",
         "navigate" => "Go to",
         "call" => "Call",
+        "run" => "Run",
         "keep" => "Keep",
         "respond" => "Respond with",
         _ => "Do",
@@ -307,6 +313,7 @@ impl<'a> Reader<'a> {
         writing_in: &'a HashMap<&'a str, Vec<&'a str>>,
         reading_in: &'a HashMap<&'a str, Vec<&'a str>>,
         declared_as: &'a HashMap<&'a str, HashSet<&'a str>>,
+        programs: &'a HashMap<(u32, u32), String>,
     ) -> Self {
         let writes_fields: HashSet<&str> = metrics
             .iter()
@@ -372,7 +379,7 @@ impl<'a> Reader<'a> {
                 _ => (unit, None),
             })
             .collect();
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -401,6 +408,63 @@ impl<'a> Reader<'a> {
             [only] => Some((*only).to_string()),
             many => Some(many.join(" and ")),
         }
+    }
+
+    fn program_of(&self, exit: &ExitPoint) -> String {
+        if let Some(program) = self.programs.get(&(exit.file, exit.line)) {
+            return program.clone();
+        }
+        let named = |literal: &str| -> Option<String> {
+            let bare = literal.trim().trim_matches(['"', '\'', '`']);
+            let leaf = bare.rsplit(['/', '\\']).next().unwrap_or(bare);
+            let plain = !leaf.is_empty() && leaf.len() <= PROGRAM_NAMED_AT_MOST && leaf.chars().next().is_some_and(char::is_alphabetic) && leaf.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '-' | '_' | '.'));
+            plain.then(|| leaf.to_string())
+        };
+        let beside: Vec<&&CallFact> = self.calls_of.get(exit.source.as_str()).into_iter().flatten().filter(|call| call.line == exit.line).collect();
+        let helper = || {
+            beside
+                .iter()
+                .filter(|call| crate::names::leaf(&call.callee) != crate::names::leaf(&exit.operation))
+                .find_map(|call| {
+                    let words: Vec<String> = crate::effects::words_of(&call.callee)
+                        .into_iter()
+                        .filter(|word| !PROGRAM_NAMING.lines().any(|noise| noise == word))
+                        .collect();
+                    (!words.is_empty()).then(|| words.join(" "))
+                })
+        };
+        beside
+            .iter()
+            .flat_map(|call| call.literals.iter())
+            .find_map(|literal| named(literal))
+            .or_else(helper)
+            .unwrap_or_else(|| ANOTHER_PROGRAM.to_string())
+    }
+
+    fn condensed(&self, within: Vec<Action>) -> Vec<Action> {
+        let named = |action: &Action| action.object.as_deref().is_some_and(|object| self.held.contains(object));
+        if !within.iter().any(|action| named(action) && STRONGER.contains(&action.kind)) {
+            return within;
+        }
+        let mut kept: Vec<Action> = Vec::new();
+        for action in within {
+            if !named(&action) {
+                if matches!(action.kind, "hand_off" | "raise" | "send" | "notify" | "run" | "refuse") || (action.kind == "call" && action.writes) {
+                    kept.push(action);
+                }
+                continue;
+            }
+            let rank = |kind: &str| STRONGER.iter().position(|held| *held == kind).unwrap_or(STRONGER.len());
+            match kept.iter_mut().find(|held| held.object == action.object) {
+                Some(held) if rank(action.kind) < rank(held.kind) => {
+                    held.kind = action.kind;
+                    held.writes |= action.writes;
+                }
+                Some(_) => {}
+                None => kept.push(action),
+            }
+        }
+        kept
     }
 
     fn carried(&self) -> Option<String> {
@@ -445,7 +509,7 @@ impl<'a> Reader<'a> {
                     _ => Some(("read", place)),
                 }
             }
-            "process" => Some(("call", Some(exit.target.clone()))),
+            "process" => Some(("run", Some(self.program_of(exit)))),
             _ => None,
         }
     }
@@ -891,7 +955,7 @@ impl<'a> Reader<'a> {
                                 (action.kind == "read").then_some(action.object.as_deref()).flatten().filter(|object| self.held.contains(object)).map(str::to_string)
                             });
                             match (matters, within.is_empty()) {
-                                (true, _) => actions.extend(within),
+                                (true, _) => actions.extend(self.condensed(within)),
                                 (false, true) => {}
                                 (false, false) if !checking && looked_up.is_some() => actions.push(Action {
                                     kind: "read",

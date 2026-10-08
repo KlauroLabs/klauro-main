@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net9.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup><ItemGroup><PackageReference Include="Bus.Wrapper" Version="1.0.0" /></ItemGroup><ItemGroup><ProjectReference Include="../Jobs.Contracts/Jobs.Contracts.csproj" /></ItemGroup></Project>

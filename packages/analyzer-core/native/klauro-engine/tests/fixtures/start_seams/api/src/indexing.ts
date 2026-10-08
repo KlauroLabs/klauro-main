@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
@@ -9,6 +10,7 @@ function indexerPath(): string {
 }
 
 export async function indexRepository(root: string): Promise<string> {
-  const { stdout } = await run(indexerPath(), [root]);
+  const tracked = fs.existsSync(path.join(root, '.git'));
+  const { stdout } = await run(indexerPath(), [root, tracked ? 'tracked' : 'plain']);
   return stdout;
 }

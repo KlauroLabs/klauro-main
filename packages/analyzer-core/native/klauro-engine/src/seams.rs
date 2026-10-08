@@ -7,6 +7,26 @@ use crate::model::{EdgeKind, IndexEdge, IndexNode};
 
 const REACH_AT_MOST: usize = 20_000;
 
+fn channel_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut held = String::new();
+    let mut before: Option<char> = None;
+    for letter in text.chars() {
+        let breaks = !letter.is_alphanumeric() || (letter.is_uppercase() && before.is_some_and(|was| was.is_lowercase() || was.is_ascii_digit()));
+        if breaks && !held.is_empty() {
+            words.push(std::mem::take(&mut held));
+        }
+        if letter.is_alphanumeric() {
+            held.push(letter.to_ascii_lowercase());
+        }
+        before = Some(letter);
+    }
+    if !held.is_empty() {
+        words.push(held);
+    }
+    words
+}
+
 fn reached<'a>(starts: &[&'a str], next: &HashMap<&'a str, Vec<&'a str>>, stops: &HashSet<&'a str>) -> Vec<&'a str> {
     let mut seen: HashSet<&str> = starts.iter().copied().collect();
     let mut queue: Vec<&str> = starts.to_vec();
@@ -30,6 +50,7 @@ pub struct Seam {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     pub via: &'static str,
+    pub by: &'static str,
     pub carries: String,
     pub to: String,
     pub to_entry: String,
@@ -47,6 +68,7 @@ pub fn join(
     started: &HashMap<(u32, u32), String>,
     nodes: &[IndexNode],
     edges: &[IndexEdge],
+    calls: &[crate::model::CallFact],
 ) {
     let callbacks: HashSet<&str> = nodes.iter().filter(|node| node.callback_of.is_some()).map(|node| node.id.as_str()).collect();
     let mut next: HashMap<&str, Vec<&str>> = HashMap::default();
@@ -125,6 +147,7 @@ pub fn join(
                         from_flow: flow.id.clone(),
                         step: step_id.clone(),
                         via: "start",
+                        by: "program",
                         carries: entry.name.clone(),
                         to: target.clone(),
                         to_entry: entry.id.clone(),
@@ -160,6 +183,7 @@ pub fn join(
                         "rpc" => "rpc",
                         _ => "http",
                     },
+                    by: "route",
                     carries: format!("{} {}", entry.method.as_deref().unwrap_or("").to_ascii_uppercase(), entry.path.as_deref().unwrap_or_default()).trim().to_string(),
                     to: part.to_string(),
                     to_entry: entry.id.clone(),
@@ -170,21 +194,73 @@ pub fn join(
         flow.leads_into.sort();
         flow.leads_into.dedup();
     }
+    let node_of: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut said_in: HashMap<&str, HashSet<String>> = HashMap::default();
+    let mut said_at: HashMap<(u32, u32), HashSet<String>> = HashMap::default();
+    for call in calls {
+        let words: HashSet<String> = call.literals.iter().flat_map(|literal| channel_words(literal)).collect();
+        if words.is_empty() {
+            continue;
+        }
+        said_at.entry((call.file, call.line)).or_default().extend(words.iter().cloned());
+        let owner = call.caller.as_deref().and_then(|caller| node_of.get(caller)).and_then(|unit| match unit.kind.is_type() {
+            true => Some(unit.id.as_str()),
+            false => unit.parent.as_deref(),
+        });
+        if let Some(owner) = owner {
+            said_in.entry(owner).or_default().extend(words);
+        }
+    }
+    let handler_words = |entry: &str| -> HashSet<String> {
+        handler_of
+            .get(entry)
+            .and_then(|handler| node_of.get(handler))
+            .and_then(|unit| unit.parent.as_deref())
+            .and_then(|owner| said_in.get(owner))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let message_exits: Vec<&ExitPoint> = exits.iter().filter(|exit| exit.kind == "message").collect();
     for flow in &comprehension.flows {
         let Some(home) = flow.runs_in.as_deref().or(flow.project.as_deref()) else { continue };
         for step in flow.steps.iter().filter(|step| matches!(step.kind, "raise" | "hand_off")) {
             let Some(message) = step.object.as_deref() else { continue };
-            for into in &flow.leads_into {
-                let Some(to) = entry_part.get(into.as_str()).copied() else { continue };
-                let named = entries.iter().find(|entry| &entry.id == into).map(|entry| entry.name.as_str()).unwrap_or_default();
-                if to == home || testing.contains(to) || !named.contains(message.trim_end_matches("IntegrationEvent")) {
+            let candidates: Vec<&String> = flow
+                .leads_into
+                .iter()
+                .filter(|into| {
+                    let Some(to) = entry_part.get(into.as_str()).copied() else { return false };
+                    let named = entries.iter().find(|entry| &entry.id == *into).map(|entry| entry.name.as_str()).unwrap_or_default();
+                    to != home && !testing.contains(to) && named.contains(message.trim_end_matches("IntegrationEvent"))
+                })
+                .collect();
+            let published: HashSet<String> = message_exits
+                .iter()
+                .filter(|exit| step.regions.iter().any(|region| region.unit == exit.source && region.start_line <= exit.line && exit.line <= region.end_line.max(region.start_line)))
+                .filter_map(|exit| said_at.get(&(exit.file, exit.line)))
+                .flatten()
+                .cloned()
+                .collect();
+            let heard: Vec<HashSet<String>> = candidates.iter().map(|into| handler_words(into)).collect();
+            let everywhere: HashSet<String> = heard.iter().skip(1).fold(heard.first().cloned().unwrap_or_default(), |shared, words| shared.intersection(words).cloned().collect());
+            let scores: Vec<usize> = heard.iter().map(|words| words.iter().filter(|word| !everywhere.contains(*word) && published.contains(*word)).count()).collect();
+            let best = scores.iter().copied().max().unwrap_or(0);
+            let by = match (candidates.len() > 1, best > 0) {
+                (false, _) => "message",
+                (true, true) => "channel",
+                (true, false) => "message type",
+            };
+            for (into, score) in candidates.into_iter().zip(scores) {
+                if by == "channel" && score < best {
                     continue;
                 }
+                let Some(to) = entry_part.get(into.as_str()).copied() else { continue };
                 seams.push(Seam {
                     from: home.to_string(),
                     from_flow: flow.id.clone(),
                     step: Some(step.id.clone()),
                     via: "message",
+                    by,
                     carries: message.to_string(),
                     to: to.to_string(),
                     to_entry: into.clone(),

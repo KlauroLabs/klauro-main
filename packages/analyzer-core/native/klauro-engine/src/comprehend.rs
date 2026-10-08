@@ -1980,6 +1980,7 @@ pub fn derive(
     raised: &HashMap<&str, Vec<&str>>,
     open_calls: &HashMap<String, u32>,
     locals: &[LocalBinding],
+    programs: &HashMap<(u32, u32), String>,
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -2425,6 +2426,7 @@ pub fn derive(
         &entity_of,
         &read_of,
         &declared_as,
+        programs,
     );
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();

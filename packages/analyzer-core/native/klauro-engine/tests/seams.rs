@@ -45,3 +45,12 @@ fn starting_another_parts_program_through_a_wrapped_launcher_is_a_seam_into_that
     assert_eq!(started, vec![("subproject:api", "start", "subproject:indexer")]);
     assert!(seams[0]["to_flows"].as_array().unwrap().iter().any(|flow| flow.as_str().unwrap().contains("indexer/src/main.rs")), "{seams:?}");
 }
+
+#[test]
+fn starting_a_program_is_a_step_that_names_the_program_and_checking_for_a_file_is_no_step() {
+    let index = common::read("start_seams");
+    let flow = index["comprehension"]["flows"].as_array().unwrap().iter().find(|flow| flow["surface"] == "/repositories/index").unwrap();
+    let steps: Vec<(&str, &str)> = flow["steps"].as_array().unwrap().iter().map(|step| (step["kind"].as_str().unwrap(), step["object"].as_str().unwrap_or_default())).collect();
+    assert!(steps.iter().any(|(kind, object)| *kind == "run" && !object.is_empty() && *object != "another program"), "{steps:?}");
+    assert!(steps.iter().all(|(kind, _)| *kind != "read"), "an existence check prepares, it reads no record: {steps:?}");
+}
