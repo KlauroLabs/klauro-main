@@ -173,3 +173,16 @@ fn a_command_sent_through_a_mediator_is_a_step_and_its_handler_acts_on_the_recor
         .collect();
     assert_eq!(steps, expected, "one step per action: the dispatcher, the repository's internals and the commit are not steps");
 }
+
+#[test]
+fn telling_listeners_through_the_parts_own_code_is_a_step() {
+    let index = common::read("mediated");
+    let flow = index["comprehension"]["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|flow| flow["surface"] == "/refunds/{orderId}/remind")
+        .expect("reminding is a flow");
+    let kinds: Vec<&str> = flow["steps"].as_array().unwrap().iter().map(|step| step["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"notify"), "{kinds:?}");
+}

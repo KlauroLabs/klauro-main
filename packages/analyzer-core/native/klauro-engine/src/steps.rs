@@ -226,6 +226,7 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
         "remove" => "Remove",
         "hand_off" => "Hand off",
         "send" => "Send",
+        "notify" => "Notify",
         "call" => "Call",
         "keep" => "Keep",
         "respond" => "Respond with",
@@ -544,7 +545,10 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if requesting_lines.contains(&call.line) {
-                if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
+                if let Some(at) = targets
+                    .iter()
+                    .position(|target| crate::names::leaf(&self.nodes[*target as usize].name) == named)
+                {
                     targets.remove(at);
                 }
                 continue;
@@ -661,6 +665,7 @@ impl<'a> Reader<'a> {
                         action.arms = here.clone();
                         actions.push(action);
                     }
+                    let before = actions.len();
                     if visited.insert(target) {
                         let shared = self.callers.get(&target).copied().unwrap_or(0) >= SHARED_BY;
                         let named = self.nodes[target as usize].name.as_str();
@@ -669,7 +674,7 @@ impl<'a> Reader<'a> {
                             self.walk(target, depth + 1, context, &here, visited, &mut within);
                             let checking = a_check(named);
                             let persists = within.iter().any(|action| match action.kind {
-                                "hand_off" | "raise" | "send" | "keep" | "remove" | "commit" => true,
+                                "hand_off" | "raise" | "send" | "notify" | "keep" | "remove" | "commit" => true,
                                 "change" => action.object.as_deref().is_some_and(|object| self.held.contains(object)) || action.writes,
                                 "call" => action.writes,
                                 _ => false,
@@ -703,6 +708,11 @@ impl<'a> Reader<'a> {
                         } else {
                             self.walk(target, depth + 1, context, &here, visited, actions);
                         }
+                    }
+                    let callee = self.nodes[target as usize].name.as_str();
+                    let own = !self.nodes[target as usize].id.starts_with("package:") && !self.nodes[target as usize].id.starts_with("runtime:");
+                    if own && actions.len() == before && !callee.is_empty() && crate::effects::by_words(callee) == Some("send") {
+                        actions.push(Action { kind: "notify", object: None, doing: Some(spoken(callee)), when: context, arms: here.clone(), writes: true, unit, line: shown_line(line) });
                     }
                 }
                 None => {
