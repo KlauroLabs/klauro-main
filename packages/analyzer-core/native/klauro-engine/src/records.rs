@@ -72,29 +72,34 @@ pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str
     }
     let mut asked: Vec<(String, String)> = Vec::new();
     let mut listed: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::default();
     for (part, positions) in by_part {
         let lines: Vec<String> = positions.iter().enumerate().map(|(number, position)| told(&entities[*position], number + 1, &held_by, &used_in)).collect();
         let named = part_names.get(part.as_str()).copied().unwrap_or(part.as_str());
         let key = format!("{part}\u{1}{}", lines.join("\n"));
         asked.push((key.clone(), format!("Part: {named}\n{}", lines.join("\n"))));
+        counts.insert(key.clone(), positions.len());
         listed.push((key, positions));
     }
     let answered = crate::memory::each("record standing", crate::author::RECORDS_ASKED, &asked, |missing| {
         crate::author::asking(|| {
             missing
                 .par_iter()
-                .filter_map(|(key, prompt)| crate::author::bookkeeping_of(prompt).map(|held| (key.clone(), held)))
+                .filter_map(|(key, prompt)| crate::author::bookkeeping_of(prompt, counts.get(key).copied().unwrap_or(0)).map(|held| (key.clone(), held)))
                 .collect()
         })
     });
     let mut standing: HashMap<String, &'static str> = HashMap::default();
     for (key, positions) in listed {
         let Some(answer) = answered.get(&key) else { continue };
-        let bookkeeping: HashSet<usize> = serde_json::from_value::<Vec<usize>>(answer["bookkeeping"].clone()).unwrap_or_default().into_iter().collect();
-        for (number, position) in positions.iter().enumerate() {
-            let said = match bookkeeping.contains(&(number + 1)) {
-                true => BOOKKEEPING,
-                false => ABOUT,
+        let kinds: Vec<String> = serde_json::from_value(answer["kinds"].clone()).unwrap_or_default();
+        if kinds.len() != positions.len() {
+            continue;
+        }
+        for (kind, position) in kinds.iter().zip(positions.iter()) {
+            let said = match kind.as_str() {
+                "bookkeeping" => BOOKKEEPING,
+                _ => ABOUT,
             };
             standing.insert(entities[*position].declared_as.clone(), said);
         }

@@ -817,18 +817,28 @@ Group together only the ones a person could not tell apart: the same action on t
 Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
 When in doubt keep them apart. Every number appears in exactly one group.";
 
-pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the code that keeps it. \
-Some are what the system is about: things its users create, own or work with and would know by name, including the lists they browse or choose from (kinds, categories, brands) and accounts they link from other services. \
-Others are the system's own bookkeeping, kept only so the software itself runs: locks, caches, attempts and retries, logs and audit trails of its own operations, messages waiting to be sent, keys that stop one request being handled twice, indexes and manifests, sign-in sessions, tokens and throttles. \
-List the numbers of the bookkeeping records. When in doubt, a record is what the system is about.";
+pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the flows that use it. \
+For each record decide who it is kept for. \
+about: the system exists to keep it for its users. Users create, own, ask for, pay, receive or are told about it, choose from it (kinds, categories, brands), or link it from another service; movements of money or goods and the plans behind them are always about. \
+bookkeeping: the software keeps it only for itself and no user ever sees it: locks, caches, attempts and retries, logs of its own operations, messages queued to send, keys that stop one request being handled twice, indexes and manifests, sign-in sessions, tokens and throttles, switches and settings that steer the software. \
+When in doubt, answer about. Give one answer per record, in the order listed.";
 
-pub fn bookkeeping_of(prompt: &str) -> Option<serde_json::Value> {
+pub fn bookkeeping_of(prompt: &str, records: usize) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"bookkeeping\":[2,5]}}");
-    answered::<serde_json::Value>(&asked, 400, &proposing(), "bookkeeping", 0, DESCRIBING_ASK)
+    let asked = format!("{prompt}\n\n{RECORDS_ASKED}\n\nReturn JSON only: {{\"kinds\":[\"about\",\"bookkeeping\"]}}");
+    for _ in 0..RECORDS_ASKED_AT_MOST {
+        let answer = answered::<serde_json::Value>(&asked, 300 + 12 * records as u32, &proposing(), "kinds", records, DESCRIBING_ASK)?;
+        let told = answer["kinds"].as_array().map(|kinds| kinds.len()).unwrap_or(0);
+        if told == records {
+            return Some(answer);
+        }
+    }
+    None
 }
+
+const RECORDS_ASKED_AT_MOST: usize = 3;
 
 pub fn behaviours_of(prompt: &str) -> Option<serde_json::Value> {
     if !asked() {
@@ -1518,10 +1528,10 @@ fn shaped(of: &str) -> serde_json::Value {
             }}},
             "required": ["behaviours"],
         }),
-        "bookkeeping" => serde_json::json!({
+        "kinds" => serde_json::json!({
             "type": "object",
-            "properties": {"bookkeeping": {"type": "array", "items": {"type": "integer"}}},
-            "required": ["bookkeeping"],
+            "properties": {"kinds": {"type": "array", "items": {"type": "string", "enum": ["about", "bookkeeping"]}}},
+            "required": ["kinds"],
         }),
         "together" => serde_json::json!({
             "type": "object",
