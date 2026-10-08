@@ -1,0 +1,16 @@
+call	GoToAsync
+call	Navigate
+call	NavigateAsync
+call	NavigateTo
+call	NavigateToAsync
+call	PopAsync
+call	PopModalAsync
+call	PushAsync
+call	PushModalAsync
+call	navigate
+call	navigateByUrl
+call	push
+call	replace
+receiver	navigat
+receiver	router
+receiver	shell

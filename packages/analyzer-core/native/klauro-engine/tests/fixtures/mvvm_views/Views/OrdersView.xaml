@@ -6,5 +6,6 @@
              x:DataType="viewmodels:OrdersViewModel">
     <Button Text="Cancel" Command="{Binding CancelOrderCommand}" />
     <Button Text="Refresh" Command="{Binding Source={RelativeSource AncestorType={x:Type viewmodels:OrdersViewModel}}, Path=RefreshCommand}" />
+    <Button Text="Checkout" Command="{Binding CheckoutCommand}" />
     <Label Text="{Binding Title}" />
 </ContentPage>

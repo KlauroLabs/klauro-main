@@ -1343,10 +1343,20 @@ pub fn kept_by_a_store(
             }
         }
     }
+    let mut returns_in: HashMap<(u32, &str), &str> = HashMap::default();
+    for node in nodes.iter().filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method)) {
+        if let Some(returned) = node.signature.as_ref().and_then(|signature| signature.return_type.as_deref()) {
+            let returned = returned.trim();
+            let returned = ["Task<", "ValueTask<"].iter().find_map(|wrapper| returned.strip_prefix(wrapper)).unwrap_or(returned);
+            returns_in.entry((node.file, node.name.as_str())).or_insert(plain_type(returned.trim_end_matches('>')));
+        }
+    }
     let mut typed_local: HashMap<(&str, &str), &str> = HashMap::default();
     for local in locals {
         if let Some(annotation) = local.annotation.as_deref().or(local.constructed.as_deref()) {
             typed_local.insert((local.unit.as_str(), local.name.as_str()), plain_type(annotation));
+        } else if let Some(returned) = local.from_call.as_deref().and_then(|called| returns_in.get(&(local.file, names::leaf(called)))) {
+            typed_local.insert((local.unit.as_str(), local.name.as_str()), returned);
         }
     }
     let mut found = Vec::new();

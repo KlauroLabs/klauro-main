@@ -131,7 +131,7 @@ fn a_view_bound_to_a_model_loads_through_it_and_each_bound_command_is_an_action(
         .map(|entry| entry["name"].as_str().unwrap())
         .collect();
     actions.sort();
-    assert_eq!(actions, vec!["OrdersView.CancelOrder", "OrdersView.Refresh"]);
+    assert_eq!(actions, vec!["OrdersView.CancelOrder", "OrdersView.Checkout", "OrdersView.Refresh"]);
     let flows = index["comprehension"]["flows"].as_array().unwrap();
     let screen = flows.iter().find(|flow| flow["operation"] == "OrdersView").expect("the screen is a flow");
     assert!(screen["path"].as_array().unwrap().iter().any(|step| step["unit"].as_str().unwrap().contains("InitializeAsync")), "{screen}");
@@ -139,4 +139,18 @@ fn a_view_bound_to_a_model_loads_through_it_and_each_bound_command_is_an_action(
         screen["steps"].as_array().unwrap().iter().all(|step| !step["label"].as_str().unwrap_or_default().contains("property")),
         "property-change notification is plumbing: {screen}"
     );
+}
+
+#[test]
+fn an_action_calls_out_through_a_client_its_own_code_made_and_then_goes_to_a_screen() {
+    let index = common::read("mvvm_views");
+    let flows = index["comprehension"]["flows"].as_array().unwrap();
+    let checkout = flows.iter().find(|flow| flow["operation"] == "OrdersView.Checkout").expect("the action is a flow");
+    let steps: Vec<(&str, &str)> = checkout["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| (step["kind"].as_str().unwrap(), step["object"].as_str().unwrap_or_default()))
+        .collect();
+    assert_eq!(steps, vec![("call", "/orders/checkout"), ("navigate", "//Main/Orders")]);
 }

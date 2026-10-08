@@ -230,6 +230,7 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
         "send" => "Send",
         "notify" => "Notify",
         "refuse" => "Refuse",
+        "navigate" => "Go to",
         "call" => "Call",
         "keep" => "Keep",
         "respond" => "Respond with",
@@ -246,6 +247,17 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
 }
 
 static PLUMBING: &str = include_str!("../data/plumbing_calls.tsv");
+static NAVIGATION: &str = include_str!("../data/navigation_calls.tsv");
+
+fn navigates(call: &CallFact) -> bool {
+    let named = crate::names::leaf(&call.callee);
+    let held = |kind: &'static str| NAVIGATION.lines().filter_map(move |line| line.strip_prefix(kind).and_then(|rest| rest.strip_prefix('\t')));
+    let routed = |receiver: &str| {
+        let lowered = receiver.to_ascii_lowercase();
+        held("receiver").any(|word| lowered.contains(word))
+    };
+    held("call").any(|call| call == named) && call.receiver.as_deref().is_some_and(routed)
+}
 
 fn plumbing(named: &str) -> bool {
     PLUMBING.lines().any(|held| held == named)
@@ -573,9 +585,19 @@ impl<'a> Reader<'a> {
         }
         let thrown_here: &[String] = self.throws.get(id).copied().unwrap_or_default();
         let mut refusals: Vec<(u32, u32, String, Option<String>)> = Vec::new();
+        let mut navigations: Vec<(u32, u32, Option<String>)> = Vec::new();
         for call in calls {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
             if call.constructs && self.requests.contains_key(named) {
+                continue;
+            }
+            if navigates(call) {
+                if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
+                    targets.remove(at);
+                }
+                let place = call.literals.iter().find(|literal| literal.contains('/') || literal.starts_with('"')).map(|literal| literal.trim_matches(['"', '\'']).to_string());
+                navigations.push((call.line, call.column, place));
+                at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
                 continue;
             }
             if plumbing(named) {
@@ -825,6 +847,10 @@ impl<'a> Reader<'a> {
                 }
                 None => {
                     if let Some(call) = call {
+                        if let Some((_, _, place)) = navigations.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column) {
+                            actions.push(Action { kind: "navigate", object: place.clone(), doing: None, when: context, arms: here.clone(), writes: false, unit, line: shown_line(line) });
+                            continue;
+                        }
                         if let Some((_, _, thrown, said)) =
                             refusals.iter().find(|(held_line, held_column, ..)| *held_line == call.line && *held_column == call.column)
                         {
