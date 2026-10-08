@@ -400,7 +400,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         for (at, behaviour) in behaviours.iter().enumerate() {
             let mut shaped = flow.clone();
             if several {
-                shaped.id = format!("{}#{}", flow.id, at + 1);
+                shaped.id = format!("{}:behaviour:{}", flow.id, at + 1);
             }
             shaped.name = Some(behaviour.name.trim().to_string()).filter(|held| !held.is_empty());
             shaped.description = Some(behaviour.outcome.trim().to_string()).filter(|held| !held.is_empty());
@@ -425,7 +425,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         }
     }
     let mut flows = merged(settled, facts);
-    let base_of = |id: &str| id.split_once('#').map(|(base, _)| base.to_string()).unwrap_or_else(|| id.to_string());
+    let base_of = |id: &str| id.rsplit_once(":behaviour:").map(|(base, _)| base.to_string()).unwrap_or_else(|| id.to_string());
     let mut siblings: HashMap<String, usize> = HashMap::default();
     for flow in &flows {
         *siblings.entry(base_of(&flow.id)).or_default() += 1;
