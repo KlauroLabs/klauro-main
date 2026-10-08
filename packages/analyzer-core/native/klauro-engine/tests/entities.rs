@@ -215,3 +215,17 @@ fn tables_map_to_the_types_their_mappings_configure_and_a_dropped_or_framework_t
     let fields: Vec<&str> = user["named_fields"].as_array().unwrap().iter().filter_map(|field| field["name"].as_str()).collect();
     assert!(fields.contains(&"email") && fields.contains(&"DisplayName"), "the framework's user table folds into the type that extends it: {fields:?}");
 }
+
+#[test]
+fn a_record_declared_in_a_library_is_borrowed_by_each_part_whose_flows_keep_or_read_it() {
+    let held = entities("borrowed_records");
+    let invoice = held.iter().find(|entity| entity["declared_as"] == "Invoice").unwrap();
+    assert_eq!(invoice["project"], "subproject:Shop.Domain", "a record is defined where its type is declared");
+    let uses: Vec<(&str, bool, bool)> = invoice["used_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|used| (used["project"].as_str().unwrap(), used["borrowed"].as_bool().unwrap(), used["keeps"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(uses, vec![("subproject:Shop.Api", true, true), ("subproject:Shop.Reports", true, false)]);
+}

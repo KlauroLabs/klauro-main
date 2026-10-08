@@ -144,6 +144,8 @@ pub struct Entity {
     pub part_of: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub standing: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<crate::records::Use>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -4634,6 +4636,7 @@ fn entities(
             persisted_by: persisted.get(node.id.as_str()).cloned(),
             part_of: held_in.get(node.id.as_str()).cloned(),
             standing: None,
+            used_by: Vec::new(),
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity
@@ -4674,6 +4677,7 @@ fn entities(
             persisted_by: model.evidence.clone(),
             part_of: None,
             standing: None,
+            used_by: Vec::new(),
         });
     }
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
@@ -4830,6 +4834,7 @@ fn entities(
             persisted_by: None,
             part_of: None,
             standing: None,
+            used_by: Vec::new(),
         });
     }
     let record_of: HashMap<String, String> = entities
@@ -4901,6 +4906,7 @@ fn entities(
             persisted_by: None,
             part_of: None,
             standing: None,
+            used_by: Vec::new(),
         });
     }
     let known: HashMap<String, String> = entities

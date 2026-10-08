@@ -9,6 +9,43 @@ const KEEPERS_TOLD: usize = 3;
 const FLOWS_TOLD: usize = 3;
 const RECORDS_PER_ASK: usize = 8;
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Use {
+    pub project: String,
+    pub borrowed: bool,
+    pub keeps: bool,
+    pub flows: Vec<String>,
+}
+
+const KEEPING: &[&str] = &["keep", "change", "create", "remove"];
+
+fn uses(comprehension: &mut Comprehension) {
+    let home: HashMap<String, Option<String>> = comprehension.entities.iter().map(|entity| (entity.declared_as.clone(), entity.project.clone())).collect();
+    let mut found: HashMap<(String, String), Use> = HashMap::default();
+    for flow in &comprehension.flows {
+        let Some(project) = flow.runs_in.clone().or_else(|| flow.project.clone()) else { continue };
+        for step in &flow.steps {
+            let Some(object) = step.object.as_deref() else { continue };
+            let Some(declared) = home.get(object) else { continue };
+            let held = found.entry((object.to_string(), project.clone())).or_insert_with(|| Use {
+                project: project.clone(),
+                borrowed: declared.as_deref() != Some(project.as_str()),
+                keeps: false,
+                flows: Vec::new(),
+            });
+            held.keeps |= KEEPING.contains(&step.kind);
+            if !held.flows.contains(&flow.id) {
+                held.flows.push(flow.id.clone());
+            }
+        }
+    }
+    for entity in comprehension.entities.iter_mut() {
+        let mut used: Vec<Use> = found.iter().filter(|((object, _), _)| *object == entity.declared_as).map(|(_, held)| held.clone()).collect();
+        used.sort_by(|left, right| left.project.cmp(&right.project));
+        entity.used_by = used;
+    }
+}
+
 pub const ABOUT: &str = "domain";
 pub const BOOKKEEPING: &str = "operational";
 
@@ -49,6 +86,7 @@ fn told(entity: &Entity, number: usize, held_by: &HashMap<&str, Vec<&str>>, used
 }
 
 pub fn settle(comprehension: &mut Comprehension, part_names: &HashMap<&str, &str>) {
+    uses(comprehension);
     let entities = &comprehension.entities;
     let mut used_in: HashMap<&str, Vec<&str>> = HashMap::default();
     for flow in &comprehension.flows {
