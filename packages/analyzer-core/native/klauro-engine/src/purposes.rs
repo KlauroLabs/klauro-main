@@ -211,7 +211,11 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
 fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
     let mut capabilities: Vec<Capability> = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
-    for purpose in purposes.purposes {
+    let unnumbered = purposes.purposes.iter().all(|purpose| purpose.behaviours.is_empty() && purpose.supporting.is_empty());
+    for mut purpose in purposes.purposes {
+        if unnumbered && groups.len() == 1 {
+            purpose.behaviours = vec![1];
+        }
         let mut letters = purpose.name.trim().chars();
         let Some(first) = letters.next() else { continue };
         let name: String = first.to_uppercase().chain(letters).collect();
@@ -248,7 +252,7 @@ fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_o
         for (numbers, role) in [(&behaviours, "primary"), (&supporting, "supporting")] {
             for number in numbers {
                 let Some(group) = number.checked_sub(1).and_then(|at| groups.get(at)) else { continue };
-                if !placed.insert(*number) {
+                if !placed.insert(*number) && !surface_only {
                     continue;
                 }
                 if role == "primary" {
@@ -271,7 +275,7 @@ fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_o
                 capability.evidence.push('\n');
             }
         }
-        if primaries == 0 {
+        if primaries == 0 && !(surface_only && behaviours.is_empty()) {
             continue;
         }
         capability.flows = capability.delivered.iter().map(|delivered| delivered.flow.clone()).collect();
@@ -400,6 +404,34 @@ mod tests {
         assert_eq!(purposes.purposes.len(), 1);
         assert_eq!(purposes.purposes[0].behaviours, [1]);
         assert_eq!(purposes.purposes[0].supporting, [2]);
+    }
+
+    #[test]
+    fn a_library_answer_that_numbers_nothing_keeps_each_named_purpose() {
+        let held = [offered("Save"), offered("Load")];
+        let groups: Vec<Vec<&Flow>> = vec![vec![&held[0]], vec![&held[1]]];
+        let lines = vec!["1. a".to_string(), "2. b".to_string()];
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Keep accounts", &[], &[]), purpose("Keep deposits", &[], &[])] }, &groups, &lines, true);
+        assert_eq!(capabilities.len(), 2);
+    }
+
+    #[test]
+    fn a_lone_behaviour_belongs_to_the_purpose_that_forgot_to_number_it() {
+        let held = [offered("Run listener")];
+        let groups: Vec<Vec<&Flow>> = vec![vec![&held[0]]];
+        let lines = vec!["1. Run listener".to_string()];
+        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("Listen for account events", &[], &[])] }, &groups, &lines, false);
+        assert_eq!(capabilities.len(), 1);
+        assert!(placed.contains(&1));
+    }
+
+    #[test]
+    fn a_flow_answer_that_numbers_nothing_among_several_behaviours_forms_nothing() {
+        let held = [offered("Place order"), offered("Cancel order")];
+        let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
+        let lines = vec!["1. a".to_string(), "2. b".to_string()];
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[], &[])] }, &groups, &lines, false);
+        assert!(capabilities.is_empty(), "a flow is placed only where the answer says");
     }
 
     #[test]
