@@ -409,13 +409,15 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     for flow in flows {
         let entry = entry_of.get(flow.entry_point.as_str()).copied();
         let trigger = trigger_of(&flow, entry);
-        let mut reason = set_aside_because(&flow, facts);
-        if reason.is_none() && !seen.insert((flow.project.clone(), trigger.clone())) {
-            reason = Some("the same trigger registered twice");
-        }
-        match reason {
-            Some(reason) => held.set_aside.push(SetAside { entry_point: flow.entry_point.clone(), project: flow.project.clone(), trigger, reason }),
-            None => kept.push(flow),
+        let reason = set_aside_because(&flow, facts);
+        let repeated = reason.is_none() && !seen.insert((flow.project.clone(), trigger.clone()));
+        match (reason, repeated) {
+            (Some(reason), _) => {
+                held.set_aside.push(SetAside { entry_point: flow.entry_point.clone(), project: flow.project.clone(), trigger, reason });
+                held.offered.push(flow);
+            }
+            (None, true) => held.set_aside.push(SetAside { entry_point: flow.entry_point.clone(), project: flow.project.clone(), trigger, reason: "the same trigger registered twice" }),
+            (None, false) => kept.push(flow),
         }
     }
     let kept = joined(kept);

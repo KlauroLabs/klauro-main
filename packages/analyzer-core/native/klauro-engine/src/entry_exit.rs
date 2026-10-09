@@ -107,6 +107,13 @@ pub fn recurring(registrar: &str) -> bool {
     RECURRING.iter().any(|recurs| recurs.eq_ignore_ascii_case(leaf))
 }
 
+static TOP_LEVEL_PROGRAMS: &str = include_str!("../data/top_level_programs.tsv");
+
+fn runs_its_top_level(path: &str) -> bool {
+    let Some((_, extension)) = path.rsplit_once('.') else { return false };
+    TOP_LEVEL_PROGRAMS.lines().filter_map(|line| line.split('\t').next()).any(|held| held.eq_ignore_ascii_case(extension))
+}
+
 static CONTINUATION_STARTERS: &str = include_str!("../data/continuation_starters.tsv");
 
 pub(crate) fn starts_a_continuation(named: &str) -> bool {
@@ -3314,6 +3321,27 @@ pub fn derive(
                 unshipped: None,
             });
         }
+    }
+
+    let speaking: HashSet<&str> = calls.iter().filter_map(|call| call.caller.as_deref()).collect();
+    for node in nodes.iter().filter(|node| node.kind == NodeKind::Module && speaking.contains(node.id.as_str())) {
+        let Some(path) = files.get(node.file as usize) else { continue };
+        if is_test(path) || !runs_its_top_level(path) {
+            continue;
+        }
+        entry_points.push(EntryPoint {
+            id: format!("entry:{}:lifecycle", node.id),
+            kind: "lifecycle",
+            name: LIFECYCLE_NAMES[0].to_string(),
+            method: None,
+            path: None,
+            handler: node.id.clone(),
+            file: node.file,
+            line: node.span.line,
+            guards: Vec::new(),
+            registrar: LIFECYCLE_NAMES[0].to_string(),
+            unshipped: None,
+        });
     }
 
     for node in nodes {

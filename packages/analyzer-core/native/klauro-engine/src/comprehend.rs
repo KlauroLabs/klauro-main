@@ -224,6 +224,8 @@ pub struct Comprehension {
     pub set_aside: Vec<crate::behaviours::SetAside>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub seams: Vec<crate::seams::Seam>,
+    #[serde(skip)]
+    pub offered: Vec<Flow>,
 }
 
 static GENERIC: &[&str] = &[
@@ -1557,8 +1559,12 @@ pub fn author(
             std::sync::Mutex::new(std::collections::BTreeMap::new());
         let pending_flows: std::sync::Mutex<std::collections::BTreeSet<String>> =
             std::sync::Mutex::new(std::collections::BTreeSet::new());
-        let mut parts: Vec<Option<String>> =
-            held.flows.iter().map(|flow| flow.runs_in.clone().or_else(|| flow.project.clone())).collect();
+        let mut parts: Vec<Option<String>> = held
+            .flows
+            .iter()
+            .chain(held.offered.iter())
+            .map(|flow| flow.runs_in.clone().or_else(|| flow.project.clone()))
+            .collect();
         parts.sort();
         parts.dedup();
         let mut landed: rustc_hash::FxHashMap<&str, String> = rustc_hash::FxHashMap::default();
@@ -1575,6 +1581,7 @@ pub fn author(
         let described_rx = std::sync::Mutex::new(described_rx);
         let expected = std::sync::atomic::AtomicUsize::new(0);
         let (paths_ref, flows_ref, entities_ref, spoken_ref) = (&paths, &held.flows, &held.entities, &spoken);
+        let offered_ref = &held.offered;
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 let written = crate::author::name_them("records this system keeps", &spoken, &evidence);
@@ -1602,7 +1609,11 @@ pub fn author(
                     let remembered_as =
                         format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let label = part.as_deref().unwrap_or("root").to_string();
-                    let of_the_part = crate::purposes::of_a_part(&flows, &said, &remembered_as, &landed);
+                    let quiet: Vec<&Flow> = offered_ref
+                        .iter()
+                        .filter(|flow| flow.runs_in.as_ref().or(flow.project.as_ref()) == part.as_ref())
+                        .collect();
+                    let of_the_part = crate::purposes::of_a_part(&flows, &quiet, &said, &remembered_as, &landed);
                     if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
                         kept.insert(part.clone(), of_the_part.state);
                         waiting.extend(of_the_part.pending);
@@ -2854,6 +2865,7 @@ pub fn derive(
         derivation: None,
         set_aside: Vec::new(),
         seams: Vec::new(),
+        offered: Vec::new(),
     }
 }
 
