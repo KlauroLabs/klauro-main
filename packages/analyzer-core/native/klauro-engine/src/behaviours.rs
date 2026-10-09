@@ -48,11 +48,15 @@ fn hosted_in<'a>(facts: &Facts<'a>, project_of: &HashMap<&'a str, Option<&'a str
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Said {
     #[serde(default)]
-    id: String,
+    ids: Vec<String>,
     #[serde(default)]
     said: String,
-    #[serde(default)]
-    with: Vec<String>,
+}
+
+impl Said {
+    fn lead(&self) -> &str {
+        self.ids.first().map(String::as_str).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -256,7 +260,7 @@ fn alternatives(behaviours: &[Behaviour], flow: &Flow, deciding: &HashSet<u64>) 
     let arms_of = |held: &Behaviour| -> Vec<&str> {
         held.steps
             .iter()
-            .filter_map(|said| flow.steps.iter().find(|step| step.id == said.id))
+            .flat_map(|said| said.ids.iter().filter_map(|id| flow.steps.iter().find(|step| step.id == *id)))
             .filter(|step| OUTCOMES.contains(&step.kind))
             .flat_map(|step| step.arms.iter().map(String::as_str))
             .filter(|arm| decided_in(arm).is_some_and(|file| deciding.contains(&file)))
@@ -267,7 +271,7 @@ fn alternatives(behaviours: &[Behaviour], flow: &Flow, deciding: &HashSet<u64>) 
         right.iter().any(|arm| left.iter().any(|other| branch_of(other) == branch_of(arm) && other != arm))
     };
     let only_failing = behaviours.iter().any(|held| {
-        let steps: Vec<_> = held.steps.iter().filter_map(|said| flow.steps.iter().find(|step| step.id == said.id)).collect();
+        let steps: Vec<_> = held.steps.iter().flat_map(|said| said.ids.iter().filter_map(|id| flow.steps.iter().find(|step| step.id == *id))).collect();
         !steps.is_empty() && steps.iter().all(|step| step.when == "on_failure")
     });
     !only_failing
@@ -279,11 +283,11 @@ const OUTCOMES: &[&str] = &["keep", "change", "create", "remove", "send", "hand_
 fn worded(flow: &Flow, behaviour: &Behaviour, alone: bool) -> Vec<crate::steps::LogicalStep> {
     let mut gathered_into: HashMap<&str, &str> = HashMap::default();
     for said in &behaviour.steps {
-        for other in &said.with {
-            gathered_into.entry(other.as_str()).or_insert(said.id.as_str());
+        for other in said.ids.iter().skip(1) {
+            gathered_into.entry(other.as_str()).or_insert(said.lead());
         }
     }
-    let said_of: HashMap<&str, &Said> = behaviour.steps.iter().map(|said| (said.id.as_str(), said)).collect();
+    let said_of: HashMap<&str, &Said> = behaviour.steps.iter().map(|said| (said.lead(), said)).collect();
     let mut steps: Vec<crate::steps::LogicalStep> = Vec::new();
     for step in &flow.steps {
         if let Some(lead) = gathered_into.get(step.id.as_str()).filter(|lead| **lead != step.id.as_str()) {
@@ -509,7 +513,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             }
             continue;
         }
-        let owned: Vec<Vec<&str>> = behaviours.iter().map(|held| held.steps.iter().map(|said| said.id.as_str()).collect()).collect();
+        let owned: Vec<Vec<&str>> = behaviours.iter().map(|held| held.steps.iter().flat_map(|said| said.ids.iter().map(String::as_str)).collect()).collect();
         if owned.len() > 1 && owned.iter().all(|held| held == &owned[0]) {
             behaviours.truncate(1);
         }
@@ -649,8 +653,8 @@ mod tests {
             name: "Place an order".to_string(),
             outcome: String::new(),
             steps: vec![
-                Said { id: "s1".to_string(), said: "Keep the new order".to_string(), with: vec!["s2".to_string()] },
-                Said { id: "s3".to_string(), said: "Answer".to_string(), with: Vec::new() },
+                Said { ids: vec!["s1".to_string(), "s2".to_string()], said: "Keep the new order".to_string() },
+                Said { ids: vec!["s3".to_string()], said: "Answer".to_string() },
             ],
         };
         let steps = worded(&held, &behaviour, true);
@@ -663,7 +667,7 @@ mod tests {
     }
 
     fn behaviour(ids: &[&str]) -> Behaviour {
-        Behaviour { name: String::new(), outcome: String::new(), steps: ids.iter().map(|id| Said { id: id.to_string(), said: String::new(), with: Vec::new() }).collect() }
+        Behaviour { name: String::new(), outcome: String::new(), steps: ids.iter().map(|id| Said { ids: vec![id.to_string()], said: String::new() }).collect() }
     }
 
     const HERE: &str = "500000010.1";

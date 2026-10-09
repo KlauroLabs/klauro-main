@@ -658,7 +658,7 @@ NOTHING_HAPPENS \
 For each behaviour give:\n\
 - name: a short verb phrase in plain words a product manager understands (\"Place an order\", \"Show the catalog\"), never class, function, file, event or package names;\n\
 - outcome: one plain sentence saying what is different for the person or the system afterwards, also without class, function, file, event or package names;\n\
-- steps: the steps listed above that belong to it, in order, each with its id and a short plain sentence saying that action (\"Check the customer is signed in\", \"Keep the new order\", \"Tell the other part the payment failed\"), never class, function, event, table or package names. Every listed step belongs to a behaviour; a step that comes before the paths split belongs to each behaviour that follows it. When consecutive listed steps together do one action a person would recognise, give them as one step: the first step's id, the ids of the others in with, and one sentence for the action they make together. Never invent, split or leave out a listed step.\n\
+- steps: the steps listed above that belong to it, in order, each with its id and a short plain sentence saying that action (\"Check the customer is signed in\", \"Keep the new order\", \"Tell the other part the payment failed\"), never class, function, event, table or package names. Each step you give lists in ids the step ids it covers, the s-numbers at the start of the lines above, and says in one sentence the action they make together: one id when it is one listed step, several consecutive ids when they together do one action a person would recognise. Every listed id appears in a behaviour; a step that comes before the paths split appears in each behaviour that follows it. Never invent, split or leave out a listed step.\n\
 Always answer, even when the facts are few: judge from what is shown, never ask for more. \
 Name the behaviour from what its steps do. Function and method names can be wrong (copied from elsewhere); when they disagree with the steps or with the request's method (a DELETE removes or deactivates), trust the steps. \
 Steps marked with the same branch letters but different numbers are alternatives: only those can be different behaviours. \
@@ -762,40 +762,65 @@ pub fn behaviours_of(prompt: &str, steps: &[&str]) -> Option<serde_json::Value> 
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\nReturn JSON only: {{\"behaviours\":[{{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[{{\"id\":\"s1\",\"said\":\"...\",\"with\":[\"s2\"]}}]}}]}}");
+    let listed = match steps.is_empty() {
+        true => "No steps are listed for this trigger, so every behaviour's steps list is empty.\n\n",
+        false => "",
+    };
+    let shape = match steps.is_empty() {
+        true => "{\"behaviours\":[{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[]}]}",
+        false => "{\"behaviours\":[{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[{\"ids\":[\"s1\"],\"said\":\"...\"},{\"ids\":[\"s2\",\"s3\"],\"said\":\"...\"}]}]}",
+    };
     let room = BEHAVIOURS_ROOM + BEHAVIOURS_ROOM_PER_STEP * steps.len() as u32;
-    (0..BEHAVIOURS_ASKED_AT_MOST).find_map(|_| {
-        answered::<serde_json::Value>(&asked, room, &proposing(), "behaviours", 0, DESCRIBING_ASK).filter(|answer| well_formed_behaviours(answer, steps))
-    })
+    let mut correction = String::new();
+    for _ in 0..BEHAVIOURS_ASKED_AT_MOST {
+        let asked = format!("{prompt}\n\n{listed}{correction}Return JSON only: {shape}");
+        let Some(answer) = answered::<serde_json::Value>(&asked, room, &proposing(), "behaviours", 0, DESCRIBING_ASK) else { continue };
+        match what_is_wrong_with_behaviours(&answer, steps) {
+            None => return Some(answer),
+            Some(wrong) => {
+                if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                    eprintln!("    behaviours answer refused ({} steps listed): {wrong}", steps.len());
+                }
+                correction = format!("A previous answer was refused: {wrong}. Answer again, following the rules.\n\n");
+            }
+        }
+    }
+    None
 }
 
 const BEHAVIOURS_ROOM: u32 = 600;
 const BEHAVIOURS_ROOM_PER_STEP: u32 = 40;
 const BEHAVIOURS_ASKED_AT_MOST: usize = 3;
 
-pub(crate) fn well_formed_behaviours(answer: &serde_json::Value, steps: &[&str]) -> bool {
-    let Some(behaviours) = answer["behaviours"].as_array() else { return false };
-    if behaviours.is_empty() {
-        return true;
-    }
+pub(crate) fn what_is_wrong_with_behaviours(answer: &serde_json::Value, steps: &[&str]) -> Option<String> {
+    let Some(behaviours) = answer["behaviours"].as_array() else { return Some("it gave no behaviours list".to_string()) };
     let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut unknown: Vec<String> = Vec::new();
     for behaviour in behaviours {
-        let named = behaviour["name"].as_str().is_some_and(|name| !name.trim().is_empty());
-        let Some(said) = behaviour["steps"].as_array() else { return false };
-        if !named {
-            return false;
+        if behaviour["name"].as_str().is_none_or(|name| name.trim().is_empty()) {
+            return Some("a behaviour had no name".to_string());
         }
-        for step in said {
-            let ids = step["id"].as_str().into_iter().chain(step["with"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str));
+        for step in behaviour["steps"].as_array().into_iter().flatten() {
+            let ids: Vec<&str> = step["ids"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
+            if ids.is_empty() {
+                return Some("a step listed no ids".to_string());
+            }
             for id in ids {
-                if !steps.contains(&id) {
-                    return false;
+                match steps.contains(&id) {
+                    true => {
+                        seen.insert(id);
+                    }
+                    false => unknown.push(id.to_string()),
                 }
-                seen.insert(id);
             }
         }
     }
-    steps.iter().all(|id| seen.contains(id))
+    let missing: Vec<&str> = steps.iter().copied().filter(|id| !behaviours.is_empty() && !seen.contains(id)).collect();
+    match (unknown.is_empty(), missing.is_empty()) {
+        (true, true) => None,
+        (false, _) => Some(format!("it used ids that are not listed ({})", unknown.join(", "))),
+        (true, false) => Some(format!("it left out listed steps ({})", missing.join(", "))),
+    }
 }
 
 pub fn same_behaviours(prompt: &str) -> Option<serde_json::Value> {
@@ -1362,8 +1387,8 @@ fn shaped(of: &str) -> serde_json::Value {
                     "outcome": text,
                     "steps": {"type": "array", "items": {
                         "type": "object",
-                        "properties": {"id": text, "said": text, "with": {"type": "array", "items": text}},
-                        "required": ["id", "said"],
+                        "properties": {"ids": {"type": "array", "items": text}, "said": text},
+                        "required": ["ids", "said"],
                     }},
                 },
                 "required": ["name", "outcome", "steps"],
@@ -1753,10 +1778,12 @@ mod shapes {
         assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [3]}]}), 2), "only listed numbers");
         assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": []}), 2));
         let steps = ["s1", "s2", "s3"];
-        assert!(super::well_formed_behaviours(&serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"id": "s1", "said": "Check", "with": ["s2"]}, {"id": "s3", "said": "Keep"}]}]}), &steps));
-        assert!(!super::well_formed_behaviours(&serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"id": "s1", "said": "Check"}, {"id": "s3", "said": "Keep"}]}]}), &steps), "no listed step is left out");
-        assert!(!super::well_formed_behaviours(&serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"id": "s1", "said": "Check", "with": ["s2", "s9"]}, {"id": "s3", "said": "Keep"}]}]}), &steps), "only listed steps");
-        assert!(super::well_formed_behaviours(&serde_json::json!({"behaviours": []}), &steps), "no behaviour at all is a judgement, not a malformed answer");
+        let wrong = |answer: serde_json::Value| super::what_is_wrong_with_behaviours(&answer, &steps);
+        assert_eq!(wrong(serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"ids": ["s1", "s2"], "said": "Check"}, {"ids": ["s3"], "said": "Keep"}]}]})), None);
+        assert_eq!(wrong(serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"ids": ["s1"], "said": "Check"}, {"ids": ["s3"], "said": "Keep"}]}]})).as_deref(), Some("it left out listed steps (s2)"));
+        assert_eq!(wrong(serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"ids": ["s1", "s2", "s9"], "said": "Check"}, {"ids": ["s3"], "said": "Keep"}]}]})).as_deref(), Some("it used ids that are not listed (s9)"));
+        assert_eq!(wrong(serde_json::json!({"behaviours": []})), None, "no behaviour at all is a judgement, not a malformed answer");
+        assert_eq!(super::what_is_wrong_with_behaviours(&serde_json::json!({"behaviours": [{"name": "Show the site", "steps": [{"ids": ["serve"], "said": "Serve"}]}]}), &[]).as_deref(), Some("it used ids that are not listed (serve)"));
         let source = include_str!("author.rs");
         let asked: std::collections::BTreeSet<&str> = source
             .match_indices("&asking_of_models(model()), \"")
