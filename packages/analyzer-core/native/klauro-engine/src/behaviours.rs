@@ -417,7 +417,9 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         match (reason, repeated) {
             (Some(reason), _) => {
                 held.set_aside.push(SetAside { entry_point: flow.entry_point.clone(), project: flow.project.clone(), trigger, reason });
-                held.offered.push(flow);
+                if flow.project.is_some() {
+                    held.offered.push(flow);
+                }
             }
             (None, true) => held.set_aside.push(SetAside { entry_point: flow.entry_point.clone(), project: flow.project.clone(), trigger, reason: "the same trigger registered twice" }),
             (None, false) => kept.push(flow),

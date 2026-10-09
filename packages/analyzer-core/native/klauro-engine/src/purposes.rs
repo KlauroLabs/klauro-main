@@ -8,6 +8,9 @@ use crate::comprehend::{Capability, Delivery, Flow};
 
 const RECORDS_TOLD: usize = 4;
 const LANDINGS_TOLD: usize = 3;
+const MADE_TOLD: usize = 16;
+const MEMBERS_TOLD: usize = 8;
+const FOLDERS_TOLD_AT_MOST: usize = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Purpose {
@@ -57,6 +60,50 @@ fn told(number: usize, flow: &Flow, landed: &HashMap<&str, String>) -> String {
     said
 }
 
+fn folder_of<'a>(flow: &'a Flow) -> &'a str {
+    let surface = flow.surface.as_deref().unwrap_or(&flow.operation);
+    let root = flow.project.as_deref().map(|part| part.strip_prefix("subproject:").unwrap_or(part)).unwrap_or_default();
+    let inside = surface.strip_prefix(root).map(|rest| rest.trim_start_matches('/')).filter(|_| !root.is_empty()).unwrap_or(surface);
+    inside.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("")
+}
+
+fn listed(names: Vec<&str>, at_most: usize) -> String {
+    let mut unique: Vec<&str> = Vec::new();
+    for name in names {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    let more = unique.len().saturating_sub(at_most);
+    let mut said = unique.into_iter().take(at_most).collect::<Vec<_>>().join(", ");
+    if more > 0 {
+        said.push_str(&format!(" and {more} more"));
+    }
+    said
+}
+
+fn offered_together(number: usize, folder: &str, group: &[&Flow]) -> String {
+    let folder = if folder.is_empty() { "top level" } else { folder };
+    let made: Vec<&str> = group.iter().map(|flow| flow.surface.as_deref().unwrap_or(&flow.operation).rsplit('/').next().unwrap_or_default()).collect();
+    let members: Vec<&str> = group.iter().map(|flow| flow.operation.as_str()).collect();
+    format!("{number}. {folder}: {} | offers: {}", listed(made, MADE_TOLD), listed(members, MEMBERS_TOLD))
+}
+
+fn by_folder<'a>(offered: &[&'a Flow]) -> Vec<(&'a str, Vec<&'a Flow>)> {
+    let gathered = |coarse: bool| {
+        let mut held: std::collections::BTreeMap<&'a str, Vec<&'a Flow>> = std::collections::BTreeMap::new();
+        for flow in offered {
+            let folder = folder_of(flow);
+            let folder = if coarse { folder.split('/').next().unwrap_or(folder) } else { folder };
+            held.entry(folder).or_default().push(flow);
+        }
+        held
+    };
+    let fine = gathered(false);
+    let chosen = if fine.len() > FOLDERS_TOLD_AT_MOST { gathered(true) } else { fine };
+    chosen.into_iter().collect()
+}
+
 pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered_as: &str, landed: &HashMap<&str, String>) -> OfAPart {
     let named: Vec<&Flow> = flows.iter().copied().filter(|flow| flow.kind != "test").collect();
     let ships = |flow: &&Flow| !crate::unshipped::is_set_aside(flow.unshipped.as_ref());
@@ -68,23 +115,35 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
     ];
     let surface_only = tiers[..3].iter().all(Vec::is_empty);
     let mut offered: Vec<&Flow> = tiers.into_iter().find(|tier| !tier.is_empty()).unwrap_or_default();
-    if std::env::var("KLAURO_OFFERED_DUMP").is_ok() {
-        for flow in &offered {
-            eprintln!("offered[{remembered_as}]: {}", flow.surface.as_deref().unwrap_or(&flow.operation));
-        }
-    }
     offered.sort_by(|left, right| left.id.cmp(&right.id));
     if offered.is_empty() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: ABSENT, reason: Some("the part holds no flow and offers nothing".to_string()) }, pending: BTreeSet::new() };
     }
+    let (folders, groups): (Vec<&str>, Vec<Vec<&Flow>>) = match surface_only {
+        true => by_folder(&offered).into_iter().unzip(),
+        false => offered.iter().map(|flow| ("", vec![*flow])).unzip(),
+    };
+    let lines: Vec<String> = groups
+        .iter()
+        .zip(&folders)
+        .enumerate()
+        .map(|(at, (group, folder))| match surface_only {
+            true => offered_together(at + 1, folder, group),
+            false => told(at + 1, group[0], landed),
+        })
+        .collect();
+    if std::env::var("KLAURO_OFFERED_DUMP").is_ok() {
+        for line in &lines {
+            eprintln!("offered[{remembered_as}]: {line}");
+        }
+    }
     if !crate::author::asked() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: PENDING, reason: Some("the AI was not asked".to_string()) }, pending: BTreeSet::new() };
     }
-    let lines: Vec<String> = offered.iter().enumerate().map(|(at, flow)| told(at + 1, flow, landed)).collect();
     let heading = if surface_only { "What it offers other code (each is used inside the flows of the parts that call it)" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
     let key = format!("{remembered_as}\u{1}{prompt}");
-    let count = offered.len();
+    let count = groups.len();
     let answered = crate::memory::each("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], |missing| {
         crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count).map(|held| (key.clone(), held))).collect())
     });
@@ -96,7 +155,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
         };
     };
     let purposes: Purposes = serde_json::from_value(answer.clone()).unwrap_or_default();
-    let (capabilities, placed) = formed(purposes, &offered, &lines, surface_only);
+    let (capabilities, placed) = formed(purposes, &groups, &lines, surface_only);
     let pending: BTreeSet<String> = offered
         .iter()
         .filter(|_| !surface_only)
@@ -114,16 +173,15 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
     }
 }
 
-fn formed(purposes: Purposes, offered: &[&Flow], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
+fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
     let mut capabilities: Vec<Capability> = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
     for purpose in purposes.purposes {
-        let name = purpose.name.trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
+        let mut letters = purpose.name.trim().chars();
+        let Some(first) = letters.next() else { continue };
+        let name: String = first.to_uppercase().chain(letters).collect();
         let mut capability = Capability {
-            id: format!("capability:{}:{}", offered.first().and_then(|flow| flow.runs_in.as_deref().or(flow.project.as_deref())).unwrap_or("root"), crate::comprehend::carved_name(&name)),
+            id: format!("capability:{}:{}", groups.first().and_then(|group| group.first()).and_then(|flow| flow.runs_in.as_deref().or(flow.project.as_deref())).unwrap_or("root"), crate::comprehend::carved_name(&name)),
             audience: None,
             delivered: Vec::new(),
             records: Vec::new(),
@@ -147,30 +205,32 @@ fn formed(purposes: Purposes, offered: &[&Flow], lines: &[String], surface_only:
             evidence: String::new(),
         };
         let mut primaries = 0usize;
-        let serves_itself = !purpose.behaviours.iter().any(|number| (1..=offered.len()).contains(number) && !placed.contains(number));
+        let serves_itself = !purpose.behaviours.iter().any(|number| (1..=groups.len()).contains(number) && !placed.contains(number));
         let (behaviours, supporting) = match serves_itself {
             true => (purpose.supporting.clone(), Vec::new()),
             false => (purpose.behaviours.clone(), purpose.supporting.clone()),
         };
         for (numbers, role) in [(&behaviours, "primary"), (&supporting, "supporting")] {
             for number in numbers {
-                let Some(flow) = number.checked_sub(1).and_then(|at| offered.get(at)) else { continue };
+                let Some(group) = number.checked_sub(1).and_then(|at| groups.get(at)) else { continue };
                 if !placed.insert(*number) {
                     continue;
                 }
                 if role == "primary" {
                     primaries += 1;
                 }
-                capability.project = capability.project.take().or_else(|| flow.runs_in.clone().or_else(|| flow.project.clone()));
-                if !surface_only {
-                    capability.delivered.push(Delivery { flow: flow.id.clone(), role, rationale: String::new(), unshipped: None });
-                }
-                capability.surfaces.push(trigger_of(flow));
-                capability.records.extend(flow.writes.iter().cloned());
-                capability.touches.extend(flow.writes.iter().chain(flow.reads.iter()).cloned());
-                capability.changes.extend(flow.changes.iter().cloned());
-                if role == "primary" && (flow.standing == "terminal" || capability.terminality.is_none()) {
-                    capability.terminality = Some(flow.standing);
+                for flow in group {
+                    capability.project = capability.project.take().or_else(|| flow.runs_in.clone().or_else(|| flow.project.clone()));
+                    if !surface_only {
+                        capability.delivered.push(Delivery { flow: flow.id.clone(), role, rationale: String::new(), unshipped: None });
+                    }
+                    capability.surfaces.push(trigger_of(flow));
+                    capability.records.extend(flow.writes.iter().cloned());
+                    capability.touches.extend(flow.writes.iter().chain(flow.reads.iter()).cloned());
+                    capability.changes.extend(flow.changes.iter().cloned());
+                    if role == "primary" && (flow.standing == "terminal" || capability.terminality.is_none()) {
+                        capability.terminality = Some(flow.standing);
+                    }
                 }
                 capability.evidence.push_str(&lines[*number - 1]);
                 capability.evidence.push('\n');
@@ -247,22 +307,41 @@ mod tests {
         let mut started = offered("Start the scheduler");
         started.kind = "lifecycle";
         let held = [started];
-        let offered: Vec<&Flow> = held.iter().collect();
+        let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
         let lines = vec!["1. Start the scheduler".to_string()];
-        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("Run scheduled jobs", &[], &[1])] }, &offered, &lines, false);
+        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("run scheduled jobs", &[], &[1])] }, &groups, &lines, false);
         assert_eq!(capabilities.len(), 1, "supporting work that serves nothing else in the part is the part's purpose");
         assert_eq!(capabilities[0].delivered[0].role, "primary");
+        assert_eq!(capabilities[0].name.as_deref(), Some("Run scheduled jobs"), "a name starts with a capital");
         assert!(placed.contains(&1));
     }
 
     #[test]
     fn supporting_behaviours_stay_under_the_capability_they_serve() {
         let held = [offered("Place order"), offered("Sign in")];
-        let offered: Vec<&Flow> = held.iter().collect();
+        let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
         let lines = vec!["1. Place order".to_string(), "2. Sign in".to_string()];
-        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[1], &[2])] }, &offered, &lines, false);
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[1], &[2])] }, &groups, &lines, false);
         let roles: Vec<&str> = capabilities[0].delivered.iter().map(|delivered| delivered.role).collect();
         assert_eq!(roles, ["primary", "supporting"]);
+    }
+
+    #[test]
+    fn what_a_library_offers_is_told_folder_by_folder() {
+        let mut first = offered("Publish");
+        first.surface = Some("events/Bus/Publisher".to_string());
+        let mut second = offered("Subscribe");
+        second.surface = Some("events/Bus/Subscriber".to_string());
+        let mut third = offered("Save");
+        third.surface = Some("events/Log/Store".to_string());
+        for flow in [&mut first, &mut second, &mut third] {
+            flow.project = Some("subproject:events".to_string());
+        }
+        assert_eq!(folder_of(&first), "Bus");
+        assert_eq!(offered_together(1, "Bus", &[&first, &second]), "1. Bus: Publisher, Subscriber | offers: Publish, Subscribe");
+        let grouped = by_folder(&[&first, &second, &third]);
+        assert_eq!(grouped.iter().map(|(folder, group)| (*folder, group.len())).collect::<Vec<_>>(), [("Bus", 2), ("Log", 1)]);
+        assert_eq!(folder_of(&third), "Log");
     }
 
     #[test]
