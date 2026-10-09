@@ -209,6 +209,10 @@ pub struct Capability {
     pub keeps: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keeps_through: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads_through: Vec<String>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -4957,6 +4961,8 @@ mod tests {
             used_in: Vec::new(),
             keeps: Vec::new(),
             reads: Vec::new(),
+            keeps_through: Vec::new(),
+            reads_through: Vec::new(),
             evidence: String::new(),
         }
     }

@@ -727,6 +727,8 @@ mod tests {
             used_in: Vec::new(),
             keeps: Vec::new(),
             reads: Vec::new(),
+            keeps_through: Vec::new(),
+            reads_through: Vec::new(),
             evidence: String::new(),
         }
     }

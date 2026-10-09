@@ -5,11 +5,24 @@ use crate::comprehend::Comprehension;
 use crate::model::{EdgeKind, IndexEdge, IndexNode};
 
 const REACH_AT_MOST: usize = 20_000;
+const KEEPS: &str = "keeps";
+const READS: &str = "reads";
+const KEEPS_THROUGH: &str = "keeps through another part";
+const READS_THROUGH: &str = "reads through another part";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Held {
     pub capability: String,
     pub role: &'static str,
+}
+
+fn strength(role: &str) -> u8 {
+    match role {
+        KEEPS => 3,
+        READS => 2,
+        KEEPS_THROUGH => 1,
+        _ => 0,
+    }
 }
 
 fn file_of(unit: &str) -> &str {
@@ -114,30 +127,84 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
         }
         candidates
     };
+    let flow_records: HashMap<&str, (&[String], &[String], Option<&str>)> = held
+        .flows
+        .iter()
+        .map(|flow| (flow.id.as_str(), (flow.writes.as_slice(), flow.reads.as_slice(), flow.runs_in.as_deref().or(flow.project.as_deref()))))
+        .collect();
+    let mut handed: HashMap<&str, Vec<&str>> = HashMap::default();
+    for seam in &held.seams {
+        handed.entry(seam.from_flow.as_str()).or_default().extend(seam.to_flows.iter().map(String::as_str));
+    }
     let mut ties: Vec<(usize, usize, &'static str)> = Vec::new();
+    for (at, capability) in held.capabilities.iter().enumerate().filter(|(_, capability)| capability.level == crate::capabilities::PART) {
+        for delivered in &capability.delivered {
+            for other in handed.get(delivered.flow.as_str()).into_iter().flatten() {
+                let Some((writes, reads, part)) = flow_records.get(other).copied() else { continue };
+                if part == capability.project.as_deref() {
+                    continue;
+                }
+                for named in writes {
+                    for entity in chosen(named, part) {
+                        ties.push((at, entity, KEEPS_THROUGH));
+                    }
+                }
+                for named in reads.iter().filter(|named| !writes.contains(named)) {
+                    for entity in chosen(named, part) {
+                        ties.push((at, entity, READS_THROUGH));
+                    }
+                }
+            }
+        }
+    }
     for (at, capability) in held.capabilities.iter().enumerate().filter(|(_, capability)| capability.level == crate::capabilities::PART) {
         let part = capability.project.as_deref();
         for named in &capability.records {
             for entity in chosen(named, part) {
-                ties.push((at, entity, "keeps"));
+                ties.push((at, entity, KEEPS));
             }
         }
         for named in capability.touches.iter().filter(|named| !capability.records.contains(named)) {
             for entity in chosen(named, part) {
-                ties.push((at, entity, "reads"));
+                ties.push((at, entity, READS));
             }
         }
     }
+    let wholes: Vec<Option<usize>> = held
+        .entities
+        .iter()
+        .map(|entity| {
+            let whole = entity.part_of.as_deref()?;
+            by_name.get(whole)?.iter().copied().find(|at| held.entities[*at].project == entity.project).or_else(|| by_name.get(whole)?.first().copied())
+        })
+        .collect();
     for (capability, entity, role) in ties {
         let id = held.entities[entity].id.clone();
         let named = held.capabilities[capability].id.clone();
-        let into = if role == "keeps" { &mut held.capabilities[capability].keeps } else { &mut held.capabilities[capability].reads };
+        let into = match role {
+            KEEPS => &mut held.capabilities[capability].keeps,
+            READS => &mut held.capabilities[capability].reads,
+            KEEPS_THROUGH => &mut held.capabilities[capability].keeps_through,
+            _ => &mut held.capabilities[capability].reads_through,
+        };
         if !into.contains(&id) {
             into.push(id);
         }
         let holding = &mut held.entities[entity].capabilities;
-        if !holding.iter().any(|tie| tie.capability == named) {
-            holding.push(Held { capability: named, role });
+        match holding.iter_mut().find(|tie| tie.capability == named) {
+            Some(tie) if strength(role) > strength(tie.role) => tie.role = role,
+            Some(_) => {}
+            None => holding.push(Held { capability: named, role }),
+        }
+    }
+    for (member, whole) in wholes.into_iter().enumerate() {
+        let Some(whole) = whole.filter(|whole| *whole != member) else { continue };
+        let inherited = held.entities[whole].capabilities.clone();
+        let holding = &mut held.entities[member].capabilities;
+        for tie in inherited {
+            if !holding.iter().any(|held| held.capability == tie.capability) {
+                holding.push(tie);
+            }
         }
     }
 }
@@ -212,6 +279,8 @@ mod tests {
             used_in: Vec::new(),
             keeps: Vec::new(),
             reads: Vec::new(),
+            keeps_through: Vec::new(),
+            reads_through: Vec::new(),
             evidence: String::new(),
         }
     }
@@ -291,6 +360,49 @@ mod tests {
         assert_eq!(held.entities[0].capabilities[0].role, "keeps");
         assert!(held.entities[1].capabilities.is_empty());
         assert_eq!(held.entities[2].capabilities[0].role, "reads");
+    }
+
+    #[test]
+    fn a_capability_keeps_what_the_part_it_calls_keeps_for_it() {
+        let mut submit = flow("submit", "app", "app/Checkout.tsx:function:Submit");
+        submit.kind = "ui";
+        let mut create = flow("create-order", "orders", "orders/Api.cs:function:Create");
+        create.writes = vec!["Order".to_string()];
+        create.reads = vec!["Product".to_string()];
+        let mut held = held(
+            vec![capability("capability:app:check-out", "app", &[("submit", "primary")], &[], &[], &[])],
+            vec![submit, create],
+            vec![entity("Order", "orders"), entity("Product", "orders")],
+        );
+        held.seams.push(crate::seams::Seam {
+            from: "app".to_string(),
+            from_flow: "submit".to_string(),
+            step: None,
+            via: "http",
+            by: "route",
+            carries: "POST /orders".to_string(),
+            to: "orders".to_string(),
+            to_entry: "entry:create-order".to_string(),
+            to_flows: vec!["create-order".to_string()],
+        });
+        tie(&mut held, &[], &[]);
+        assert_eq!(held.capabilities[0].keeps_through, ["entity:orders:Order"]);
+        assert_eq!(held.capabilities[0].reads_through, ["entity:orders:Product"]);
+        assert_eq!(held.entities[0].capabilities[0].role, KEEPS_THROUGH);
+    }
+
+    #[test]
+    fn a_record_that_is_part_of_another_carries_its_wholes_capabilities() {
+        let mut line = entity("OrderLine", "shop");
+        line.part_of = Some("Order".to_string());
+        let mut held = held(
+            vec![capability("capability:shop:place-orders", "shop", &[], &["Order"], &["Order"], &[])],
+            Vec::new(),
+            vec![entity("Order", "shop"), line],
+        );
+        tie(&mut held, &[], &[]);
+        assert_eq!(held.entities[1].capabilities.len(), 1);
+        assert_eq!(held.entities[1].capabilities[0].role, "keeps");
     }
 
     #[test]

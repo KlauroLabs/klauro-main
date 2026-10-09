@@ -284,6 +284,8 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             used_in: Vec::new(),
             keeps: Vec::new(),
             reads: Vec::new(),
+            keeps_through: Vec::new(),
+            reads_through: Vec::new(),
             evidence: String::new(),
         };
         let mut primaries = 0usize;
