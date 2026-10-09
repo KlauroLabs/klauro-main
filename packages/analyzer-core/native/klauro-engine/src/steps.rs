@@ -79,10 +79,12 @@ pub struct Reader<'a> {
     depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
     home: std::cell::RefCell<Option<String>>,
+    pipeline: std::cell::Cell<bool>,
 }
 
 const CARRIED_AT_MOST: u32 = 1;
 const HELPER_ACTIONS_AT_MOST: usize = 5;
+const STAGES_DEEP: u32 = 1;
 static STRONGER: &[&str] = &["keep", "change", "create", "remove", "read"];
 const PROGRAM_NAMED_AT_MOST: usize = 40;
 static ANOTHER_PROGRAM: &str = "another program";
@@ -206,6 +208,20 @@ fn plain_type(written: &str) -> Option<String> {
                 | "any" | "unit" | "none" | "object" | "response" | "httpresponse" | "jsonresult" | "ok"
         );
     (!says_nothing).then_some(named)
+}
+
+fn staged_as(reached: &IndexNode) -> String {
+    let said = spoken(&reached.name);
+    if said.contains(' ') {
+        return said;
+    }
+    let path = reached.id.split(':').next().unwrap_or_default();
+    let module = crate::published::offered_from(path).rsplit('/').next().unwrap_or_default();
+    let about = spoken(module).to_lowercase();
+    if about.is_empty() || about == said.to_lowercase() {
+        return said;
+    }
+    format!("{said} {about}")
 }
 
 pub(crate) fn spoken(named: &str) -> String {
@@ -380,7 +396,7 @@ impl<'a> Reader<'a> {
                 _ => (unit, None),
             })
             .collect();
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None), pipeline: std::cell::Cell::new(false) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -666,6 +682,21 @@ impl<'a> Reader<'a> {
             return None;
         }
         Some(Action { kind: "change", object: Some(record.to_string()), doing: Some(spoken(&node.name)), when, arms: Vec::new(), writes: false, unit, line })
+    }
+
+    fn a_stage(&self, at: &IndexNode, reached: &IndexNode, depth: u32) -> bool {
+        self.pipeline.get()
+            && depth <= STAGES_DEEP
+            && reached.file != at.file
+            && reached.callback_of.is_none()
+            && reached.project.is_some()
+            && matches!(reached.kind, crate::model::NodeKind::Function | crate::model::NodeKind::Method)
+            && !reached.id.starts_with("package:")
+            && !reached.id.starts_with("runtime:")
+    }
+
+    fn stage(&self, reached: &IndexNode, when: &'static str, arms: &[(u64, u16)], unit: u32, line: u32) -> Action {
+        Action { kind: "do", object: None, doing: Some(staged_as(reached)), when, arms: arms.to_vec(), writes: false, unit, line }
     }
 
     fn walk(&self, unit: u32, depth: u32, when: &'static str, arms: &[(u64, u16)], visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
@@ -958,6 +989,7 @@ impl<'a> Reader<'a> {
                             });
                             match (matters, within.is_empty()) {
                                 (true, _) => actions.extend(self.condensed(within)),
+                                (false, true) if self.a_stage(node, reached, depth) => actions.push(self.stage(reached, context, &here, unit, shown_line(line))),
                                 (false, true) => {}
                                 (false, false) if !checking && looked_up.is_some() => actions.push(Action {
                                     kind: "read",
@@ -989,7 +1021,9 @@ impl<'a> Reader<'a> {
                             let own = !reached.id.starts_with("package:") && !reached.id.starts_with("runtime:");
                             let unnamed = reached.callback_of.is_some();
                             let a_body_of_work = depth == 0 && within.len() > HELPER_ACTIONS_AT_MOST;
-                            if about_records || !own || within.len() < 2 || a_body_of_work || unnamed {
+                            if within.is_empty() && self.a_stage(node, reached, depth) {
+                                actions.push(self.stage(reached, context, &here, unit, shown_line(line)));
+                            } else if about_records || !own || within.len() < 2 || a_body_of_work || unnamed {
                                 actions.extend(within);
                             } else {
                                 let strongest = ["remove", "keep", "change", "create", "call", "read"]
@@ -1061,6 +1095,7 @@ impl<'a> Reader<'a> {
             return (Vec::new(), Vec::new(), false);
         };
         self.cut.set(false);
+        self.pipeline.set(matches!(entry.kind, "lifecycle" | "cli"));
         *self.home.borrow_mut() = self.nodes[start as usize].project.clone();
         let mut actions: Vec<Action> = Vec::new();
         let first_line = self.nodes[start as usize].span.line;
