@@ -242,6 +242,7 @@ mod tests {
             rank: 0,
             stages: Vec::new(),
             changes: Vec::new(),
+            takes: Vec::new(),
             leads_into: Vec::new(),
             project: Some(part.to_string()),
             unshipped: None,

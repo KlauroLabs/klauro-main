@@ -78,6 +78,7 @@ pub fn does(exit: &ExitPoint) -> &'static str {
     match exit.kind {
         "message" => "send",
         "process" => "start",
+        "output" => "write",
         "api" | "network" => match exit.method {
             Some(method) => by_method(method),
             None => by_words(&exit.operation).unwrap_or("call"),

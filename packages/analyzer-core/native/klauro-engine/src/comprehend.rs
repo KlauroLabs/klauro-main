@@ -69,6 +69,8 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub leads_into: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -383,6 +385,10 @@ static BOOKKEEPING_FIELDS: &[&str] = &["domainevents", "requestedhashcode"];
 
 fn changes(exit: &ExitPoint) -> bool {
     matches!(exit.does.unwrap_or_else(|| crate::effects::does(exit)), "write" | "delete" | "send" | "start")
+}
+
+fn takes_in(exit: &ExitPoint) -> bool {
+    exit.does.unwrap_or_else(|| crate::effects::does(exit)) == "read" && !matches!(exit.kind, "database" | "cache")
 }
 
 pub(crate) const PUBLISHED: &str = "published";
@@ -2025,6 +2031,7 @@ pub fn derive(
         }
         let mut steps = Vec::new();
         let mut changing: Vec<String> = Vec::new();
+        let mut taking: Vec<String> = Vec::new();
         let mut into: Vec<String> = Vec::new();
         let mut carrying: Vec<Shared> = Vec::new();
         let mut reaching: Vec<String> = Vec::new();
@@ -2053,6 +2060,9 @@ pub fn derive(
             for exit in leaving.get(unit).into_iter().flatten() {
                 if changes(exit) {
                     changing.push(format!("{}:{}", exit.kind, exit.operation));
+                }
+                if takes_in(exit) {
+                    taking.push(format!("{}:{}", exit.kind, exit.operation));
                 }
                 if let Some(service) = exit.service.as_deref()
                     && !reaching.iter().any(|held| held == service)
@@ -2367,6 +2377,11 @@ pub fn derive(
                 &leaving,
             ),
             changes: changing,
+            takes: {
+                taking.sort();
+                taking.dedup();
+                taking
+            },
             leads_into: into,
             project: nodes[start as usize].project.clone(),
             unshipped: entry.unshipped.clone(),

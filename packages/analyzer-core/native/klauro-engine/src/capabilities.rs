@@ -827,6 +827,7 @@ mod command_family_tests {
             rank: 0,
             stages: Vec::new(),
             changes: Vec::new(),
+            takes: Vec::new(),
             leads_into: Vec::new(),
             project: None,
             unshipped: None,

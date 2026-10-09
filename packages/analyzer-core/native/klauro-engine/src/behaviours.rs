@@ -193,7 +193,7 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, l
     if matches!(flow.kind, "message" | "event") {
         lines.push("The trigger is a message received from elsewhere: its name says what already happened there. This behaviour is only what this part does in response.".to_string());
     }
-    for (held, word) in [(&flow.writes, "keeps"), (&flow.changes, "changes"), (&flow.reaches, "reaches")] {
+    for (held, word) in [(&flow.takes, "takes in"), (&flow.writes, "keeps"), (&flow.changes, "changes"), (&flow.reaches, "reaches")] {
         if !held.is_empty() {
             lines.push(format!("{word}: {}", held.join(", ")));
         }
@@ -631,6 +631,7 @@ mod tests {
             rank: 0,
             stages: Vec::new(),
             changes: Vec::new(),
+            takes: Vec::new(),
             leads_into: Vec::new(),
             project: None,
             unshipped: None,
