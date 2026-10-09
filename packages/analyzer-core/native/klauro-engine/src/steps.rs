@@ -1244,7 +1244,7 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod reading {
-    use super::acted_through_a_library;
+    use super::{acted_through_a_library, evenly};
 
     #[test]
     fn a_long_flow_keeps_its_beginning_and_its_end() {
