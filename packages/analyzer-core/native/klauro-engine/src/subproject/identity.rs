@@ -351,7 +351,7 @@ fn unique_names(named: Vec<(String, &'static str)>) -> Vec<String> {
         .collect()
 }
 
-pub fn assign(partition: &mut Partition, facts: &Facts) {
+fn read_parts<'a>(partition: &'a Partition, facts: &'a Facts<'a>) -> (Vec<Tally<'a>>, Vec<(&'static str, String)>, Vec<String>) {
     let roots: Vec<(usize, &str)> = partition
         .sub_projects
         .iter()
@@ -447,6 +447,23 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
             })
             .collect(),
     ));
+    (tallies, kinds, names)
+}
+
+pub fn classify(partition: &mut Partition, facts: &Facts) {
+    let (tallies, kinds, names) = read_parts(partition, facts);
+    let summaries: Vec<String> = tallies.iter().zip(partition.sub_projects.iter()).zip(kinds.iter()).map(|((tally, project), (kind, _))| plain_summary(kind, tally, project)).collect();
+    drop(tallies);
+    for ((project, summary), ((kind, basis), name)) in partition.sub_projects.iter_mut().zip(summaries).zip(kinds.into_iter().zip(names)) {
+        project.summary = summary;
+        project.role = kind;
+        project.role_basis = basis;
+        project.display_name = name;
+    }
+}
+
+pub fn assign(partition: &mut Partition, facts: &Facts) {
+    let (tallies, kinds, names) = read_parts(partition, facts);
     let reads: Vec<Reading> = tallies
         .iter()
         .zip(partition.sub_projects.iter())

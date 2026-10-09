@@ -681,8 +681,8 @@ pub const CAPABILITIES_ASKED: &str = "These are the behaviours of one part of a 
 Group them into the capabilities this part gives the people or systems it serves. A capability is an outcome someone comes to this part for, such as placing an order or keeping a catalogue of products, not a technical mechanism. \
 A capability gathers every behaviour that serves the same outcome: the creating, changing and viewing of the same thing, the requests and screens of one area of the product, the recurring jobs that together keep one kind of information current. \
 A capability holding a single behaviour is right only when nothing else here serves its outcome. A reader should hold the whole list in mind at once, so a part rarely has more than eight. \
-Name each capability in plain, grammatical words a product manager would use, a verb and its object in at most six words, never code names, and say its outcome in one sentence. \
-A behaviour that exists only to support others, such as signing in, settings, health checks, start-up, diagnostics or housekeeping, is not a capability of its own: list it as supporting under the capability it serves. \
+Name each capability in plain, grammatical words a product manager would use, starting with a verb followed by its object in at most six words (Place orders, never Order history), never code names, and say its outcome in one sentence. \
+A behaviour that exists only to support others, such as signing in, settings, health and status checks, start-up, diagnostics or housekeeping, is not a capability of its own: list it as supporting under the capability it serves, even when that is the only capability. \
 Put each behaviour number in exactly one capability, either among its behaviours or among its supporting behaviours. Two capabilities never share a name or an outcome. \
 Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services.";
 

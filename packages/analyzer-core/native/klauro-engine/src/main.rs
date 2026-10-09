@@ -1581,6 +1581,30 @@ fn read_it() {
     let scope = std::env::var("KLAURO_PROJECT_SCOPE").ok().filter(|held| !held.is_empty()).unwrap_or_else(|| {
         std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()).display().to_string()
     });
+    let repository = root.file_name().and_then(|held| held.to_str()).unwrap_or_default().to_string();
+    let written: Vec<String> = index
+        .files
+        .iter()
+        .filter(|file| file.path.to_ascii_lowercase().ends_with(".md") && !crate::paths::is_test(&file.path))
+        .take(SPELLING_DOCUMENTS)
+        .filter_map(|file| crate::paths::read_inside(&root, &file.path))
+        .collect();
+    let spelled = subproject::identity::spellings(written.iter().map(String::as_str));
+    if let Some(partition) = index.partition.as_mut() {
+        let facts = subproject::identity::Facts {
+            files: index.files.iter().map(|file| (file.path.as_str(), file.language)).collect(),
+            entry_points: &index.entry_points,
+            exit_points: &index.exit_points,
+            testing: index.imports.iter().filter(|import| dependencies::tests_with(&import.specifier)).map(|import| import.file).collect(),
+            products: &[],
+            capabilities: &[],
+            repository: &repository,
+            scope: &scope,
+            deployables: index.scope.as_ref().map(|held| held.deployables.as_slice()).unwrap_or(&[]),
+            spelled: &spelled,
+        };
+        subproject::identity::classify(partition, &facts);
+    }
     let told = comprehend::Telling {
         scope: &scope,
         shape: index.architecture.as_ref().map(|shaped| shaped.shape).unwrap_or("unknown"),
@@ -1602,6 +1626,7 @@ fn read_it() {
         languages,
         frameworks,
         composition: index.composition.as_ref(),
+        checks: test_cases_of_suites(&index, &paths),
     };
     if let Some(split) = index.partition.as_ref() {
         let facts = behaviours::Facts {
@@ -1666,15 +1691,6 @@ fn read_it() {
         composition.not_promoted = summary.not_promoted;
     }
     if let Some(partition) = index.partition.as_mut() {
-        let repository = root.file_name().and_then(|held| held.to_str()).unwrap_or_default();
-        let written: Vec<String> = index
-            .files
-            .iter()
-            .filter(|file| file.path.to_ascii_lowercase().ends_with(".md") && !crate::paths::is_test(&file.path))
-            .take(SPELLING_DOCUMENTS)
-            .filter_map(|file| crate::paths::read_inside(&root, &file.path))
-            .collect();
-        let spelled = subproject::identity::spellings(written.iter().map(String::as_str));
         let facts = subproject::identity::Facts {
             files: index.files.iter().map(|file| (file.path.as_str(), file.language)).collect(),
             entry_points: &index.entry_points,
@@ -1682,7 +1698,7 @@ fn read_it() {
             testing: index.imports.iter().filter(|import| dependencies::tests_with(&import.specifier)).map(|import| import.file).collect(),
             products: &comprehension.products,
             capabilities: &comprehension.capabilities,
-            repository,
+            repository: &repository,
             scope: &scope,
             deployables: index.scope.as_ref().map(|held| held.deployables.as_slice()).unwrap_or(&[]),
             spelled: &spelled,
@@ -1733,4 +1749,17 @@ fn read_it() {
     out.write_all(&body).unwrap();
     out.flush().unwrap();
     eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), table.len() + body.len());
+}
+
+fn test_cases_of_suites(index: &Index, paths: &[String]) -> rustc_hash::FxHashMap<String, Vec<(String, String)>> {
+    let mut found: rustc_hash::FxHashMap<String, Vec<(String, String)>> = rustc_hash::FxHashMap::default();
+    let Some(split) = index.partition.as_ref() else { return found };
+    let suites: rustc_hash::FxHashSet<&str> = split.sub_projects.iter().filter(|part| part.role == "test suite").map(|part| part.id.as_str()).collect();
+    let owner: rustc_hash::FxHashMap<&str, &str> = split.assignment.iter().map(|(path, id)| (path.as_str(), id.as_str())).collect();
+    for entry in index.entry_points.iter().filter(|entry| entry.kind == "test") {
+        let Some(path) = paths.get(entry.file as usize) else { continue };
+        let Some(part) = owner.get(path.as_str()).copied().filter(|part| suites.contains(part)) else { continue };
+        found.entry(part.to_string()).or_default().push((path.clone(), entry.name.clone()));
+    }
+    found
 }

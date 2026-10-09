@@ -136,7 +136,41 @@ fn by_folder<'a>(offered: &[&'a Flow]) -> Vec<(&'a str, Vec<&'a Flow>)> {
     chosen.into_iter().collect()
 }
 
-pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered_as: &str, landed: &HashMap<&str, String>) -> OfAPart {
+pub(crate) struct Asked<'a> {
+    pub part: Option<&'a str>,
+    pub flows: &'a [&'a Flow],
+    pub quiet: &'a [&'a Flow],
+    pub checks: &'a [(String, String)],
+    pub said: &'a str,
+    pub remembered_as: &'a str,
+    pub landed: &'a HashMap<&'a str, String>,
+}
+
+fn checked_together(number: usize, folder: &str, cases: &[&str]) -> String {
+    let folder = if folder.is_empty() { "top level" } else { folder };
+    format!("{number}. {folder}: {}", listed(cases.to_vec(), MADE_TOLD))
+}
+
+fn checks_by_folder<'a>(part: Option<&str>, checks: &'a [(String, String)]) -> Vec<(String, Vec<&'a str>)> {
+    let root = part.map(|part| part.strip_prefix("subproject:").unwrap_or(part)).unwrap_or_default();
+    let mut held: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+    for (path, case) in checks {
+        let inside = path.strip_prefix(root).filter(|_| !root.is_empty()).map(|rest| rest.trim_start_matches('/')).unwrap_or(path);
+        let folder = inside.rsplit_once('/').map(|(folder, _)| folder).unwrap_or("");
+        held.entry(folder.to_string()).or_default().push(case.as_str());
+    }
+    if held.len() > FOLDERS_TOLD_AT_MOST {
+        let mut coarse: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+        for (folder, cases) in held {
+            coarse.entry(folder.split('/').next().unwrap_or_default().to_string()).or_default().extend(cases);
+        }
+        return coarse.into_iter().collect();
+    }
+    held.into_iter().collect()
+}
+
+pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
+    let Asked { part, flows, quiet, checks, said, remembered_as, landed } = *asked;
     let named: Vec<&Flow> = flows.iter().copied().filter(|flow| flow.kind != "test").collect();
     let ships = |flow: &&Flow| !crate::unshipped::is_set_aside(flow.unshipped.as_ref());
     let tiers: [Vec<&Flow>; 4] = [
@@ -146,22 +180,26 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
         quiet.iter().copied().filter(|flow| flow.kind != "test").collect(),
     ];
     let surface_only = tiers[..3].iter().all(Vec::is_empty);
-    let mut offered: Vec<&Flow> = tiers.into_iter().find(|tier| !tier.is_empty()).unwrap_or_default();
+    let checking = surface_only && !checks.is_empty();
+    let mut offered: Vec<&Flow> = if checking { Vec::new() } else { tiers.into_iter().find(|tier| !tier.is_empty()).unwrap_or_default() };
     offered.sort_by(|left, right| left.id.cmp(&right.id));
-    if offered.is_empty() {
+    if offered.is_empty() && !checking {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: ABSENT, reason: Some("the part holds no flow and offers nothing".to_string()) }, pending: BTreeSet::new() };
     }
-    let (folders, groups): (Vec<&str>, Vec<Vec<&Flow>>) = match surface_only {
-        true => by_folder(&offered).into_iter().unzip(),
-        false => offered.iter().map(|flow| ("", vec![*flow])).unzip(),
+    let cases = checks_by_folder(part, checks);
+    let (folders, groups): (Vec<&str>, Vec<Vec<&Flow>>) = match (checking, surface_only) {
+        (true, _) => cases.iter().map(|(folder, _)| (folder.as_str(), Vec::new())).unzip(),
+        (false, true) => by_folder(&offered).into_iter().unzip(),
+        (false, false) => offered.iter().map(|flow| ("", vec![*flow])).unzip(),
     };
     let lines: Vec<String> = groups
         .iter()
         .zip(&folders)
         .enumerate()
-        .map(|(at, (group, folder))| match surface_only {
-            true => offered_together(at + 1, folder, group),
-            false => told(at + 1, group[0], landed),
+        .map(|(at, (group, folder))| match (checking, surface_only) {
+            (true, _) => checked_together(at + 1, folder, &cases[at].1),
+            (false, true) => offered_together(at + 1, folder, group),
+            (false, false) => told(at + 1, group[0], landed),
         })
         .collect();
     if std::env::var("KLAURO_OFFERED_DUMP").is_ok() {
@@ -172,7 +210,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
     if !crate::author::asked() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: PENDING, reason: Some("the AI was not asked".to_string()) }, pending: BTreeSet::new() };
     }
-    let heading = if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
+    let heading = if checking { "What its tests check. Its capabilities are what those tests prove the system does, each named as verifying an outcome, and it has at least one" } else if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
     let key = format!("{remembered_as}\u{1}{prompt}");
     let count = groups.len();
@@ -190,7 +228,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
         eprintln!("answered[{remembered_as}]: {answer}");
     }
     let purposes: Purposes = serde_json::from_value(answer.clone()).unwrap_or_default();
-    let (capabilities, placed) = formed(purposes, &groups, &lines, surface_only);
+    let (capabilities, placed) = formed(purposes, part, &groups, &lines, surface_only);
     let pending: BTreeSet<String> = offered
         .iter()
         .filter(|_| !surface_only)
@@ -208,7 +246,8 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
     }
 }
 
-fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
+fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
+    let project = groups.iter().flatten().next().and_then(|flow| flow.runs_in.clone().or_else(|| flow.project.clone())).or_else(|| part.map(str::to_string));
     let mut capabilities: Vec<Capability> = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
     let unnumbered = purposes.purposes.iter().all(|purpose| purpose.behaviours.is_empty() && purpose.supporting.is_empty());
@@ -220,14 +259,14 @@ fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_o
         let Some(first) = letters.next() else { continue };
         let name: String = first.to_uppercase().chain(letters).collect();
         let mut capability = Capability {
-            id: format!("capability:{}:{}", groups.first().and_then(|group| group.first()).and_then(|flow| flow.runs_in.as_deref().or(flow.project.as_deref())).unwrap_or("root"), crate::comprehend::carved_name(&name)),
+            id: format!("capability:{}:{}", project.as_deref().unwrap_or("root"), crate::comprehend::carved_name(&name)),
             audience: None,
             delivered: Vec::new(),
             records: Vec::new(),
             changes: Vec::new(),
             flows: Vec::new(),
             surfaces: Vec::new(),
-            project: groups.first().and_then(|group| group.first()).and_then(|flow| flow.runs_in.clone().or_else(|| flow.project.clone())),
+            project: project.clone(),
             also_in: Vec::new(),
             place: Some("core"),
             name: Some(name),
@@ -331,7 +370,8 @@ mod tests {
     fn a_library_whose_offers_live_inside_other_parts_flows_is_still_asked_for_its_capabilities() {
         let held = [offered("PublishAsync"), offered("Subscribe")];
         let quiet: Vec<&Flow> = held.iter().collect();
-        let part = of_a_part(&[], &quiet, "Event bus", "events", &HashMap::default());
+        let landed = HashMap::default();
+        let part = of_a_part(&Asked { part: Some("subproject:events"), flows: &[], quiet: &quiet, checks: &[], said: "Event bus", remembered_as: "events", landed: &landed });
         assert_ne!(part.state.capabilities, ABSENT, "a library with code has capabilities at its own level");
         assert!(part.pending.is_empty(), "what a library offers is not a flow of its own, so nothing waits on it");
     }
@@ -347,7 +387,7 @@ mod tests {
         let held = [started];
         let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
         let lines = vec!["1. Start the scheduler".to_string()];
-        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("run scheduled jobs", &[], &[1])] }, &groups, &lines, false);
+        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("run scheduled jobs", &[], &[1])] }, None, &groups, &lines, false);
         assert_eq!(capabilities.len(), 1, "supporting work that serves nothing else in the part is the part's purpose");
         assert_eq!(capabilities[0].delivered[0].role, "primary");
         assert_eq!(capabilities[0].name.as_deref(), Some("Run scheduled jobs"), "a name starts with a capital");
@@ -359,7 +399,7 @@ mod tests {
         let held = [offered("Place order"), offered("Sign in")];
         let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
         let lines = vec!["1. Place order".to_string(), "2. Sign in".to_string()];
-        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[1], &[2])] }, &groups, &lines, false);
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[1], &[2])] }, None, &groups, &lines, false);
         let roles: Vec<&str> = capabilities[0].delivered.iter().map(|delivered| delivered.role).collect();
         assert_eq!(roles, ["primary", "supporting"]);
     }
@@ -410,7 +450,7 @@ mod tests {
         let held = [offered("Save"), offered("Load")];
         let groups: Vec<Vec<&Flow>> = vec![vec![&held[0]], vec![&held[1]]];
         let lines = vec!["1. a".to_string(), "2. b".to_string()];
-        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Keep accounts", &[], &[]), purpose("Keep deposits", &[], &[])] }, &groups, &lines, true);
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Keep accounts", &[], &[]), purpose("Keep deposits", &[], &[])] }, None, &groups, &lines, true);
         assert_eq!(capabilities.len(), 2);
         assert!(capabilities.iter().all(|capability| capability.project.as_deref() == Some("subproject:events")), "each stays with its part");
     }
@@ -420,7 +460,7 @@ mod tests {
         let held = [offered("Run listener")];
         let groups: Vec<Vec<&Flow>> = vec![vec![&held[0]]];
         let lines = vec!["1. Run listener".to_string()];
-        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("Listen for account events", &[], &[])] }, &groups, &lines, false);
+        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("Listen for account events", &[], &[])] }, None, &groups, &lines, false);
         assert_eq!(capabilities.len(), 1);
         assert!(placed.contains(&1));
     }
@@ -430,13 +470,29 @@ mod tests {
         let held = [offered("Place order"), offered("Cancel order")];
         let groups: Vec<Vec<&Flow>> = held.iter().map(|flow| vec![flow]).collect();
         let lines = vec!["1. a".to_string(), "2. b".to_string()];
-        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[], &[])] }, &groups, &lines, false);
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[], &[])] }, None, &groups, &lines, false);
         assert!(capabilities.is_empty(), "a flow is placed only where the answer says");
     }
 
     #[test]
     fn a_part_that_holds_nothing_and_offers_nothing_has_no_capabilities() {
-        let part = of_a_part(&[], &[], "Empty", "empty", &HashMap::default());
+        let landed = HashMap::default();
+        let part = of_a_part(&Asked { part: Some("subproject:empty"), flows: &[], quiet: &[], checks: &[], said: "Empty", remembered_as: "empty", landed: &landed });
         assert_eq!(part.state.capabilities, ABSENT);
+    }
+
+    #[test]
+    fn a_test_suite_is_told_what_its_tests_check_folder_by_folder() {
+        let checks = vec![
+            ("suite/Ordering/OrdersTests.cs".to_string(), "Places an order".to_string()),
+            ("suite/Ordering/OrdersTests.cs".to_string(), "Cancels an order".to_string()),
+            ("suite/Basket/BasketTests.cs".to_string(), "Adds an item".to_string()),
+        ];
+        let folders = checks_by_folder(Some("subproject:suite"), &checks);
+        let lines: Vec<String> = folders.iter().enumerate().map(|(at, (folder, cases))| checked_together(at + 1, folder, cases)).collect();
+        assert_eq!(lines, ["1. Basket: Adds an item", "2. Ordering: Places an order, Cancels an order"]);
+        let landed = HashMap::default();
+        let part = of_a_part(&Asked { part: Some("subproject:suite"), flows: &[], quiet: &[], checks: &checks, said: "Suite", remembered_as: "suite", landed: &landed });
+        assert_ne!(part.state.capabilities, ABSENT, "a test suite has capabilities from what it checks");
     }
 }

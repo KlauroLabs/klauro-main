@@ -538,6 +538,7 @@ pub struct Telling<'a> {
     pub languages: Vec<(String, u32)>,
     pub frameworks: Vec<String>,
     pub composition: Option<&'a crate::composition::Composition>,
+    pub checks: HashMap<String, Vec<(String, String)>>,
 }
 
 const SPOKEN_TO_BY: f64 = 0.15;
@@ -1565,6 +1566,7 @@ pub fn author(
             .iter()
             .chain(held.offered.iter())
             .map(|flow| flow.runs_in.clone().or_else(|| flow.project.clone()))
+            .chain(told.checks.keys().map(|part| Some(part.clone())))
             .collect();
         parts.sort();
         parts.dedup();
@@ -1614,7 +1616,16 @@ pub fn author(
                         .iter()
                         .filter(|flow| flow.runs_in.as_ref().or(flow.project.as_ref()) == part.as_ref())
                         .collect();
-                    let of_the_part = crate::purposes::of_a_part(&flows, &quiet, &said, &remembered_as, &landed);
+                    let checks = part.as_deref().and_then(|held| told.checks.get(held)).map(Vec::as_slice).unwrap_or_default();
+                    let of_the_part = crate::purposes::of_a_part(&crate::purposes::Asked {
+                        part: part.as_deref(),
+                        flows: &flows,
+                        quiet: &quiet,
+                        checks,
+                        said: &said,
+                        remembered_as: &remembered_as,
+                        landed,
+                    });
                     if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
                         kept.insert(part.clone(), of_the_part.state);
                         waiting.extend(of_the_part.pending);
