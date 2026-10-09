@@ -482,6 +482,28 @@ fn spoken_of_part(
     said
 }
 
+pub(crate) struct SaidOfItself {
+    pub opening: String,
+    pub parts: std::collections::BTreeMap<String, String>,
+}
+
+pub(crate) fn said_of_itself(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> SaidOfItself {
+    SaidOfItself { opening: opening_of(&spoken_for(root, nodes, files)), parts: own_words_of_parts(root, nodes, files) }
+}
+
+fn opening_of(said: &str) -> String {
+    let mut paragraph: Vec<&str> = Vec::new();
+    for line in said.lines().map(str::trim) {
+        let decoration = line.starts_with('#') || line.starts_with("![") || line.starts_with("[!") || line.starts_with('<') || line.starts_with("---") || line.starts_with('|');
+        match (line.is_empty() || decoration, paragraph.is_empty()) {
+            (true, true) => continue,
+            (true, false) => break,
+            (false, _) => paragraph.push(line),
+        }
+    }
+    paragraph.join(" ")
+}
+
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
     let mut said = Vec::new();
     for (at, path) in files.iter().enumerate() {
@@ -4593,6 +4615,12 @@ mod tests {
             reads_through: Vec::new(),
             evidence: String::new(),
         }
+    }
+
+    #[test]
+    fn the_opening_of_a_readme_is_its_first_paragraph_of_prose() {
+        let said = "# Shop\n\n![badge](x)\n\nShop sells books online\nto readers everywhere.\n\nMore detail.";
+        assert_eq!(super::opening_of(said), "Shop sells books online to readers everywhere.");
     }
 
     #[test]

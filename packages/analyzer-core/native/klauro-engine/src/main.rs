@@ -1629,7 +1629,9 @@ fn read_it() {
         checks: test_cases_of_suites(&index, &paths),
     };
     if let Some(split) = index.partition.as_ref() {
+        let said_of_itself = comprehend::said_of_itself(&root, &index.nodes, &paths);
         let facts = behaviours::Facts {
+            said_of_itself: &said_of_itself,
             entries: &index.entry_points,
             nodes: &index.nodes,
             part_names: split.sub_projects.iter().map(|part| (part.id.as_str(), part.display_name.as_str())).collect(),

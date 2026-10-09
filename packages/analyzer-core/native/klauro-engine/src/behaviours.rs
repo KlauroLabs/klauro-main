@@ -24,6 +24,7 @@ pub struct Facts<'a> {
     pub nodes: &'a [IndexNode],
     pub part_names: HashMap<&'a str, &'a str>,
     pub part_summaries: HashMap<&'a str, &'a str>,
+    pub said_of_itself: &'a crate::comprehend::SaidOfItself,
     pub consumed: HashSet<&'a str>,
     pub calling: HashSet<&'a str>,
     pub calls: &'a [crate::model::CallFact],
@@ -185,7 +186,14 @@ const STANDING_TOLD_AT_MOST: usize = 60;
 
 fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, landing: &HashMap<&str, String>, one: bool) -> String {
     let part = flow.project.as_deref().map(|held| facts.part_names.get(held).copied().unwrap_or(held)).unwrap_or_default();
-    let mut lines = vec![format!("Part: {part}")];
+    let mut lines = Vec::new();
+    if !facts.said_of_itself.opening.is_empty() {
+        lines.push(format!("The system describes itself: {}", facts.said_of_itself.opening));
+    }
+    lines.push(format!("Part: {part}"));
+    if let Some(own) = flow.project.as_deref().and_then(|held| held.strip_prefix("subproject:")).and_then(|folder| facts.said_of_itself.parts.get(folder)) {
+        lines.push(format!("The part describes itself: {own}"));
+    }
     if let Some(summary) = flow.project.as_deref().and_then(|held| facts.part_summaries.get(held)).filter(|summary| !summary.is_empty()) {
         lines.push(format!("What the part is: {summary}"));
     }
