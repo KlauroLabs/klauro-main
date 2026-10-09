@@ -82,11 +82,33 @@ fn listed(names: Vec<&str>, at_most: usize) -> String {
     said
 }
 
+fn member_of(flow: &Flow) -> &str {
+    flow.path
+        .first()
+        .and_then(|start| start.unit.rsplit(':').next())
+        .map(|leaf| leaf.split('@').next().unwrap_or(leaf))
+        .filter(|leaf| !leaf.is_empty() && !leaf.contains('/'))
+        .unwrap_or(&flow.operation)
+}
+
 fn offered_together(number: usize, folder: &str, group: &[&Flow]) -> String {
     let folder = if folder.is_empty() { "top level" } else { folder };
     let made: Vec<&str> = group.iter().map(|flow| flow.surface.as_deref().unwrap_or(&flow.operation).rsplit('/').next().unwrap_or_default()).collect();
-    let members: Vec<&str> = group.iter().map(|flow| flow.operation.as_str()).collect();
-    format!("{number}. {folder}: {} | offers: {}", listed(made, MADE_TOLD), listed(members, MEMBERS_TOLD))
+    let members: Vec<&str> = group.iter().map(|flow| member_of(flow)).collect();
+    let mut said = format!("{number}. {folder}: {} | offers: {}", listed(made, MADE_TOLD), listed(members, MEMBERS_TOLD));
+    let done: Vec<&str> = group.iter().flat_map(|flow| flow.steps.iter()).filter(|step| step.kind != "respond").map(|step| step.label.as_str()).filter(|label| !label.is_empty()).collect();
+    if !done.is_empty() {
+        said.push_str(&format!(" | does: {}", listed(done, MEMBERS_TOLD)));
+    }
+    let kept: Vec<String> = group.iter().flat_map(|flow| flow.writes.iter()).map(|record| crate::names::spoken_as(record)).collect();
+    if !kept.is_empty() {
+        said.push_str(&format!(" | keeps: {}", listed(kept.iter().map(String::as_str).collect(), RECORDS_TOLD)));
+    }
+    let read: Vec<String> = group.iter().flat_map(|flow| flow.reads.iter()).map(|record| crate::names::spoken_as(record)).collect();
+    if !read.is_empty() {
+        said.push_str(&format!(" | reads: {}", listed(read.iter().map(String::as_str).collect(), RECORDS_TOLD)));
+    }
+    said
 }
 
 fn by_folder<'a>(offered: &[&'a Flow]) -> Vec<(&'a str, Vec<&'a Flow>)> {
@@ -339,6 +361,20 @@ mod tests {
         }
         assert_eq!(folder_of(&first), "Bus");
         assert_eq!(offered_together(1, "Bus", &[&first, &second]), "1. Bus: Publisher, Subscriber | offers: Publish, Subscribe");
+        let step = |kind: &'static str, label: &str| crate::steps::LogicalStep {
+            id: label.to_string(),
+            kind,
+            label: label.to_string(),
+            object: None,
+            doing: None,
+            when: "always",
+            arms: Vec::new(),
+            regions: Vec::new(),
+            description: None,
+            lands_in: Vec::new(),
+        };
+        third.steps = vec![step("call", "Call /events"), step("respond", "Respond")];
+        assert_eq!(offered_together(2, "Log", &[&third]), "2. Log: Store | offers: Save | does: Call /events", "what the code does is told, never its replies");
         let grouped = by_folder(&[&first, &second, &third]);
         assert_eq!(grouped.iter().map(|(folder, group)| (*folder, group.len())).collect::<Vec<_>>(), [("Bus", 2), ("Log", 1)]);
         assert_eq!(folder_of(&third), "Log");
