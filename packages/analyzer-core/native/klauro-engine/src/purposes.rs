@@ -227,7 +227,7 @@ fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_o
             changes: Vec::new(),
             flows: Vec::new(),
             surfaces: Vec::new(),
-            project: None,
+            project: groups.first().and_then(|group| group.first()).and_then(|flow| flow.runs_in.clone().or_else(|| flow.project.clone())),
             also_in: Vec::new(),
             place: Some("core"),
             name: Some(name),
@@ -259,7 +259,6 @@ fn formed(purposes: Purposes, groups: &[Vec<&Flow>], lines: &[String], surface_o
                     primaries += 1;
                 }
                 for flow in group {
-                    capability.project = capability.project.take().or_else(|| flow.runs_in.clone().or_else(|| flow.project.clone()));
                     if !surface_only {
                         capability.delivered.push(Delivery { flow: flow.id.clone(), role, rationale: String::new(), unshipped: None });
                     }
@@ -413,6 +412,7 @@ mod tests {
         let lines = vec!["1. a".to_string(), "2. b".to_string()];
         let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Keep accounts", &[], &[]), purpose("Keep deposits", &[], &[])] }, &groups, &lines, true);
         assert_eq!(capabilities.len(), 2);
+        assert!(capabilities.iter().all(|capability| capability.project.as_deref() == Some("subproject:events")), "each stays with its part");
     }
 
     #[test]
