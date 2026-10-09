@@ -210,6 +210,27 @@ fn plain_type(written: &str) -> Option<String> {
     (!says_nothing).then_some(named)
 }
 
+fn evenly(of: &[usize], taking: usize) -> Vec<usize> {
+    match (of.len(), taking) {
+        (_, 0) | (0, _) => Vec::new(),
+        (all, wanted) if wanted >= all => of.to_vec(),
+        (_, 1) => vec![of[of.len() - 1]],
+        (all, wanted) => (0..wanted).map(|at| of[at * (all - 1) / (wanted - 1)]).collect(),
+    }
+}
+
+fn spread(settled: Vec<Action>) -> Vec<Action> {
+    if settled.len() <= STEPS_AT_MOST {
+        return settled;
+    }
+    let stages: Vec<usize> = settled.iter().enumerate().filter(|(_, action)| action.kind == "do").map(|(at, _)| at).collect();
+    let effects: Vec<usize> = settled.iter().enumerate().filter(|(_, action)| action.kind != "do").map(|(at, _)| at).collect();
+    let effects_room = STEPS_AT_MOST - stages.len().min(STEPS_AT_MOST / 2);
+    let mut kept: std::collections::BTreeSet<usize> = evenly(&effects, effects_room).into_iter().collect();
+    kept.extend(evenly(&stages, STEPS_AT_MOST - kept.len()));
+    settled.into_iter().enumerate().filter(|(at, _)| kept.contains(at)).map(|(_, action)| action).collect()
+}
+
 fn staged_as(reached: &IndexNode) -> String {
     let said = spoken(&reached.name);
     if said.contains(' ') {
@@ -1159,6 +1180,7 @@ impl<'a> Reader<'a> {
             }
             settled.push(action);
         }
+        let settled = spread(settled);
         let mut steps: Vec<LogicalStep> = Vec::new();
         let mut last_when: Vec<&'static str> = Vec::new();
         for action in settled {
@@ -1223,6 +1245,13 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod reading {
     use super::acted_through_a_library;
+
+    #[test]
+    fn a_long_flow_keeps_its_beginning_and_its_end() {
+        assert_eq!(evenly(&[1, 2, 3, 4, 5, 6, 7, 8, 9], 3), [1, 5, 9]);
+        assert_eq!(evenly(&[4, 8], 5), [4, 8]);
+        assert_eq!(evenly(&[4, 8], 1), [8]);
+    }
 
     #[test]
     fn an_action_taken_through_a_library_is_a_step_and_a_lookup_is_not() {
