@@ -97,7 +97,6 @@ mod shapes;
 mod services;
 mod surfaces;
 mod tables;
-mod told_paths;
 mod injection;
 mod solidity_security;
 mod source_rewrite;

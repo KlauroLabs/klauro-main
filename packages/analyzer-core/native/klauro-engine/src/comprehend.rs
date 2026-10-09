@@ -9,7 +9,6 @@ use crate::model::*;
 use crate::tables::{Column, Table};
 
 mod stages;
-mod vocabulary;
 
 pub use stages::Stage;
 
@@ -387,7 +386,6 @@ fn changes(exit: &ExitPoint) -> bool {
 }
 
 pub(crate) const PUBLISHED: &str = "published";
-pub(crate) const PROVISIONAL: &str = "provisional";
 
 fn spoken_within(spoken: &str, part: Option<&str>) -> String {
     match part {
@@ -515,33 +513,6 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
         false => said.join("\n"),
     }
 }
-
-const EXCERPTS_SHOWN: usize = 2;
-const DISTINCT_WORD: usize = 5;
-const SETTING_LINES_SHOWN: usize = 12;
-static SAID_OF_ANY_CAPABILITY: &[&str] = &[
-    "access", "account", "create", "delete", "detail", "details", "handle", "items", "manage",
-    "orders", "process", "receive", "update", "users", "using", "their", "through", "with",
-];
-static SETS_UP: &[&str] = &[
-    "appsettings",
-    "config",
-    "configuration",
-    "program",
-    "settings",
-    "setup",
-    "startup",
-];
-
-fn sets_up_a_part(path: &str) -> bool {
-    let named = crate::paths::basename(path).to_ascii_lowercase();
-    let stem = named.split('.').next().unwrap_or(&named);
-    !crate::paths::is_test(path)
-        && SETS_UP
-            .iter()
-            .any(|word| stem == *word || stem.ends_with(word) || stem.starts_with(word))
-}
-const EXCERPT_LINES: usize = 30;
 
 pub struct Telling<'a> {
     pub scope: &'a str,
@@ -1031,184 +1002,7 @@ fn score_capabilities(capabilities: &mut [Capability], confidence_of: &HashMap<&
     }
 }
 
-fn test_capabilities(
-    capabilities: &mut Vec<Capability>,
-    spoken: &str,
-    level: &str,
-    excerpt: &(dyn Fn(&Capability) -> String + Sync),
-) {
-    let tests: Vec<(String, String)> = capabilities
-        .iter()
-        .map(|capability| {
-            let told: String = capability
-                .evidence
-                .lines()
-                .filter(|line| {
-                    !line
-                        .trim_start()
-                        .starts_with(crate::capabilities::RECORDS_HOLD)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-                .chars()
-                .take(EVIDENCE_TESTED)
-                .collect();
-            let facts = format!(
-                "FACTS read from the code about what it delivers:\n{}\n\n\
-                 PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}\nFOR: {}",
-                match told.is_empty() {
-                    true => format!(
-                        "  reached through: {}\n  writes: {}",
-                        capability.surfaces.join(", "),
-                        capability.records.join(", ")
-                    ),
-                    false => told,
-                },
-                capability.name.as_deref().unwrap_or(""),
-                capability.description.as_deref().unwrap_or(""),
-                capability.audience.as_deref().unwrap_or("someone")
-            );
-            (capability.id.clone(), facts)
-        })
-        .collect();
-    let context = format!("A software system describes itself like this:\n{spoken}");
-    let context = format!(
-        "{context}\n\u{1}{level}\u{1}{}",
-        crate::author::questions_asked()
-    );
-    let clock = std::time::Instant::now();
-    let judged = crate::memory::each("judged", &context, &tests, |missing| {
-        crate::author::test_capabilities(
-            context.split('\u{1}').next().unwrap_or_default(),
-            missing,
-            level,
-        )
-    });
-    let facts_of: HashMap<String, String> = tests.iter().cloned().collect();
-    capabilities.retain_mut(|capability| {
-        let Some(grounding) = judged.get(&capability.id).copied() else {
-            capability.unsettled = Some(crate::confidence::AI_UNANSWERED);
-            capability.standing = PROVISIONAL;
-            return true;
-        };
-        crate::dataset::record(
-            "capability",
-            serde_json::json!({
-                "level": level,
-                "context": spoken,
-                "facts": facts_of.get(&capability.id),
-                "name": capability.name,
-                "description": capability.description,
-                "audience": capability.audience,
-                "terminality": capability.terminality,
-                "grounding": grounding,
-                "delivered": grounding.delivers(),
-            }),
-        );
-        capability.grounding = Some(grounding);
-        capability.standing = match grounding.stands() {
-            true => PUBLISHED,
-            false => PROVISIONAL,
-        };
-        let delivers = grounding.delivers();
-        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-            eprintln!(
-                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} scope {:.2} universal {:.2} mechanism {:.2} hollow {:.2} -> {} {}",
-                capability.name.as_deref().unwrap_or(""),
-                grounding.supported,
-                grounding.invented,
-                grounding.outcome,
-                grounding.scope.unwrap_or(0.0),
-                grounding.universal.unwrap_or(1.0),
-                grounding.mechanism.unwrap_or(0.0),
-                grounding.hollow.unwrap_or(0.0),
-                capability.standing,
-                if delivers { "kept" } else { "absent" }
-            );
-        }
-        delivers
-    });
-    let told: Vec<(String, String)> = capabilities
-        .iter()
-        .map(|capability| {
-            let facts = facts_of.get(&capability.id).cloned().unwrap_or_default();
-            let facts = facts
-                .replacen("PROPOSED CAPABILITY", "  proposed name", 1)
-                .replacen("PROPOSED DESCRIPTION", "  proposed sentence", 1);
-            let code = excerpt(capability);
-            let told = match code.is_empty() {
-                true => facts,
-                false => format!("{facts}\n  the code where it starts:\n{code}"),
-            };
-            (capability.id.clone(), told)
-        })
-        .collect();
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!(
-            "  judged {} capabilities for {level} in {:?}",
-            told.len(),
-            clock.elapsed()
-        );
-    }
-    let clock = std::time::Instant::now();
-    let tightened_all = crate::author::tighten_claims(spoken, &told);
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!(
-            "  reworded {} capabilities for {level} in {:?}",
-            told.len(),
-            clock.elapsed()
-        );
-    }
-    for tightened in tightened_all.iter() {
-        if let Some(capability) = capabilities
-            .iter_mut()
-            .find(|capability| capability.id == tightened.id)
-        {
-            capability.name = Some(tightened.name.trim().to_string());
-            if !tightened.description.trim().is_empty() {
-                capability.description = Some(tightened.description.trim().to_string());
-            }
-        }
-    }
-}
-
-fn what_each_is_for(held: &[Capability], spoken: &str) -> Vec<Option<&'static str>> {
-    let listed: Vec<(String, String)> = held
-        .iter()
-        .enumerate()
-        .map(|(at, capability)| {
-            (
-                format!("p{at}"),
-                format!(
-                    "  it is called: {}\n  for: {}\n  what someone gets: {}",
-                    capability.name.as_deref().unwrap_or(""),
-                    capability.audience.as_deref().unwrap_or("someone"),
-                    capability.description.as_deref().unwrap_or("")
-                ),
-            )
-        })
-        .collect();
-    let said = crate::memory::each("placed", spoken, &listed, |missing| {
-        crate::author::what_it_is_for(spoken, &missing.iter().cloned().collect())
-    });
-    (0..held.len())
-        .map(|at| match said.get(&format!("p{at}")).map(String::as_str) {
-            Some("terminal") => Some("terminal"),
-            Some("proximal") => Some("proximal"),
-            Some("supporting") => Some("supporting"),
-            _ => None,
-        })
-        .collect()
-}
-
-fn set_places(held: &mut [Capability], places: Vec<Option<&'static str>>) {
-    for (capability, place) in held.iter_mut().zip(places) {
-        capability.place = place;
-    }
-}
-
 const EVIDENCE_HELD: usize = 9000;
-const EVIDENCE_TESTED: usize = 6000;
 
 pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
@@ -1393,122 +1187,6 @@ pub fn author(
     }
     let spoken = spoken_for(root, nodes, files);
     let own_words = own_words_of_parts(root, nodes, files);
-    let root_path = root;
-    let node_at: HashMap<&str, &IndexNode> =
-        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let flow_at: HashMap<String, (String, u32, u32)> = held
-        .flows
-        .iter()
-        .filter_map(|flow| {
-            let start = node_at.get(flow.path.first()?.unit.as_str())?;
-            Some((
-                flow.id.clone(),
-                (
-                    files.get(start.file as usize)?.clone(),
-                    start.span.line,
-                    start.span.end_line,
-                ),
-            ))
-        })
-        .collect();
-    let configured_in: HashMap<&str, Vec<&str>> = {
-        let mut held_in: HashMap<&str, Vec<&str>> = HashMap::default();
-        for path in files.iter().filter(|path| sets_up_a_part(path)) {
-            held_in
-                .entry(crate::paths::directory_of(path))
-                .or_default()
-                .push(path.as_str());
-        }
-        held_in
-    };
-    let configuration = |capability: &Capability| -> String {
-        let Some(root) = capability
-            .project
-            .as_deref()
-            .or(capability.also_in.first().map(String::as_str))
-            .and_then(|part| part.strip_prefix("subproject:"))
-        else {
-            return String::new();
-        };
-        let words: Vec<String> = capability
-            .name
-            .as_deref()
-            .unwrap_or_default()
-            .split(|held: char| !held.is_alphanumeric())
-            .map(str::to_ascii_lowercase)
-            .filter(|word| {
-                word.len() >= DISTINCT_WORD && !SAID_OF_ANY_CAPABILITY.contains(&word.as_str())
-            })
-            .collect();
-        if words.is_empty() {
-            return String::new();
-        }
-        let setting_files: Vec<&str> = configured_in
-            .iter()
-            .filter(|(directory, _)| crate::paths::contains(root, directory))
-            .flat_map(|(_, held)| held.iter().copied())
-            .collect();
-        if setting_files.is_empty() {
-            return String::new();
-        }
-        let mut matched: Vec<String> = Vec::new();
-        for path in &setting_files {
-            let Some(text) = crate::paths::read_inside(root_path, path) else {
-                continue;
-            };
-            for (at, line) in text.lines().enumerate() {
-                let lowered = line.to_ascii_lowercase();
-                if words.iter().any(|word| lowered.contains(word.as_str()))
-                    && matched.len() < SETTING_LINES_SHOWN
-                {
-                    matched.push(format!("    {path}:{} | {}", at + 1, line.trim()));
-                }
-            }
-        }
-        match matched.is_empty() {
-            true => format!(
-                "  the part's setup ({}) mentions none of: {}",
-                setting_files.join(", "),
-                words.join(", ")
-            ),
-            false => format!(
-                "  where the part's setup mentions it:\n{}",
-                matched.join("\n")
-            ),
-        }
-    };
-    let excerpt = |capability: &Capability| -> String {
-        let setup = configuration(capability);
-        let code = capability
-            .flows
-            .iter()
-            .filter_map(|flow| flow_at.get(flow))
-            .take(EXCERPTS_SHOWN)
-            .filter_map(|(path, line, end)| {
-                let text = crate::paths::read_inside(root, path)?;
-                let from = line.saturating_sub(1) as usize;
-                let to = (*end as usize).min(from + EXCERPT_LINES);
-                let shown: Vec<&str> = text
-                    .lines()
-                    .skip(from)
-                    .take(to.saturating_sub(from).max(1))
-                    .collect();
-                Some(format!(
-                    "    {path}:{line}\n{}",
-                    shown
-                        .iter()
-                        .map(|held| format!("    | {held}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        match setup.is_empty() {
-            true => code,
-            false => format!("{code}\n{setup}"),
-        }
-    };
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ticket = 0;
@@ -1563,8 +1241,6 @@ pub fn author(
         );
     }
     crate::author::began();
-    let paths = crate::told_paths::Paths::new(&spoken);
-    let vocabulary = vocabulary::Vocabulary::of(nodes, &held.entities, &held.flows, &told.frameworks);
     let started = std::time::Instant::now();
     let reaching = rayon::ThreadPoolBuilder::new()
         .num_threads(crate::author::reaching_at_once(REACHING_AT_ONCE))
@@ -1602,7 +1278,7 @@ pub fn author(
         let (describing, described_rx) = std::sync::mpsc::channel::<Option<Product>>();
         let described_rx = std::sync::Mutex::new(described_rx);
         let expected = std::sync::atomic::AtomicUsize::new(0);
-        let (paths_ref, flows_ref, entities_ref, spoken_ref) = (&paths, &held.flows, &held.entities, &spoken);
+        let (entities_ref, spoken_ref) = (&held.entities, &spoken);
         let offered_ref = &held.offered;
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -1617,7 +1293,6 @@ pub fn author(
                     *slot = Some((written, grounded));
                 }
             });
-            scope.spawn(|| paths.tell_the_busiest(&held.flows));
             let read: Vec<Vec<Capability>> = parts
                 .par_iter()
                 .map_with(describing, |describing, part| {
@@ -1651,27 +1326,9 @@ pub fn author(
                     }
                     let mut found = of_the_part.capabilities;
                     crate::author::mark(&format!("{label} placed"));
-                    test_capabilities(
-                        &mut found,
-                        &said,
-                        if part.is_some() {
-                            "this part of the system"
-                        } else {
-                            "this system"
-                        },
-                        &excerpt,
-                    );
-                    vocabulary::keep_readable(&mut found, &vocabulary, &said);
-                    crate::author::mark(&format!("{label} tested"));
-                    let (places, same) = rayon::join(
-                        || what_each_is_for(&found, &said),
-                        || crate::capabilities::which_are_the_same(&found, &said),
-                    );
-                    set_places(&mut found, places);
+                    let same = crate::capabilities::which_are_the_same(&found, &said);
                     crate::capabilities::merge_the_same(&mut found, same);
                     crate::author::mark(&format!("{label} merged"));
-                    let delivering = found.clone();
-                    scope.spawn(move || paths_ref.tell_what_delivers(&delivering, flows_ref));
                     if let (true, Some(named)) = (several, part.as_deref())
                         && !found.is_empty()
                     {
@@ -1716,11 +1373,6 @@ pub fn author(
                     })
                     .cloned()
                     .collect();
-                let judged_in_a_part: HashSet<&str> = served
-                    .iter()
-                    .filter(|capability| capability.grounding.is_some())
-                    .map(|capability| capability.id.as_str())
-                    .collect();
                 let derived = told.composition.and_then(|composition| {
                     crate::parent::derive(
                         composition,
@@ -1731,40 +1383,13 @@ pub fn author(
                     )
                 });
                 let (mut whole, listed_parts, reasons) = match derived {
-                    Some((listed, derivation)) => {
-                        let mut whole = derivation.capabilities;
-                        test_capabilities(
-                            &mut whole,
-                            &spoken,
-                            "this system as a whole",
-                            &excerpt,
-                        );
-                        (whole, Some(listed), derivation.reasons)
-                    }
-                    None => {
-                        let (carried, mut whole): (Vec<Capability>, Vec<Capability>) =
-                            crate::capabilities::of_the_whole(
-                                &served,
-                                &spoken,
-                                told.scope,
-                                &held.flows,
-                            )
-                            .into_iter()
-                            .partition(|capability| {
-                                judged_in_a_part.contains(capability.id.as_str())
-                                    && capability.also_in.len() <= 1
-                            });
-                        test_capabilities(
-                            &mut whole,
-                            &spoken,
-                            "this system as a whole",
-                            &excerpt,
-                        );
-                        whole.extend(carried);
-                        (whole, None, std::collections::BTreeMap::new())
-                    }
+                    Some((listed, derivation)) => (derivation.capabilities, Some(listed), derivation.reasons),
+                    None => (
+                        crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows),
+                        None,
+                        std::collections::BTreeMap::new(),
+                    ),
                 };
-                vocabulary::keep_readable(&mut whole, &vocabulary, &spoken);
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
                 eprintln!(
                     "  author read {} capabilities across the parts into {} for the whole",
@@ -1775,13 +1400,8 @@ pub fn author(
                 together.extend(whole.iter().cloned());
                 together.sort_by(|left, right| left.id.cmp(&right.id));
                 let formed = started.elapsed();
-                let ((places, same), products) = rayon::join(
-                    || {
-                        rayon::join(
-                            || what_each_is_for(&whole, &spoken),
-                            || crate::capabilities::which_are_the_same(&whole, &spoken),
-                        )
-                    },
+                let (same, products) = rayon::join(
+                    || crate::capabilities::which_are_the_same(&whole, &spoken),
                     || {
                         {
                             let mut described: Vec<Product> = (0..expected
@@ -1803,11 +1423,8 @@ pub fn author(
                         }
                     },
                 );
-                set_places(&mut whole, places);
                 crate::capabilities::merge_the_same(&mut whole, same);
                 crate::capabilities::keep_levels_apart(&mut capabilities, &mut whole);
-                let delivering = whole.clone();
-                scope.spawn(move || paths_ref.tell_what_delivers(&delivering, flows_ref));
                 let summary = match (told.composition, listed_parts) {
                     (Some(composition), Some(_)) => {
                         crate::parent::keep_traceable(&mut whole, composition);
@@ -1865,7 +1482,6 @@ pub fn author(
     ));
     held.products = products;
     held.derivation = summary;
-    paths.settle(held);
     let confidence_of: HashMap<&str, f64> = held
         .flows
         .iter()

@@ -9,21 +9,14 @@ use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const GROUNDED: f64 = 0.5;
-const ONLY_STORED: f64 = 1.5;
 
-const ONLY_MECHANISM: f64 = 1.5;
-
-const CLAIMED_BY_ITS_OWN_WORDS: f64 = 0.75;
-const ONLY_THIS_PRODUCT: f64 = 0.25;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub const DEFERRED: u8 = 0;
 pub const DESCRIBING_ASK: u8 = 5;
-pub const WEIGHING: u8 = 6;
 pub const JOINING: u8 = 7;
-pub const TIGHTENING: u8 = 7;
 pub const DERIVING: u8 = 9;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
@@ -225,18 +218,6 @@ pub fn name_them(
     named
 }
 
-pub fn per_call_for(groups: usize) -> usize {
-    if spoken_to().is_some() {
-        return NAMED_PER_SPOKEN_CALL;
-    }
-    groups.div_ceil(CALLS_AT_ONCE).clamp(LEAST_PER_CALL, NAMED_PER_CALL)
-}
-
-const CALLS_AT_ONCE: usize = 12;
-const LEAST_PER_CALL: usize = 6;
-
-
-
 fn name_batch(member: &str, spoken_for: &str, listed: &[String], again: bool) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     let prompt = format!(
@@ -372,132 +353,6 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
-pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    if !asked() || listed.is_empty() {
-        return BTreeMap::new();
-    }
-    let listed: Vec<(&String, &String)> = listed.iter().collect();
-    let per_call = per_call_for(listed.len());
-    let weight = weight();
-    asking(|| {
-        listed
-            .par_chunks(per_call.max(1))
-            .map(|chunk| {
-                weighing(weight, || {
-                    place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
-                })
-            })
-            .reduce(BTreeMap::new, |mut into, held| {
-                into.extend(held);
-                into
-            })
-    })
-}
-
-const PATHS_PER_CALL: usize = 12;
-
-pub const IN_THE_USERS_WORDS: &str = "Write the name and the sentence in the words of the person who gets it: never name an internal command, message channel, handler or function, and never say that something is called through a command or a channel. A route that a client of a web API calls may be named when it is what the outcome offers.";
-
-pub const NAMING: &str = "Also give it a name of 2-5 words that says what someone gets done on this path, a verb and what it acts on, like \"Cancel an order\", \
-    never a route, a function name or a topic. What a path is reached through says what it does as much as its steps do: \
-    one reached through a delete removes something, a create adds one, an update changes one, so its name says that even when the steps only show a read.";
-
-pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, Written> {
-    if !asked() || listed.is_empty() {
-        return BTreeMap::new();
-    }
-    asking(|| {
-        listed
-            .par_chunks(PATHS_PER_CALL)
-            .map(|chunk| tell_a_batch(spoken_for, chunk, true))
-            .reduce(BTreeMap::new, |mut into, held| {
-                into.extend(held);
-                into
-            })
-    })
-}
-
-fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> BTreeMap<String, Written> {
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-         Below are paths through it, each with the steps its code takes, in order, read from the \
-         code. For each, say in one sentence of at most 25 words what happens when it runs: what \
-         it checks, what it changes, what it hands on and what the caller gets back, the way a \
-         person would say it rather than step by step. {NAMING} \
-         Use only what the path and its steps show, and never \
-         name a framework, library or storage technology.\n\n\
-         Echo each id back exactly as given.\n\
-         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
-         The paths:\n{}",
-        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
-    );
-    let mut held = BTreeMap::new();
-    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", most_of(listed.len()), DEFERRED) else {
-        return held;
-    };
-    for item in answer["items"].as_array().into_iter().flatten() {
-        let (Some(id), Some(description)) = (item["id"].as_str(), item["description"].as_str()) else { continue };
-        if !description.trim().is_empty() {
-            held.insert(
-                id.to_string(),
-                Written {
-                    id: id.to_string(),
-                    name: item["name"].as_str().unwrap_or_default().trim().to_string(),
-                    description: description.trim().to_string(),
-                },
-            );
-        }
-    }
-    let missing: Vec<(String, String)> = listed.iter().filter(|(id, _)| !held.contains_key(id)).cloned().collect();
-    if again && !missing.is_empty() {
-        held.extend(tell_a_batch(spoken_for, &missing, false));
-    }
-    held
-}
-
-fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    let mut held = BTreeMap::new();
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-         Below is everything it can do. Some of it is what someone came for. The rest is there so \
-         that can happen: signing in, administering it, keeping it running, moving its data \
-         about. Both are real, and neither is being thrown away — this only says which is which.\n\n\
-         Mark each one:\n\
-         - \"terminal\" if someone would name it as a reason the product exists\n\
-         - \"proximal\" if it is not the reason itself but is what immediately delivers one\n\
-         - \"supporting\" if it exists so the others can happen, and nobody arrives wanting it\n\n\
-         Managing accounts supports what the accounts are for. Administering a system supports \
-         whatever the system does. Storing and moving data supports whatever the data is for. A \
-         product whose whole point is accounts, or administration, is the exception, so read what \
-         it says about itself before deciding.\n\n\
-         Return JSON only: {{\"placed\":[{{\"id\":\"...\",\"place\":\"terminal|proximal|supporting\"}}]}}\n\n\
-         What it can do:\n{}",
-        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
-    );
-    let Some(answer) =
-        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", listed.len(), WEIGHING)
-    else {
-        return held;
-    };
-    for item in answer["placed"].as_array().into_iter().flatten() {
-        let (Some(id), Some(place)) = (item["id"].as_str(), item["place"].as_str()) else {
-            continue;
-        };
-        let place = match place.trim().to_ascii_lowercase().as_str() {
-            "terminal" => "terminal",
-            "proximal" => "proximal",
-            "supporting" => "supporting",
-            _ => continue,
-        };
-        held.insert(id.to_string(), place.to_string());
-    }
-    held
-}
-
 #[derive(Debug, Deserialize)]
 pub struct Same {
     #[serde(default)]
@@ -523,14 +378,6 @@ routing or forwarding it. Every flow that reaches an outcome belongs to a capabi
 supports a purpose is attached to the capability it serves with the role that says so.";
 
 pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-6";
-
-pub const OUTCOME_NAMES: &str = "A capability is named for the result someone ends up with, in the product's own domain, \
-never for an operation the code performs on the way to it: hashing, encoding, parsing, serialising, validating, \
-formatting, reading or writing a file, calling a service and the like are steps inside outcomes, never a purpose. \
-When the only thing an outcome shows is such an operation, it serves the purpose that operation is in aid of, or is \
-left unassigned; it is never named as a capability. Never name one with a filler verb such as handle, manage, process \
-or support followed by a topic: say what comes out of it, like \"Schedule a delivery\" or \"Find a nearby \
-shop\".";
 
 pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
 history or whether it is still maintained; what the software does is read from the code below, and that decides. \
@@ -733,7 +580,6 @@ pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
 
-
 pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the flows that use it. \
 For each record decide who it is kept for. \
 about: the system exists to keep it for its users. Users create, own, ask for, pay, receive or are told about it, choose from it (kinds, categories, brands), or link it from another service; movements of money or goods and the plans behind them are always about. \
@@ -881,22 +727,6 @@ pub fn describe_a_part(facts: &str, name: &str) -> Option<String> {
     (!summary.is_empty()).then_some(summary)
 }
 
-pub const RULES: &str = "A capability is a purpose of the system: an outcome someone gets from it that the \
-product's own description would list. It is judged by two tests. The audience test, the same at every level from \
-one part to the whole: would this product's own audience recognise it as something they came for? Identify the \
-audience first, an end user, an operator, a developer, an agent or an analyst, then apply the test to them. It is \
-not asked whether a non-technical person would nod: that rejects every correct capability of a library or an \
-engine, whose audience is the developers and programs that use it, and for whom \"Register services and have \
-dependencies injected\" is a correct name. The audience binds to the capability, not to the system: one product \
-often serves several audiences, each with its own capabilities. A name that gives a protocol, a vendor or a \
-library is wrong however real the mechanism is: mechanism belongs in the behavior beneath a capability, never in \
-its name. The dispatch mechanism of a system, its router, its event loop, its message pump, its command table, is \
-never a purpose: the purposes are what the dispatched work achieves. The universality test: would this be true of \
-most codebases? Then it is infrastructure, not a capability. Supporting concepts that serve nothing the product \
-names, such as connecting a wallet, authenticating users or recording telemetry, are not capabilities unless the \
-product itself is that kind of product. Count is an output, not a target: a focused tool legitimately has one, and \
-a large product has as many as its description lists.";
-
 #[derive(Debug, Deserialize)]
 struct Told {
     description: String,
@@ -986,274 +816,6 @@ pub fn test_description(facts: &str) -> Grounding {
     }
 }
 
-pub fn questions_asked() -> String {
-    asking_of("").into_iter().map(|(named, question)| format!("{named}:{}", question.instructions)).collect::<Vec<_>>().join("\n")
-}
-
-fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
-    let named = facts
-        .lines()
-        .find_map(|line| line.strip_prefix("PROPOSED CAPABILITY:"))
-        .map(str::trim)
-        .unwrap_or_default();
-    let described = facts
-        .lines()
-        .find_map(|line| line.strip_prefix("PROPOSED DESCRIPTION:"))
-        .map(str::trim)
-        .unwrap_or_default();
-    BTreeMap::from([
-        (
-            "supported",
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nEvery claim in the proposed capability and description is supported by the facts"),
-                criteria: BTreeMap::new().into(),
-            },
-        ),
-        (
-            "invented",
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nThe proposal names a specific third-party product, vendor, brand or technology — a payment provider, a cloud service, a database engine, a named library — that does not appear in the facts. Ordinary words for the people who use the system and for what it does are not that."),
-                criteria: BTreeMap::new().into(),
-            },
-        ),
-        (
-            "outcome",
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nBy the rules above, this passes the audience test: this product's own audience would recognise it as something they came for, and it would appear in a product description, a user objective, a business offering or an operational responsibility"),
-                criteria: BTreeMap::new().into(),
-            },
-        ),
-        (
-            "hollow",
-            crate::jev::Question {
-                kind: "score",
-                instructions: format!("A capability is named \"{named}\". What the name acts on"),
-                criteria: vec![
-                    "A particular kind of thing in the product, such as a product, an order, a basket, a gift card, a post, a user or a booking, or an aspect of one, like its details or history".to_string(),
-                    "A broad area of the product, such as content, media, messages or settings".to_string(),
-                    "Only a generic word that could name any stored thing in any product, such as items, records, entries, objects, resources or data".to_string(),
-                ]
-                .into(),
-            },
-        ),
-        (
-            "mechanism",
-            crate::jev::Question {
-                kind: "score",
-                instructions: format!("A capability is named \"{named}\" and described as: {described}. What it names"),
-                criteria: vec![
-                    "Something a person or another system gets done or gets from the product, such as placing an order, reading articles, backing up photos or getting paid".to_string(),
-                    "A supporting ability that makes those possible, such as signing in, permissions or settings".to_string(),
-                    "How the software itself works rather than anything someone gets, such as serving or routing requests, request headers, TLS, retries, idempotency, lifecycle hooks, dependency injection, validation rules, build or release scripts, or the tests".to_string(),
-                ]
-                .into(),
-            },
-        ),
-        (
-            "universal",
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nBy the rules above, this fails the universality test: it would be true of most codebases, so it is infrastructure rather than something this product offers"),
-                criteria: BTreeMap::new().into(),
-            },
-        ),
-        (
-            "specific",
-            crate::jev::Question {
-                kind: "score",
-                instructions: format!("{facts}\n\nHow specific this is to these facts rather than generic"),
-                criteria: vec![
-                    "Generic; could describe any system".to_string(),
-                    "Names the domain but little else".to_string(),
-                    "Names what only this part of the system does".to_string(),
-                ]
-                .into(),
-            },
-        ),
-    ])
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Renamed {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-}
-
-pub fn name_the_outcome(spoken: &str, held: &[(String, String)]) -> Vec<Renamed> {
-    if !asked() || held.is_empty() {
-        return Vec::new();
-    }
-    let weight = weight();
-    asking(|| {
-        held.par_chunks(CLAIMS_PER_ASK)
-            .flat_map(|chunk| weighing(weight, || {
-                let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
-                let prompt = format!(
-                    "A software system describes itself like this:\n{spoken}\n\n\
-                     Each item below is a capability whose name carries words that the code only uses as the \
-                     building blocks it is made from: they appear among the libraries, packages and types the code \
-                     imports, and nowhere among the records and responses the product keeps and gives people. A \
-                     capability is named for what someone gets, in the words its own audience uses, whether that is \
-                     people using the product, operators, or the developers and programs that call it. For each item give \
-                     a name of 2-6 words, a verb and what it is for, that says the outcome without the listed words, \
-                     and one sentence saying what someone gets. Say only what the item's facts show.\n\
-                     {outcome_names}\n\
-                     Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
-                     The items:\n{}",
-                    listed.join("\n"),
-                    outcome_names = OUTCOME_NAMES
-                );
-                answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", 1, TIGHTENING)
-                    .map(|held| {
-                        held["items"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|item| serde_json::from_value::<Renamed>(item.clone()).ok())
-                            .filter(|item| !item.name.trim().is_empty())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            }))
-            .collect()
-    })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Tightened {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-}
-
-const CLAIMS_PER_ASK: usize = 5;
-
-pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened> {
-    if !asked() || held.is_empty() {
-        return Vec::new();
-    }
-    let weight = weight();
-    asking(|| {
-        held.par_chunks(CLAIMS_PER_ASK)
-            .flat_map(|chunk| weighing(weight, || {
-                let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
-                let prompt = format!(
-                    "A software system describes itself like this:\n{spoken}\n\n\
-                     That description may speak of the project rather than the software; the facts below decide.\n\n\
-                     Each item below is a capability someone proposed, with the facts read from the code about what \
-                     serves it: several outcomes, each with a role in it. A capability is a purpose, so its name and \
-                     sentence say what the product is for here, and the several behaviors that serve it stand behind \
-                     that purpose without being listed in it. A careful reviewer will read the code and mark a \
-                     capability wrong when its name or sentence claims more than the code does. For each item, give \
-                     the name (2-6 words, a verb and what it is for) and one sentence that say exactly what the facts \
-                     show someone gets:\n\
-                     - drop any option, filter, step, provider or result the facts do not show, and any adjective, \
-                     example or attribute they do not name (detailed, specifications, categories, recommendations);\n\
-                     - the name states one purpose: it may cover the several behaviors that serve it, but it never \
-                     lists them, and it is never narrowed to one command or one screen of those behaviors;\n\
-                     - when the code only checks, simulates, records or shows something, say that rather than that \
-                     it does it;\n\
-                     - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
-                     wired to nothing configured, say exactly that;\n\
-                     - when the name or sentence claims a behavior that none of the outcomes shown delivers, remove \
-                     that claim, and keep every claim they do deliver;\n\
-                     - when the code and the part's setup show it can never be reached — no client, provider or \
-                     route for it exists anywhere — nobody gets it: say exactly that in the sentence. A feature that switches on \
-                     once an outside service or key is configured is real: keep it and say what it needs. A part \
-                     that imports another part of the repository and starts it serves what that part serves, so \
-                     routes held by the imported part do not make this one unreachable;\n\
-                     - {users_words}\n\
-                     - {outcome_names}\n\
-                     - when it is named for such an operation, name it for the result the outcomes show someone ends up with;\n\
-                     - when the proposal is already exact, return it unchanged.\n\
-                     Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
-                     The items:\n{}",
-                    listed.join("\n"),
-                    users_words = IN_THE_USERS_WORDS,
-                    outcome_names = OUTCOME_NAMES
-                );
-                answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1, TIGHTENING)
-                    .map(|held| {
-                        held["items"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|item| serde_json::from_value::<Tightened>(item.clone()).ok())
-                            .filter(|item| !item.name.trim().is_empty())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            }))
-            .collect()
-    })
-}
-
-pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -> BTreeMap<String, Grounding> {
-    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
-    for (at, (_, facts)) in held.iter().enumerate() {
-        for (named, question) in asking_of(facts) {
-            questions.insert(format!("c{at}-{named}"), question);
-        }
-        questions.insert(
-            format!("c{at}-scope"),
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!(
-                    "{facts}\n\nSomeone saying what {level} is for would name this among the reasons it exists — something its audience comes for, or relies on it to do for them — and not something that only makes another of its capabilities possible, such as signing in or out, permissions, settings, or looking up reference data, unless providing that is what {level} exists for"
-                ),
-                criteria: BTreeMap::new().into(),
-            },
-        );
-    }
-    let answers = crate::jev::decide(&format!("{RULES}\n\n{spoken}"), questions);
-    let answered = |at: usize| {
-        !crate::jev::asked()
-            || ["supported", "invented", "outcome", "scope"]
-                .iter()
-                .all(|named| answers.contains_key(&format!("c{at}-{named}")))
-    };
-    held.iter()
-        .enumerate()
-        .filter(|(at, _)| answered(*at))
-        .map(|(at, (id, _))| {
-            let settled = |named: &str, fallback: f64| {
-                answers
-                    .get(&format!("c{at}-{named}"))
-                    .map(crate::jev::Decision::settled)
-                    .unwrap_or_else(|| unanswered(fallback))
-            };
-            (
-                id.clone(),
-                Grounding {
-                    supported: settled("supported", 0.0),
-                    invented: settled("invented", 1.0),
-                    outcome: settled("outcome", 0.0),
-                    universal: Some(settled("universal", 1.0)),
-                    mechanism: answers.get(&format!("c{at}-mechanism")).and_then(|held| held.score),
-                    hollow: answers.get(&format!("c{at}-hollow")).and_then(|held| held.score),
-                    scope: Some(settled("scope", 0.0)),
-                    graded: crate::jev::asked(),
-                    specific: answers
-                        .get(&format!("c{at}-specific"))
-                        .and_then(|held| held.score)
-                        .map(|score| (score * 10.0).round() / 10.0)
-                        .unwrap_or_else(|| unanswered(0.0)),
-                },
-            )
-        })
-        .collect()
-}
-
 fn unanswered(strict: f64) -> f64 {
     match crate::jev::asked() {
         true => strict,
@@ -1262,13 +824,6 @@ fn unanswered(strict: f64) -> f64 {
 }
 
 impl Grounding {
-    pub fn stands(&self) -> bool {
-        self.supported >= GROUNDED
-            && self.invented < GROUNDED
-            && self.outcome >= GROUNDED
-            && self.universal.unwrap_or(1.0) < GROUNDED
-    }
-
     pub fn confidence(&self) -> f64 {
         let held = [
             self.supported,
@@ -1280,16 +835,6 @@ impl Grounding {
         ];
         let mean = held.iter().map(|value| value.clamp(0.0, 1.0)).sum::<f64>() / held.len() as f64;
         (mean * 100.0).round() / 100.0
-    }
-
-    pub fn delivers(&self) -> bool {
-        let scope = self.scope.unwrap_or(self.outcome);
-        let particular = self.universal.unwrap_or(1.0) < ONLY_THIS_PRODUCT;
-        !self.fabricated()
-            && (scope >= GROUNDED || particular)
-            && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
-            && self.mechanism.unwrap_or(0.0) < ONLY_MECHANISM
-            && self.hollow.unwrap_or(0.0) < ONLY_STORED
     }
 
     pub fn holds(&self) -> bool {
@@ -1325,15 +870,6 @@ fn speaks_of_chat() -> bool {
 fn shaped(of: &str) -> serde_json::Value {
     let text = serde_json::json!({"type": "string"});
     match of {
-        "outcomes" => serde_json::json!({
-            "type": "object",
-            "properties": {"outcomes": {"type": "array", "items": {
-                "type": "object",
-                "properties": {"name": text, "description": text, "audience": text},
-                "required": ["name", "description", "audience"],
-            }}},
-            "required": ["outcomes"],
-        }),
         "items" => serde_json::json!({
             "type": "object",
             "properties": {"items": {"type": "array", "items": {
@@ -1352,24 +888,6 @@ fn shaped(of: &str) -> serde_json::Value {
             "type": "object",
             "properties": {"narrative": text},
             "required": ["narrative"],
-        }),
-        "placed" => serde_json::json!({
-            "type": "object",
-            "properties": {"placed": {"type": "array", "items": {
-                "type": "object",
-                "properties": {"id": text, "place": {"type": "string", "enum": ["terminal", "proximal", "supporting"]}},
-                "required": ["id", "place"],
-            }}},
-            "required": ["placed"],
-        }),
-        "assigned" => serde_json::json!({
-            "type": "object",
-            "properties": {"assigned": {"type": "array", "items": {
-                "type": "object",
-                "properties": {"family": text, "capability": text, "description": text, "audience": text},
-                "required": ["family", "capability", "description", "audience"],
-            }}},
-            "required": ["assigned"],
         }),
         "derived" => serde_json::json!({
             "type": "object",

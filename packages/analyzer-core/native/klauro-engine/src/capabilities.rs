@@ -5,67 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::comprehend::{carved_name, Capability, Flow};
 
-
 const SURFACES_SHOWN: usize = 6;
 const CAPABILITIES_CONSOLIDATED_AT_ONCE: usize = 160;
 
 pub(crate) const PART: &str = "part";
 pub(crate) const WHOLE: &str = "whole";
-pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
-
-const STEPS_TOLD: usize = 7;
-
-pub(crate) fn told_steps(flow: &Flow) -> String {
-    let mut said: Vec<&str> = Vec::new();
-    for step in &flow.steps {
-        if step.kind == "respond" && step.object.is_none() {
-            continue;
-        }
-        if said.last() != Some(&step.label.as_str()) {
-            said.push(step.label.as_str());
-        }
-    }
-    let more = said.len().saturating_sub(STEPS_TOLD);
-    said.truncate(STEPS_TOLD);
-    let mut told = said.join(" -> ");
-    if more > 0 {
-        told.push_str(&format!(" -> and {more} more"));
-    }
-    if told.is_empty() {
-        told = touched_by(flow);
-    }
-    told
-}
-
-fn touched_by(flow: &Flow) -> String {
-    let mut touched: Vec<&str> = Vec::new();
-    for step in &flow.path {
-        let name = step.unit.rsplit(':').next().unwrap_or_default();
-        if !name.is_empty() && touched.last() != Some(&name) && !touched.contains(&name) {
-            touched.push(name);
-        }
-    }
-    let more = touched.len().saturating_sub(STEPS_TOLD);
-    touched.truncate(STEPS_TOLD);
-    match touched.is_empty() {
-        true => "no steps read".to_string(),
-        false => format!(
-            "no steps read; it runs through {}{}",
-            touched.join(" -> "),
-            match more {
-                0 => String::new(),
-                more => format!(" -> and {more} more"),
-            }
-        ),
-    }
-}
-
-pub(crate) fn surface_of(flow: &Flow) -> String {
-    match flow.method.as_deref() {
-        Some(method) => format!("{method} {}", flow.operation),
-        None => format!("{} {}", flow.kind, flow.operation),
-    }
-}
 
 pub(crate) const SETTLED: &str = "settled";
 pub(crate) const PENDING: &str = "pending";
@@ -760,7 +704,6 @@ pub(crate) fn keep_levels_apart(parts: &mut [Capability], whole: &mut [Capabilit
 pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec<Joined> {
     groups_of_the_same(capabilities, |offered| crate::author::same_capability(said, offered))
 }
-
 
 fn groups_of_the_same(
     capabilities: &[Capability],
