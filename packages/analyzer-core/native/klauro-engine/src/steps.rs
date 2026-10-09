@@ -5,6 +5,7 @@ use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
 
 const DEEPEST: u32 = 14;
+const NESTED_AT_MOST: u32 = 64;
 const ACTIONS_AT_MOST: usize = 240;
 const SHARED_BY: u32 = 6;
 
@@ -80,6 +81,7 @@ pub struct Reader<'a> {
     depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
     home: std::cell::RefCell<Option<String>>,
+    nesting: std::cell::Cell<u32>,
 }
 
 const CARRIED_AT_MOST: u32 = 1;
@@ -396,7 +398,7 @@ impl<'a> Reader<'a> {
                 _ => (unit, None),
             })
             .collect();
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None), nesting: std::cell::Cell::new(0) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -699,10 +701,11 @@ impl<'a> Reader<'a> {
     }
 
     fn walk(&self, unit: u32, depth: u32, when: &'static str, arms: &[(u64, u16)], visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
-        if actions.len() >= ACTIONS_AT_MOST || depth > DEEPEST {
+        if actions.len() >= ACTIONS_AT_MOST || depth > DEEPEST || self.nesting.get() > NESTED_AT_MOST {
             self.cut.set(true);
             return;
         }
+        self.nesting.set(self.nesting.get() + 1);
         let node = &self.nodes[unit as usize];
         let id = node.id.as_str();
         let carried = self.kept_in.get(id).copied();
@@ -712,6 +715,7 @@ impl<'a> Reader<'a> {
         let was = self.depth_now.replace(depth);
         self.walking(unit, depth, when, arms, visited, actions);
         self.depth_now.set(was);
+        self.nesting.set(self.nesting.get() - 1);
         if carried.is_some() {
             self.carrying.borrow_mut().pop();
         }
