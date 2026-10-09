@@ -67,6 +67,7 @@ mod names;
 mod namespaced;
 mod paths;
 mod reach;
+mod purposes;
 mod records;
 mod rpc_clients;
 mod render_tree;

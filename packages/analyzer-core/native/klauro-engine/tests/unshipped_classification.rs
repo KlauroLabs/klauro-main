@@ -79,17 +79,17 @@ fn a_tagged_flow_is_proposed_only_when_its_part_holds_no_product_flow() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unshipped_island");
     let output = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_klauro-engine")))
         .arg(&root)
-        .env("KLAURO_FAMILY_DUMP", "1")
+        .env("KLAURO_OFFERED_DUMP", "1")
         .output()
         .expect("index runs");
-    let families: Vec<String> = String::from_utf8_lossy(&output.stderr)
+    let offered: Vec<String> = String::from_utf8_lossy(&output.stderr)
         .lines()
-        .filter(|line| line.starts_with("family["))
+        .filter(|line| line.starts_with("offered["))
         .map(str::to_string)
         .collect();
-    assert!(families.iter().any(|line| line.contains("surface:real")), "the real route is a family: {families:#?}");
+    assert!(offered.iter().any(|line| line.contains("real")), "the real route is offered: {offered:#?}");
     assert!(
-        families.iter().filter(|line| line.contains("subproject:server")).all(|line| !line.contains("demo")),
-        "the example route is never a family beside a product route: {families:#?}"
+        offered.iter().filter(|line| line.contains("subproject:server")).all(|line| !line.contains("demo")),
+        "the example route is never offered beside a product route: {offered:#?}"
     );
 }
