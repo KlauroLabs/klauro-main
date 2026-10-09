@@ -17,7 +17,6 @@ const NAMED_PER_SPOKEN_CALL: usize = 40;
 pub const DEFERRED: u8 = 0;
 pub const DESCRIBING_ASK: u8 = 5;
 pub const JOINING: u8 = 7;
-pub const DERIVING: u8 = 9;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
     match spoken_to().is_some() {
@@ -377,65 +376,10 @@ what the dispatched work achieves for someone, so name the result of the work, n
 routing or forwarding it. Every flow that reaches an outcome belongs to a capability, and one that only \
 supports a purpose is attached to the capability it serves with the role that says so.";
 
-pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-6";
-
 pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
 history or whether it is still maintained; what the software does is read from the code below, and that decides. \
 When it does say what the software is for, the purposes below are the ones it names in its own words. When it says \
 nothing about itself, name a purpose only when the outcomes below jointly deliver it.";
-
-pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
-    if !asked() || listed.is_empty() {
-        return Vec::new();
-    }
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
-         Below are capabilities read from it one part at a time, so the same purpose can appear more than \
-         once: reached from a page and from the route behind it, from a phone and from a command line, \
-         or split into narrower pieces of one thing. Find the ones that serve the same purpose and put each \
-         set together; leave everything else on its own.\n\n{PURPOSE}\n\n\
-         Put capabilities together only when they are the same purpose: the same outcome for the same audience, \
-         reached from different parts of the system, or one a stage, a way in or a narrower view of the other \
-         that ends in that same outcome. Placing an order from the web shop and from the phone app is one \
-         purpose. Each capability below shows the records it changes and the entities it works on: two that \
-         end in different outcomes, or that change or work on different entities, are different purposes even \
-         when their names overlap or they sit in the same area of the product, and so are two that different \
-         audiences come for. Keep two apart when the product's description would list them separately, even \
-         when they touch the same records or are used by the same person. A group whose name would need a \
-         list of unrelated things, or the word and, to cover its members is not one purpose; leave those \
-         apart. Being related is not being the same.\n\n\
-         For each group give the name of the purpose in 2-6 words — a verb and what it is for, like \"Share posts with followers\", never a bare topic like \"Posting\" — one sentence saying what someone gets, and the audience it is for. Name what the person ends up with, never the \
-         way in and never what it is built on: a group reached through web routes is not called \
-         an API, one reached through pages is not called a web interface, and one that keeps \
-         records is not called a database. Where the ones you put together were already called \
-         something between them that says the purpose, keep saying it that way. The name and the sentence say only what the code shown does: never an option, filter, step \
-         or result it does not show. When it only checks, simulates or records something, say it \
-         checks, simulates or records it rather than that it does it. \
-         Every id below must appear in exactly one \
-         group, and no id may appear that is not below.\n\
-         Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
-         The capabilities:\n{}",
-        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
-    );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 4000, &asking_of_models(model()), "groups", 1, JOINING)
-    else {
-        return Vec::new();
-    };
-    held["groups"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
-        .filter(|group| !group.of.is_empty() && !group.name.trim().is_empty())
-        .collect()
-}
-
-pub fn derive_parent(prompt: &str) -> Option<serde_json::Value> {
-    if !asked() {
-        return None;
-    }
-    answered::<serde_json::Value>(prompt, 3000, &asking_of_models(model()), "derived", 1, DERIVING)
-}
 
 pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
     if !asked() || listed.len() < 2 {

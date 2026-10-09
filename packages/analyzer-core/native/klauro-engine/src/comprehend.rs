@@ -197,10 +197,6 @@ pub struct Capability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsettled: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub composition_provenance: Vec<crate::parent::Source>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_originated: Option<crate::parent::Originated>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub offers: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_in: Vec<String>,
@@ -235,8 +231,8 @@ pub struct Comprehension {
     pub chained: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_coverage: Option<crate::capabilities::Coverage>,
-    #[serde(skip)]
-    pub derivation: Option<crate::parent::Summary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub journeys: Vec<Flow>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub set_aside: Vec<crate::behaviours::SetAside>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -553,6 +549,8 @@ pub struct Telling<'a> {
     pub languages: Vec<(String, u32)>,
     pub frameworks: Vec<String>,
     pub composition: Option<&'a crate::composition::Composition>,
+    pub part_names: HashMap<String, String>,
+    pub roles: HashMap<String, &'static str>,
     pub checks: HashMap<String, Vec<(String, String)>>,
 }
 
@@ -1022,8 +1020,6 @@ fn score_capabilities(capabilities: &mut [Capability], confidence_of: &HashMap<&
             &crate::confidence::Backing {
                 grounding: capability.grounding.as_ref(),
                 flows: &flows,
-                parent_originated_alone: capability.parent_originated.is_some()
-                    && capability.composition_provenance.is_empty(),
                 unsettled: capability.unsettled.is_some(),
             },
         ));
@@ -1077,26 +1073,6 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     settle(&mut into.touches);
     into.also_in.sort();
     into.also_in.dedup();
-    for source in other.composition_provenance {
-        if !into.composition_provenance.contains(&source) {
-            into.composition_provenance.push(source);
-        }
-    }
-    into.composition_provenance.sort_by(|left, right| {
-        (&left.source_child, &left.source_capability_id)
-            .cmp(&(&right.source_child, &right.source_capability_id))
-    });
-    match (into.parent_originated.as_mut(), other.parent_originated) {
-        (None, other) => into.parent_originated = other,
-        (Some(held), Some(more)) if held.kind == more.kind => {
-            for told in more.evidence {
-                if !held.evidence.contains(&told) {
-                    held.evidence.push(told);
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 fn summarised(
@@ -1347,6 +1323,7 @@ pub fn author(
                         said: &said,
                         remembered_as: &remembered_as,
                         landed,
+                        journeys: false,
                     });
                     if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
                         kept.insert(part.clone(), of_the_part.state);
@@ -1374,55 +1351,54 @@ pub fn author(
                 })
                 .collect();
             formed_whole = Some({
-                {
                 let mut capabilities: Vec<Capability> = read.into_iter().flatten().collect();
                 let describes_parts = parts_of(&capabilities).len() >= 2;
                 capabilities.sort_by(|left, right| left.id.cmp(&right.id));
                 crate::author::mark("parts merged");
-                let offered_only: std::collections::BTreeSet<&str> = held
-                    .flows
-                    .iter()
-                    .filter(|flow| flow.kind == "export")
-                    .map(|flow| flow.id.as_str())
-                    .collect();
-                let set_aside: std::collections::BTreeSet<&str> = held
-                    .flows
-                    .iter()
-                    .filter(|flow| crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
-                    .map(|flow| flow.id.as_str())
-                    .collect();
-                let served: Vec<Capability> = capabilities
-                    .iter()
-                    .filter(|capability| {
-                        capability
-                            .flows
-                            .iter()
-                            .any(|flow| !offered_only.contains(flow.as_str()) && !set_aside.contains(flow.as_str()))
-                    })
-                    .cloned()
-                    .collect();
-                let derived = told.composition.and_then(|composition| {
-                    crate::parent::derive(
-                        composition,
-                        &served,
-                        &held.flows,
-                        &spoken,
-                        told.scope,
-                    )
-                });
-                let (mut whole, listed_parts, reasons) = match derived {
-                    Some((listed, derivation)) => (derivation.capabilities, Some(listed), derivation.reasons),
-                    None => (
-                        crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows),
-                        None,
-                        std::collections::BTreeMap::new(),
-                    ),
+                let journeys = match several {
+                    true => crate::journeys::of(&held.flows, &held.seams, &crate::journeys::Parts { names: &told.part_names, roles: &told.roles }),
+                    false => crate::journeys::Journeys { product: Vec::new(), tooling: Vec::new() },
                 };
+                let said = spoken_of_part(&spoken, None, &own_words, told.composition);
+                let of_the_whole = |held: &[Flow], kind: &str, place: &'static str| -> Vec<Capability> {
+                    let offered: Vec<&Flow> = held.iter().collect();
+                    if offered.is_empty() {
+                        return Vec::new();
+                    }
+                    let remembered_as = format!("{}\u{1}{kind}", told.scope);
+                    let asked = crate::purposes::of_a_part(&crate::purposes::Asked {
+                        part: None,
+                        flows: &offered,
+                        quiet: &[],
+                        checks: &[],
+                        said: &said,
+                        remembered_as: &remembered_as,
+                        landed,
+                        journeys: true,
+                    });
+                    asked
+                        .capabilities
+                        .into_iter()
+                        .map(|mut capability| {
+                            capability.level = crate::capabilities::WHOLE;
+                            capability.project = None;
+                            capability.place = Some(place);
+                            capability.id = format!("capability:{kind}:{}", carved_name(capability.name.as_deref().unwrap_or_default()));
+                            capability
+                        })
+                        .collect()
+                };
+                let (mut whole, tooling) = rayon::join(
+                    || of_the_whole(&journeys.product, "whole", "core"),
+                    || of_the_whole(&journeys.tooling, "tooling", "tooling"),
+                );
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
                 eprintln!(
-                    "  author read {} capabilities across the parts into {} for the whole",
-                    capabilities.len(),
-                    whole.len()
+                    "  author read {} journeys and {} tooling journeys into {} capabilities for the whole and {} for its tooling",
+                    journeys.product.len(),
+                    journeys.tooling.len(),
+                    whole.len(),
+                    tooling.len()
                 );
                 let mut together = capabilities.clone();
                 together.extend(whole.iter().cloned());
@@ -1431,44 +1407,20 @@ pub fn author(
                 let (same, products) = rayon::join(
                     || crate::capabilities::which_are_the_same(&whole, &spoken),
                     || {
-                        {
-                            let mut described: Vec<Product> = (0..expected
-                                .load(std::sync::atomic::Ordering::Relaxed))
-                                .filter_map(|_| described_rx.lock().ok()?.recv().ok().flatten())
-                                .collect();
-                            if !describes_parts {
-                                described.clear();
-                            }
-                            described.sort_by(|left, right| left.project.cmp(&right.project));
-                            describe_product(
-                                &together,
-                                &held.entities,
-                                &held.flows,
-                                &spoken,
-                                told,
-                                described,
-                            )
+                        let mut described: Vec<Product> = (0..expected
+                            .load(std::sync::atomic::Ordering::Relaxed))
+                            .filter_map(|_| described_rx.lock().ok()?.recv().ok().flatten())
+                            .collect();
+                        if !describes_parts {
+                            described.clear();
                         }
+                        described.sort_by(|left, right| left.project.cmp(&right.project));
+                        describe_product(&together, &held.entities, &held.flows, &spoken, told, described)
                     },
                 );
                 crate::capabilities::merge_the_same(&mut whole, same);
-                crate::capabilities::keep_levels_apart(&mut capabilities, &mut whole);
-                let summary = match (told.composition, listed_parts) {
-                    (Some(composition), Some(_)) => {
-                        crate::parent::keep_traceable(&mut whole, composition);
-                        let every_part =
-                            crate::parent::parts_within(composition, &capabilities);
-                        Some(crate::parent::summarise(
-                            &whole,
-                            &every_part,
-                            &reasons,
-                            composition,
-                            &offered_only,
-                        ))
-                    }
-                    _ => None,
-                };
                 capabilities.extend(whole);
+                capabilities.extend(tooling);
                 capabilities.sort_by(|left, right| left.id.cmp(&right.id));
                 eprintln!(
                     "  author form {formed:?} across {} parts | describe {:?} | asks {} at {:.1} average, {} peak in flight | backend writes {} bytes/s | asked again {} | went unanswered {}",
@@ -1481,8 +1433,9 @@ pub fn author(
                     crate::author::asked_again(),
                     crate::author::went_unanswered() + crate::jev::went_unanswered()
                 );
-                    (capabilities, products, summary)
-                }
+                let mut all_journeys = journeys.product;
+                all_journeys.extend(journeys.tooling);
+                (capabilities, products, all_journeys)
             });
         });
         let named = named_slot.into_inner().ok().flatten().unwrap_or_default();
@@ -1493,7 +1446,7 @@ pub fn author(
             pending_flows.into_inner().unwrap_or_default(),
         )
     };
-    let ((capabilities, products, summary), (written, grounded), part_states, pending_flows) = match &reaching {
+    let ((capabilities, products, journeys), (written, grounded), part_states, pending_flows) = match &reaching {
         Some(pool) => pool.install(work),
         None => work(),
     };
@@ -1509,7 +1462,7 @@ pub fn author(
         &pending_flows,
     ));
     held.products = products;
-    held.derivation = summary;
+    held.journeys = journeys;
     let confidence_of: HashMap<&str, f64> = held
         .flows
         .iter()
@@ -2547,7 +2500,7 @@ pub fn derive(
         terminal,
         chained,
         semantic_coverage: None,
-        derivation: None,
+        journeys: Vec::new(),
         set_aside: Vec::new(),
         seams: Vec::new(),
         offered: Vec::new(),
@@ -4605,8 +4558,6 @@ mod tests {
             terminality: None,
             confidence: None,
             unsettled: None,
-            composition_provenance: Vec::new(),
-            parent_originated: None,
             offers: Vec::new(),
             used_in: Vec::new(),
             keeps: Vec::new(),
@@ -4624,21 +4575,15 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_scored_from_their_flows_and_lowered_when_unsettled_or_parent_originated() {
+    fn capabilities_are_scored_from_their_flows_and_lowered_when_unsettled() {
         let confidence_of: super::HashMap<&str, f64> =
             super::HashMap::from_iter([("flow:a", 1.0), ("flow:b", 0.6)]);
         let mut unsettled = capability_of(&["flow:a", "flow:b"]);
         unsettled.unsettled = Some(crate::confidence::AI_UNANSWERED);
-        let mut orphan = capability_of(&["flow:a", "flow:b"]);
-        orphan.parent_originated = Some(crate::parent::Originated {
-            kind: "orphan",
-            evidence: vec!["flow:a".into()],
-        });
-        let mut capabilities = vec![capability_of(&["flow:a", "flow:b"]), unsettled, orphan];
+        let mut capabilities = vec![capability_of(&["flow:a", "flow:b"]), unsettled];
         super::score_capabilities(&mut capabilities, &confidence_of);
         assert_eq!(capabilities[0].confidence, Some(0.61));
         assert_eq!(capabilities[1].confidence, Some(0.3));
-        assert_eq!(capabilities[2].confidence, Some(0.51));
     }
 
     #[test]

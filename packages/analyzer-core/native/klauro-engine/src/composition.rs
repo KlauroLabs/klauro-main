@@ -99,10 +99,6 @@ pub struct Composition {
     pub dependencies: Vec<Dependency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orphan: Option<Orphan>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub promoted: Vec<crate::parent::Promoted>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub not_promoted: Vec<crate::parent::NotPromoted>,
     #[serde(skip)]
     pub started: HashMap<(u32, u32), String>,
 }
@@ -783,8 +779,6 @@ pub fn derive(
             files: project.files,
             declarations: project.declarations,
         }),
-        promoted: Vec::new(),
-        not_promoted: Vec::new(),
         started,
     })
 }

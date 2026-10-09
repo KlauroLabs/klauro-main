@@ -33,13 +33,13 @@ fn file_of(unit: &str) -> &str {
 
 pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
     let mut held_by: HashMap<String, Vec<Held>> = HashMap::default();
-    for capability in held.capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
+    for capability in &held.capabilities {
         for delivered in &capability.delivered {
             let role = if delivered.role == "primary" { DELIVERS } else { SUPPORTS };
             held_by.entry(delivered.flow.clone()).or_default().push(Held { capability: capability.id.clone(), role });
         }
     }
-    for flow in held.flows.iter_mut() {
+    for flow in held.flows.iter_mut().chain(held.journeys.iter_mut()) {
         flow.capabilities = held_by.remove(&flow.id).unwrap_or_default();
     }
 
@@ -157,7 +157,7 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
             }
         }
     }
-    for (at, capability) in held.capabilities.iter().enumerate().filter(|(_, capability)| capability.level == crate::capabilities::PART) {
+    for (at, capability) in held.capabilities.iter().enumerate() {
         let part = capability.project.as_deref();
         for named in &capability.records {
             for entity in chosen(named, part) {
@@ -273,8 +273,6 @@ mod tests {
             terminality: None,
             confidence: None,
             unsettled: None,
-            composition_provenance: Vec::new(),
-            parent_originated: None,
             offers: offers.iter().map(|held| held.to_string()).collect(),
             used_in: Vec::new(),
             keeps: Vec::new(),
@@ -321,7 +319,7 @@ mod tests {
             terminal: 0,
             chained: 0,
             semantic_coverage: None,
-            derivation: None,
+            journeys: Vec::new(),
             set_aside: Vec::new(),
             seams: Vec::new(),
             offered: Vec::new(),
@@ -361,6 +359,19 @@ mod tests {
         assert_eq!(held.entities[0].capabilities[0].role, "keeps");
         assert!(held.entities[1].capabilities.is_empty());
         assert_eq!(held.entities[2].capabilities[0].role, "reads");
+    }
+
+    #[test]
+    fn a_journey_names_the_whole_system_capability_it_delivers() {
+        let mut whole = capability("capability:whole:buy-books", "shop", &[("journey:checkout", "primary")], &["Order"], &["Order"], &[]);
+        whole.level = crate::capabilities::WHOLE;
+        whole.project = None;
+        let mut held = held(vec![whole], Vec::new(), vec![entity("Order", "orders")]);
+        held.journeys.push(flow("journey:checkout", "shop", "shop/Checkout.cs:function:Pay"));
+        tie(&mut held, &[], &[]);
+        assert_eq!(held.journeys[0].capabilities.len(), 1);
+        assert_eq!(held.journeys[0].capabilities[0].role, DELIVERS);
+        assert_eq!(held.entities[0].capabilities[0].capability, "capability:whole:buy-books", "a whole-system capability keeps the record wherever it is defined");
     }
 
     #[test]

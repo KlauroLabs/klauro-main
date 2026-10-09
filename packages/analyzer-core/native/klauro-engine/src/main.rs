@@ -18,7 +18,6 @@ mod composition;
 mod confidence;
 mod continuations;
 mod outputs;
-mod parent;
 mod conflicts;
 mod conform;
 mod constants;
@@ -89,6 +88,7 @@ mod schema_files;
 mod scope;
 mod screens;
 mod seams;
+mod journeys;
 mod ties;
 mod sdk;
 mod shared;
@@ -1627,6 +1627,8 @@ fn read_it() {
         frameworks,
         composition: index.composition.as_ref(),
         checks: test_cases_of_suites(&index, &paths),
+        part_names: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.display_name.clone())).collect()).unwrap_or_default(),
+        roles: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.role)).collect()).unwrap_or_default(),
     };
     if let Some(split) = index.partition.as_ref() {
         let said_of_itself = comprehend::said_of_itself(&root, &index.nodes, &paths);
@@ -1688,10 +1690,6 @@ fn read_it() {
                 entity.declared_in.as_deref().unwrap_or("")
             );
         }
-    }
-    if let (Some(composition), Some(summary)) = (index.composition.as_mut(), comprehension.derivation.take()) {
-        composition.promoted = summary.promoted;
-        composition.not_promoted = summary.not_promoted;
     }
     if let Some(partition) = index.partition.as_mut() {
         let facts = subproject::identity::Facts {

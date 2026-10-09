@@ -15,7 +15,6 @@ const MEMBER_COUNT_SHARE: f64 = 0.2;
 const MEMBER_COUNT_HALF_AT: f64 = 2.0;
 const UNGRADED_GROUNDING: f64 = 0.5;
 const UNGRADED_CEILING: f64 = 0.75;
-const PARENT_ORIGINATED: f64 = 0.85;
 const UNSETTLED: f64 = 0.5;
 const NO_FLOW_EVIDENCE: f64 = 0.5;
 
@@ -32,7 +31,6 @@ pub struct Reach {
 pub struct Backing<'a> {
     pub grounding: Option<&'a Grounding>,
     pub flows: &'a [f64],
-    pub parent_originated_alone: bool,
     pub unsettled: bool,
 }
 
@@ -91,9 +89,6 @@ pub fn of_capability(backing: &Backing) -> f64 {
     if graded.is_none() {
         score = score.min(UNGRADED_CEILING);
     }
-    if backing.parent_originated_alone {
-        score *= PARENT_ORIGINATED;
-    }
     match backing.unsettled {
         true => left_unsettled(score),
         false => rounded(score),
@@ -123,7 +118,7 @@ mod tests {
     }
 
     fn backing<'a>(grounding: Option<&'a Grounding>, flows: &'a [f64]) -> Backing<'a> {
-        Backing { grounding, flows, parent_originated_alone: false, unsettled: false }
+        Backing { grounding, flows, unsettled: false }
     }
 
     #[test]
@@ -199,16 +194,6 @@ mod tests {
         let held = grounding(1.0, 0.0, false);
         let score = of_capability(&backing(Some(&held), &[1.0; 100]));
         assert_eq!(score, 0.75);
-    }
-
-    #[test]
-    fn a_parent_originated_capability_with_no_child_behind_it_is_lowered() {
-        let held = grounding(1.0, 0.0, true);
-        let flows = [1.0; 8];
-        let child_backed = of_capability(&backing(Some(&held), &flows));
-        let alone = of_capability(&Backing { parent_originated_alone: true, ..backing(Some(&held), &flows) });
-        assert_eq!(child_backed, 0.96);
-        assert_eq!(alone, 0.82);
     }
 
     #[test]
