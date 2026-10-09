@@ -24,3 +24,11 @@ fn a_part_that_already_has_an_entry_lists_no_public_methods() {
     let exports = exports(&index);
     assert!(exports.iter().all(|(handler, _)| !handler.starts_with("Payments/") && !handler.starts_with("Shop/")), "{exports:#?}");
 }
+
+#[test]
+fn a_library_of_types_alone_offers_its_types() {
+    let index = common::read("csharp_library_nobody_calls");
+    let exports = exports(&index);
+    assert!(exports.iter().any(|(handler, _)| handler.ends_with("Events.cs:type:OrderPlaced")), "{exports:#?}");
+    assert!(exports.iter().all(|(handler, _)| !handler.ends_with("Statements.cs:type:Statements")), "a library with methods offers its methods, not its types: {exports:#?}");
+}

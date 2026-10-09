@@ -76,11 +76,20 @@ pub fn public_where_nothing_enters(partition: &Partition, nodes: &[IndexNode], e
         .filter(|entry| entry.kind != "test")
         .filter_map(|entry| part_of_file(entry.file))
         .collect();
-    nodes
+    let public: Vec<&IndexNode> = nodes
         .iter()
-        .filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method) && node.modifiers.exported)
+        .filter(|node| node.modifiers.exported && (node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method)))
         .filter(|node| files.get(node.file as usize).is_some_and(|path| !crate::paths::is_test(path)))
         .filter(|node| part_of_file(node.file).is_some_and(|part| !entered.contains(part)))
+        .collect();
+    let acting: HashSet<&str> = public
+        .iter()
+        .filter(|node| !node.kind.is_type())
+        .filter_map(|node| part_of_file(node.file))
+        .collect();
+    public
+        .into_iter()
+        .filter(|node| !node.kind.is_type() || part_of_file(node.file).is_some_and(|part| !acting.contains(part)))
         .map(|node| offering(node, "public", "public", PUBLIC_TO_ANY_CALLER))
         .collect()
 }

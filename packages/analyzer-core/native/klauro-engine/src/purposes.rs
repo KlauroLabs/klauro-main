@@ -162,7 +162,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
     if !crate::author::asked() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: PENDING, reason: Some("the AI was not asked".to_string()) }, pending: BTreeSet::new() };
     }
-    let heading = if surface_only { "What it offers other code (each is used inside the flows of the parts that call it)" } else { "Behaviours" };
+    let heading = if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
     let key = format!("{remembered_as}\u{1}{prompt}");
     let count = groups.len();
