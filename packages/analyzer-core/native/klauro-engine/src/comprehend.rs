@@ -79,6 +79,10 @@ pub struct Flow {
     pub entered_by: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_in: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serves_as: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +150,8 @@ pub struct Entity {
     pub standing: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by: Vec<crate::records::Use>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<crate::ties::Held>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -195,6 +201,14 @@ pub struct Capability {
     pub composition_provenance: Vec<crate::parent::Source>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_originated: Option<crate::parent::Originated>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub used_in: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keeps: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -1211,6 +1225,9 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     into.changes.extend(other.changes);
     into.surfaces.extend(other.surfaces);
     into.touches.extend(other.touches);
+    into.offers.extend(other.offers);
+    into.offers.sort();
+    into.offers.dedup();
     if other.terminality == Some("terminal") || into.terminality.is_none() {
         into.terminality = other.terminality.or(into.terminality);
     }
@@ -2737,6 +2754,8 @@ pub fn derive(
             unshipped: entry.unshipped.clone(),
             entered_by: Vec::new(),
             runs_in: None,
+            capability: None,
+            serves_as: None,
         });
     }
     set_aside_what_only_programs_run(&mut flows, &delegates, &product_count, &tooling_reach);
@@ -4584,6 +4603,7 @@ fn entities(
             part_of: held_in.get(node.id.as_str()).cloned(),
             standing: None,
             used_by: Vec::new(),
+            capabilities: Vec::new(),
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity
@@ -4625,6 +4645,7 @@ fn entities(
             part_of: None,
             standing: None,
             used_by: Vec::new(),
+            capabilities: Vec::new(),
         });
     }
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
@@ -4782,6 +4803,7 @@ fn entities(
             part_of: None,
             standing: None,
             used_by: Vec::new(),
+            capabilities: Vec::new(),
         });
     }
     let record_of: HashMap<String, String> = entities
@@ -4854,6 +4876,7 @@ fn entities(
             part_of: None,
             standing: None,
             used_by: Vec::new(),
+            capabilities: Vec::new(),
         });
     }
     let known: HashMap<String, String> = entities
@@ -4930,6 +4953,10 @@ mod tests {
             unsettled: None,
             composition_provenance: Vec::new(),
             parent_originated: None,
+            offers: Vec::new(),
+            used_in: Vec::new(),
+            keeps: Vec::new(),
+            reads: Vec::new(),
             evidence: String::new(),
         }
     }

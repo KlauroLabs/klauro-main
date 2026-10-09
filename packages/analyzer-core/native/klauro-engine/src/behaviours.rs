@@ -600,6 +600,8 @@ mod tests {
             unshipped: None,
             entered_by: Vec::new(),
             runs_in: None,
+            capability: None,
+            serves_as: None,
         }
     }
 

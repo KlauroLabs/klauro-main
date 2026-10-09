@@ -280,6 +280,10 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             unsettled: None,
             composition_provenance: Vec::new(),
             parent_originated: None,
+            offers: Vec::new(),
+            used_in: Vec::new(),
+            keeps: Vec::new(),
+            reads: Vec::new(),
             evidence: String::new(),
         };
         let mut primaries = 0usize;
@@ -298,8 +302,9 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
                     primaries += 1;
                 }
                 for flow in group {
-                    if !surface_only {
-                        capability.delivered.push(Delivery { flow: flow.id.clone(), role, rationale: String::new(), unshipped: None });
+                    match surface_only {
+                        true => capability.offers.extend(flow.path.first().map(|start| start.unit.clone())),
+                        false => capability.delivered.push(Delivery { flow: flow.id.clone(), role, rationale: String::new(), unshipped: None }),
                     }
                     capability.surfaces.push(trigger_of(flow));
                     capability.records.extend(flow.writes.iter().cloned());
@@ -317,7 +322,7 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             continue;
         }
         capability.flows = capability.delivered.iter().map(|delivered| delivered.flow.clone()).collect();
-        for held in [&mut capability.records, &mut capability.touches, &mut capability.changes, &mut capability.surfaces] {
+        for held in [&mut capability.records, &mut capability.touches, &mut capability.changes, &mut capability.surfaces, &mut capability.offers] {
             held.sort();
             held.dedup();
         }
@@ -363,6 +368,8 @@ mod tests {
             unshipped: None,
             entered_by: Vec::new(),
             runs_in: None,
+            capability: None,
+            serves_as: None,
         }
     }
 

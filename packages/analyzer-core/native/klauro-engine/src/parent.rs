@@ -723,6 +723,10 @@ mod tests {
             unsettled: None,
             composition_provenance: Vec::new(),
             parent_originated: None,
+            offers: Vec::new(),
+            used_in: Vec::new(),
+            keeps: Vec::new(),
+            reads: Vec::new(),
             evidence: String::new(),
         }
     }

@@ -89,6 +89,7 @@ mod schema_files;
 mod scope;
 mod screens;
 mod seams;
+mod ties;
 mod sdk;
 mod shared;
 mod service_catalog;
@@ -1663,6 +1664,7 @@ fn read_it() {
         seams::join(&mut comprehension, &index.entry_points, &index.exit_points, &paths, &part_of_file, &testing, started, &index.nodes, &index.edges, &index.calls);
     }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
+    ties::tie(&mut comprehension, &index.nodes, &index.edges);
     eprintln!(
         "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {} | asked {}",
         comprehend_started.elapsed(),
