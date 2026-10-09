@@ -684,6 +684,7 @@ A capability holding a single behaviour is right only when nothing else here ser
 Name each capability in plain, grammatical words a product manager would use, starting with a verb followed by its object in at most six words (Place orders, never Order history), never code names, and say its outcome in one sentence. \
 A behaviour that exists only to support others, such as signing in, settings, health and status checks, start-up, diagnostics or housekeeping, is not a capability of its own: list it as supporting under the capability it serves, even when that is the only capability. \
 Put each behaviour number in exactly one capability, either among its behaviours or among its supporting behaviours. Two capabilities never share a name or an outcome. \
+A behaviour marked not shipped (a build, release, benchmark or development tool) still belongs to a capability: group such behaviours into the capabilities of the people who build and run this part, such as releasing it, never into a product capability. \
 Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services.";
 
 pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value> {
@@ -713,6 +714,38 @@ pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value>
 }
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
+
+pub const REST_ASKED: &str = "These capabilities were already formed for one part of a software system, and these behaviours of the part were left out of them. \
+Place every left-out behaviour by its number. To add it to a capability already formed, give that capability's exact name. When it serves none of them, give a new capability, named as a verb and its object in at most six words with its outcome in one sentence. \
+Supporting work (signing in, settings, health and status checks, start-up, diagnostics, housekeeping) goes among the supporting behaviours of the capability it serves. A behaviour marked not shipped goes to a capability of the people who build and run the part.";
+
+pub fn rest_of(prompt: &str, numbers: &[usize]) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    let asked = format!("{prompt}\n\n{REST_ASKED}\n\nReturn JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[{}],\"supporting\":[]}}]}}", numbers.first().copied().unwrap_or(1));
+    let wanted: std::collections::BTreeSet<u64> = numbers.iter().map(|number| *number as u64).collect();
+    let mut best: Option<(usize, serde_json::Value)> = None;
+    for _ in 0..PURPOSES_ASKED_AT_MOST {
+        let Some(answer) = answered::<serde_json::Value>(&asked, 300 + 30 * numbers.len() as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
+        let placed = answer["purposes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|purpose| purpose["behaviours"].as_array().into_iter().flatten().chain(purpose["supporting"].as_array().into_iter().flatten()))
+            .filter_map(serde_json::Value::as_u64)
+            .filter(|number| wanted.contains(number))
+            .collect::<std::collections::BTreeSet<u64>>()
+            .len();
+        if placed == wanted.len() {
+            return Some(answer);
+        }
+        if best.as_ref().is_none_or(|(held, _)| placed > *held) {
+            best = Some((placed, answer));
+        }
+    }
+    best.map(|(_, answer)| answer)
+}
 
 pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the flows that use it. \
 For each record decide who it is kept for. \
