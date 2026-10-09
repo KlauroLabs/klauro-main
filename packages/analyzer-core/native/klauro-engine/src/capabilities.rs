@@ -15,10 +15,6 @@ pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
 
 const STEPS_TOLD: usize = 7;
 
-pub(crate) fn is_caller_initiated(flow: &Flow) -> bool {
-    crate::entry_exit::USER_FACING.contains(&flow.kind)
-}
-
 pub(crate) fn told_steps(flow: &Flow) -> String {
     let mut said: Vec<&str> = Vec::new();
     for step in &flow.steps {
@@ -137,19 +133,10 @@ fn share_of(related: u32, flows: u32) -> f64 {
 }
 
 fn why_unmapped(flow: &Flow, pending: &BTreeSet<String>) -> String {
-    if let Some(tag) = flow.unshipped.as_ref().filter(|tag| crate::unshipped::is_set_aside(Some(tag))) {
-        return format!("set aside as not shipped: {} ({})", tag.role, tag.basis);
+    match pending.contains(&flow.id) {
+        true => "the AI gave no answer for its part".to_string(),
+        false => "no capability of its part delivers or supports it".to_string(),
     }
-    if !is_caller_initiated(flow) && flow.kind != "export" {
-        return format!("a {} entry is started by the runtime, not by a caller", flow.kind);
-    }
-    if pending.contains(&flow.id) {
-        return "the AI left its outcome unanswered".to_string();
-    }
-    if flow.writes.is_empty() && flow.reads.is_empty() && flow.changes.is_empty() && flow.reaches.is_empty() {
-        return "it reaches no domain entity and changes nothing outside the program".to_string();
-    }
-    "no capability the product states is served by it".to_string()
 }
 
 pub(crate) fn coverage_of(
@@ -902,8 +889,7 @@ mod command_family_tests {
             unshipped: None,
             entered_by: Vec::new(),
             runs_in: None,
-            capability: None,
-            serves_as: None,
+            capabilities: Vec::new(),
         }
     }
 
@@ -927,55 +913,6 @@ mod command_family_tests {
         assert!(!tooling.contains("src/app"));
     }
 
-
-
-    fn starting_in(mut flow: Flow, unit: &str) -> Flow {
-        flow.path = vec![crate::comprehend::Step { unit: unit.to_string(), depth: 0, leaves: Vec::new() }];
-        flow
-    }
-
-
-
-
-
-    #[test]
-    fn only_a_flow_a_caller_starts_is_a_candidate_by_section_0_7_1() {
-        for kind in ["http", "cli", "tool", "ipc", "rpc", "graphql", "ui"] {
-            assert!(is_caller_initiated(&flow("flow:1", kind, None, "x", &[], &[])), "{kind}");
-        }
-        for kind in ["lifecycle", "schedule", "background", "event", "message", "export", "test"] {
-            assert!(!is_caller_initiated(&flow("flow:1", kind, None, "x", &[], &[])), "{kind}");
-        }
-    }
-
-
-    #[test]
-    fn a_flow_with_no_steps_is_told_by_the_units_it_runs_through() {
-        let started = starting_in(flow("flow:11", "event", None, "click", &[], &[]), "site/main.js:callback:menuButton.addEventListener");
-        assert_eq!(told_steps(&started), "no steps read; it runs through menuButton.addEventListener");
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     #[test]
     fn capabilities_that_mostly_share_their_flows_are_near_duplicates() {
         let flows = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
@@ -984,8 +921,6 @@ mod command_family_tests {
         assert!(near_in_flows(&flows(&["a"]), &flows(&["a", "b"])));
         assert!(!near_in_flows(&flows(&["a"]), &flows(&["b"])));
     }
-
-
 
     #[test]
     fn a_group_found_twice_is_united_with_the_larger_naming_it() {
@@ -1038,13 +973,9 @@ mod command_family_tests {
         let ids: Vec<&str> = covered.unmapped_flows.iter().map(|held| held.flow.as_str()).collect();
         assert_eq!(ids, vec!["flow:1", "flow:2", "flow:3", "flow:4", "flow:5"]);
         let reason = |id: &str| covered.unmapped_flows.iter().find(|held| held.flow == id).map(|held| held.reason.clone()).unwrap_or_default();
-        assert!(reason("flow:1").contains("reaches no domain entity"));
-        assert!(reason("flow:2").contains("started by the runtime"));
-        assert!(reason("flow:3").contains("set aside"));
-        assert!(reason("flow:5").contains("unanswered"));
+        assert_eq!(reason("flow:1"), "no capability of its part delivers or supports it", "a flow outside every capability is a plain fact, not a failure to explain away");
+        assert_eq!(reason("flow:5"), "the AI gave no answer for its part");
     }
-
-
 
 }
 

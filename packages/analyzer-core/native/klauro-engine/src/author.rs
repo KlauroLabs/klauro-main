@@ -680,72 +680,39 @@ When in doubt keep them apart. Every number appears in exactly one group.";
 pub const CAPABILITIES_ASKED: &str = "These are the behaviours of one part of a software system, each with what it achieves, the trigger that starts it, the records it keeps or reads, and what it hands on to. \
 Group them into the capabilities this part gives the people or systems it serves. A capability is an outcome someone comes to this part for, such as placing an order or keeping a catalogue of products, not a technical mechanism. \
 A capability gathers every behaviour that serves the same outcome: the creating, changing and viewing of the same thing, the requests and screens of one area of the product, the recurring jobs that together keep one kind of information current. \
-A capability holding a single behaviour is right only when nothing else here serves its outcome. A reader should hold the whole list in mind at once, so a part rarely has more than eight. \
+A capability holding a single behaviour is right only when nothing else here serves its outcome. \
 Name each capability in plain, grammatical words a product manager would use, starting with a verb followed by its object in at most six words (Place orders, never Order history), never code names, and say its outcome in one sentence. \
-A behaviour that exists only to support others, such as signing in, settings, health and status checks, start-up, diagnostics or housekeeping, is not a capability of its own: list it as supporting under the capability it serves, even when that is the only capability. \
-Put each behaviour number in exactly one capability, either among its behaviours or among its supporting behaviours. Two capabilities never share a name or an outcome. \
-A behaviour marked not shipped (a build, release, benchmark or development tool) still belongs to a capability: group such behaviours into the capabilities of the people who build and run this part, such as releasing it, never into a product capability. \
-Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services.";
+List under behaviours the numbers of the behaviours that deliver the capability; a behaviour delivers at most one capability. \
+A behaviour that exists only to support others, such as signing in, settings, health and status checks, start-up, diagnostics or housekeeping, is not a capability of its own: list its number among the supporting behaviours of every capability it serves. \
+A behaviour that delivers or supports no capability is left out; never force it into one. Two capabilities never share a name or an outcome. \
+A behaviour marked not shipped (a build, release, benchmark or development tool) never belongs to a product capability; when it serves the people who build and run this part, it belongs to their capabilities, such as releasing it. \
+Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services. \
+Every capability lists at least one behaviour number it delivers, and every entry in behaviours and supporting is a listed number.";
 
 pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
     let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\nReturn JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
-    let mut best: Option<(usize, serde_json::Value)> = None;
-    for _ in 0..PURPOSES_ASKED_AT_MOST {
-        let Some(answer) = answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
-        let placed: std::collections::BTreeSet<u64> = answer["purposes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|purpose| purpose["behaviours"].as_array().into_iter().flatten().chain(purpose["supporting"].as_array().into_iter().flatten()))
-            .filter_map(serde_json::Value::as_u64)
-            .filter(|number| *number >= 1 && *number <= behaviours as u64)
-            .collect();
-        if placed.len() == behaviours {
-            return Some(answer);
-        }
-        if best.as_ref().is_none_or(|(held, _)| placed.len() > *held) {
-            best = Some((placed.len(), answer));
-        }
-    }
-    best.map(|(_, answer)| answer)
+    (0..PURPOSES_ASKED_AT_MOST).find_map(|_| {
+        answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK)
+            .filter(|answer| well_formed_purposes(answer, behaviours))
+    })
+}
+
+pub(crate) fn well_formed_purposes(answer: &serde_json::Value, behaviours: usize) -> bool {
+    let numbered = |held: &serde_json::Value| held.as_u64().is_some_and(|number| number >= 1 && number <= behaviours as u64);
+    let Some(purposes) = answer["purposes"].as_array().filter(|purposes| !purposes.is_empty()) else { return false };
+    purposes.iter().all(|purpose| {
+        let named = purpose["name"].as_str().is_some_and(|name| !name.trim().is_empty());
+        let delivering = purpose["behaviours"].as_array().is_some_and(|numbers| !numbers.is_empty() && numbers.iter().all(numbered));
+        let supporting = purpose["supporting"].as_array().is_none_or(|numbers| numbers.iter().all(numbered));
+        named && delivering && supporting
+    })
 }
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
 
-pub const REST_ASKED: &str = "These capabilities were already formed for one part of a software system, and these behaviours of the part were left out of them. \
-Place every left-out behaviour by its number. To add it to a capability already formed, give that capability's exact name. When it serves none of them, give a new capability, named as a verb and its object in at most six words with its outcome in one sentence. \
-Supporting work (signing in, settings, health and status checks, start-up, diagnostics, housekeeping) goes among the supporting behaviours of the capability it serves. A behaviour marked not shipped goes to a capability of the people who build and run the part.";
-
-pub fn rest_of(prompt: &str, numbers: &[usize]) -> Option<serde_json::Value> {
-    if !asked() {
-        return None;
-    }
-    let asked = format!("{prompt}\n\n{REST_ASKED}\n\nReturn JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[{}],\"supporting\":[]}}]}}", numbers.first().copied().unwrap_or(1));
-    let wanted: std::collections::BTreeSet<u64> = numbers.iter().map(|number| *number as u64).collect();
-    let mut best: Option<(usize, serde_json::Value)> = None;
-    for _ in 0..PURPOSES_ASKED_AT_MOST {
-        let Some(answer) = answered::<serde_json::Value>(&asked, 300 + 30 * numbers.len() as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
-        let placed = answer["purposes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|purpose| purpose["behaviours"].as_array().into_iter().flatten().chain(purpose["supporting"].as_array().into_iter().flatten()))
-            .filter_map(serde_json::Value::as_u64)
-            .filter(|number| wanted.contains(number))
-            .collect::<std::collections::BTreeSet<u64>>()
-            .len();
-        if placed == wanted.len() {
-            return Some(answer);
-        }
-        if best.as_ref().is_none_or(|(held, _)| placed > *held) {
-            best = Some((placed, answer));
-        }
-    }
-    best.map(|(_, answer)| answer)
-}
 
 pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the flows that use it. \
 For each record decide who it is kept for. \
@@ -1748,6 +1715,11 @@ pub fn what_it_means(expect: &Expectation) -> String {
 mod shapes {
     #[test]
     fn every_answer_asked_for_is_given_the_shape_it_is_read_back_in() {
+        assert!(super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": [2]}]}), 2));
+        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [], "supporting": [2]}]}), 2), "a capability delivers something");
+        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": ["health checks"]}]}), 2), "only listed numbers");
+        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [3]}]}), 2), "only listed numbers");
+        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": []}), 2));
         let source = include_str!("author.rs");
         let asked: std::collections::BTreeSet<&str> = source
             .match_indices("&asking_of_models(model()), \"")

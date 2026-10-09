@@ -5,6 +5,8 @@ use crate::comprehend::Comprehension;
 use crate::model::{EdgeKind, IndexEdge, IndexNode};
 
 const REACH_AT_MOST: usize = 20_000;
+const DELIVERS: &str = "delivers";
+const SUPPORTS: &str = "supports";
 const KEEPS: &str = "keeps";
 const READS: &str = "reads";
 const KEEPS_THROUGH: &str = "keeps through another part";
@@ -30,17 +32,15 @@ fn file_of(unit: &str) -> &str {
 }
 
 pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
-    let mut placed: HashMap<String, (String, &'static str)> = HashMap::default();
+    let mut held_by: HashMap<String, Vec<Held>> = HashMap::default();
     for capability in held.capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
         for delivered in &capability.delivered {
-            placed.entry(delivered.flow.clone()).or_insert((capability.id.clone(), delivered.role));
+            let role = if delivered.role == "primary" { DELIVERS } else { SUPPORTS };
+            held_by.entry(delivered.flow.clone()).or_default().push(Held { capability: capability.id.clone(), role });
         }
     }
     for flow in held.flows.iter_mut() {
-        if let Some((capability, role)) = placed.get(&flow.id) {
-            flow.capability = Some(capability.clone());
-            flow.serves_as = Some(role);
-        }
+        flow.capabilities = held_by.remove(&flow.id).unwrap_or_default();
     }
 
     let callbacks: HashSet<&str> = nodes.iter().filter(|node| node.callback_of.is_some()).map(|node| node.id.as_str()).collect();
@@ -247,8 +247,7 @@ mod tests {
             unshipped: None,
             entered_by: Vec::new(),
             runs_in: None,
-            capability: None,
-            serves_as: None,
+            capabilities: Vec::new(),
         }
     }
 
@@ -339,11 +338,12 @@ mod tests {
             vec![flow("place", "shop", "shop/orders.ts:function:place"), flow("sign-in", "shop", "shop/auth.ts:function:signIn"), flow("stray", "shop", "shop/x.ts:function:x")],
             Vec::new(),
         );
+        held.capabilities.push(capability("capability:shop:cancel-orders", "shop", &[("cancel", "primary"), ("sign-in", "supporting")], &[], &[], &[]));
         tie(&mut held, &[], &[]);
-        assert_eq!(held.flows[0].capability.as_deref(), Some("capability:shop:place-orders"));
-        assert_eq!(held.flows[0].serves_as, Some("primary"));
-        assert_eq!(held.flows[1].serves_as, Some("supporting"));
-        assert!(held.flows[2].capability.is_none(), "a flow no capability placed stays visibly unplaced");
+        let ties = |at: usize| held.flows[at].capabilities.iter().map(|tie| (tie.capability.as_str(), tie.role)).collect::<Vec<_>>();
+        assert_eq!(ties(0), [("capability:shop:place-orders", DELIVERS)]);
+        assert_eq!(ties(1), [("capability:shop:place-orders", SUPPORTS), ("capability:shop:cancel-orders", SUPPORTS)], "supporting work may serve several capabilities");
+        assert!(ties(2).is_empty(), "a flow may belong to no capability");
     }
 
     #[test]
