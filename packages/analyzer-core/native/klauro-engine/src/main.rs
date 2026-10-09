@@ -1604,6 +1604,7 @@ fn read_it() {
             entries: &index.entry_points,
             nodes: &index.nodes,
             part_names: split.sub_projects.iter().map(|part| (part.id.as_str(), part.display_name.as_str())).collect(),
+            part_summaries: split.sub_projects.iter().map(|part| (part.id.as_str(), part.summary.as_str())).collect(),
             consumed: split
                 .sub_projects
                 .iter()

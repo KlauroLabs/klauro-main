@@ -23,6 +23,7 @@ pub struct Facts<'a> {
     pub entries: &'a [EntryPoint],
     pub nodes: &'a [IndexNode],
     pub part_names: HashMap<&'a str, &'a str>,
+    pub part_summaries: HashMap<&'a str, &'a str>,
     pub consumed: HashSet<&'a str>,
     pub calling: HashSet<&'a str>,
     pub calls: &'a [crate::model::CallFact],
@@ -175,7 +176,11 @@ const STANDING_TOLD_AT_MOST: usize = 60;
 
 fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, landing: &HashMap<&str, String>, one: bool) -> String {
     let part = flow.project.as_deref().map(|held| facts.part_names.get(held).copied().unwrap_or(held)).unwrap_or_default();
-    let mut lines = vec![format!("Part: {part}"), format!("Trigger: {}", trigger_of(flow, entry))];
+    let mut lines = vec![format!("Part: {part}")];
+    if let Some(summary) = flow.project.as_deref().and_then(|held| facts.part_summaries.get(held)).filter(|summary| !summary.is_empty()) {
+        lines.push(format!("What the part is: {summary}"));
+    }
+    lines.push(format!("Trigger: {}", trigger_of(flow, entry)));
     if matches!(flow.kind, "message" | "event") {
         lines.push("The trigger is a message received from elsewhere: its name says what already happened there. This behaviour is only what this part does in response.".to_string());
     }
