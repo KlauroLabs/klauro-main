@@ -43,6 +43,11 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
         }
     }
     let offered_files: HashSet<&str> = held.capabilities.iter().flat_map(|capability| capability.offers.iter()).map(|unit| file_of(unit)).collect();
+    let parent_of: HashMap<&str, &str> = nodes.iter().filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?))).collect();
+    let mut grounds: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Extends && offered_files.contains(file_of(&edge.target))) {
+        grounds.entry(edge.source.as_str()).or_default().push(file_of(&edge.target));
+    }
     let mut used_in_file: HashMap<&str, Vec<String>> = HashMap::default();
     if !offered_files.is_empty() {
         for flow in &held.flows {
@@ -62,8 +67,11 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
             let mut touched: HashSet<&str> = HashSet::default();
             for unit in queue {
                 let file = file_of(unit);
-                if offered_files.contains(file) && touched.insert(file) {
-                    used_in_file.entry(file).or_default().push(flow.id.clone());
+                let through_a_type = [Some(unit), parent_of.get(unit).copied()].into_iter().flatten().flat_map(|owner| grounds.get(owner).into_iter().flatten().copied());
+                for offered in std::iter::once(file).filter(|file| offered_files.contains(file)).chain(through_a_type) {
+                    if touched.insert(offered) {
+                        used_in_file.entry(offered).or_default().push(flow.id.clone());
+                    }
                 }
             }
         }
@@ -295,5 +303,36 @@ mod tests {
         let edges = [edge("shop/Checkout.cs:function:Pay", "bus/Bus.cs:function:Publish")];
         tie(&mut held, &[], &edges);
         assert_eq!(held.capabilities[0].used_in, ["checkout"]);
+    }
+
+    #[test]
+    fn a_flow_that_runs_an_implementation_of_an_offered_type_uses_it() {
+        let mut held = held(
+            vec![capability("capability:bus:publish-events", "bus", &[], &[], &[], &["bus/IBus.cs:type:IBus"])],
+            vec![flow("checkout", "shop", "shop/Checkout.cs:function:Pay")],
+            Vec::new(),
+        );
+        let publish = IndexNode {
+            id: "rabbit/RabbitBus.cs:function:Publish".to_string(),
+            name: "Publish".to_string(),
+            kind: crate::model::NodeKind::Method,
+            file: 0,
+            span: crate::model::Span { line: 1, column: 0, end_line: 1, end_column: 0 },
+            parent: Some("rabbit/RabbitBus.cs:type:RabbitBus".to_string()),
+            signature: None,
+            modifiers: Default::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: None,
+            registration_label: None,
+        };
+        let edges = [
+            edge("shop/Checkout.cs:function:Pay", "rabbit/RabbitBus.cs:function:Publish"),
+            IndexEdge { source: "rabbit/RabbitBus.cs:type:RabbitBus".to_string(), target: "bus/IBus.cs:type:IBus".to_string(), kind: EdgeKind::Extends, via: Default::default() },
+        ];
+        tie(&mut held, &[publish], &edges);
+        assert_eq!(held.capabilities[0].used_in, ["checkout"], "the call went to the implementation of the offered interface");
     }
 }
