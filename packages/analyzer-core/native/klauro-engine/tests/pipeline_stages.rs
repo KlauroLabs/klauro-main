@@ -11,7 +11,7 @@ fn steps_of(index: &serde_json::Value, entry: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_programs_pure_stages_are_its_steps() {
+fn a_programs_pure_stages_are_its_steps_even_when_handed_to_a_thread() {
     let index = common::read("pipeline_stages");
     let steps = steps_of(&index, "main.rs:function:main");
     assert!(steps.iter().any(|step| step == "Discover discovery"), "{steps:#?}");

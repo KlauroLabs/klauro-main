@@ -6,7 +6,6 @@ use crate::model::*;
 
 const DEEPEST: u32 = 14;
 const ACTIONS_AT_MOST: usize = 240;
-const STEPS_AT_MOST: usize = 24;
 const SHARED_BY: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,6 +33,8 @@ pub struct LogicalStep {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lands_in: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gathers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,12 +80,10 @@ pub struct Reader<'a> {
     depth_now: std::cell::Cell<u32>,
     cut: std::cell::Cell<bool>,
     home: std::cell::RefCell<Option<String>>,
-    pipeline: std::cell::Cell<bool>,
 }
 
 const CARRIED_AT_MOST: u32 = 1;
 const HELPER_ACTIONS_AT_MOST: usize = 5;
-const STAGES_DEEP: u32 = 1;
 static STRONGER: &[&str] = &["keep", "change", "create", "remove", "read"];
 const PROGRAM_NAMED_AT_MOST: usize = 40;
 static ANOTHER_PROGRAM: &str = "another program";
@@ -210,26 +209,6 @@ fn plain_type(written: &str) -> Option<String> {
     (!says_nothing).then_some(named)
 }
 
-fn evenly(of: &[usize], taking: usize) -> Vec<usize> {
-    match (of.len(), taking) {
-        (_, 0) | (0, _) => Vec::new(),
-        (all, wanted) if wanted >= all => of.to_vec(),
-        (_, 1) => vec![of[of.len() - 1]],
-        (all, wanted) => (0..wanted).map(|at| of[at * (all - 1) / (wanted - 1)]).collect(),
-    }
-}
-
-fn spread(settled: Vec<Action>) -> Vec<Action> {
-    if settled.len() <= STEPS_AT_MOST {
-        return settled;
-    }
-    let stages: Vec<usize> = settled.iter().enumerate().filter(|(_, action)| action.kind == "do").map(|(at, _)| at).collect();
-    let effects: Vec<usize> = settled.iter().enumerate().filter(|(_, action)| action.kind != "do").map(|(at, _)| at).collect();
-    let effects_room = STEPS_AT_MOST - stages.len().min(STEPS_AT_MOST / 2);
-    let mut kept: std::collections::BTreeSet<usize> = evenly(&effects, effects_room).into_iter().collect();
-    kept.extend(evenly(&stages, STEPS_AT_MOST - kept.len()));
-    settled.into_iter().enumerate().filter(|(at, _)| kept.contains(at)).map(|(_, action)| action).collect()
-}
 
 fn staged_as(reached: &IndexNode) -> String {
     let said = spoken(&reached.name);
@@ -417,7 +396,7 @@ impl<'a> Reader<'a> {
                 _ => (unit, None),
             })
             .collect();
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None), pipeline: std::cell::Cell::new(false) }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, throws, events, requests, raised, keepers, member_of, callers, constructors, kept_in, declared_as, programs, carrying: std::cell::RefCell::new(Vec::new()), depth_now: std::cell::Cell::new(0), cut: std::cell::Cell::new(false), home: std::cell::RefCell::new(None) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -706,8 +685,7 @@ impl<'a> Reader<'a> {
     }
 
     fn a_stage(&self, at: &IndexNode, reached: &IndexNode, depth: u32) -> bool {
-        self.pipeline.get()
-            && depth <= STAGES_DEEP
+        depth == 0
             && reached.file != at.file
             && reached.callback_of.is_none()
             && reached.project.is_some()
@@ -861,6 +839,14 @@ impl<'a> Reader<'a> {
             let target = targets.remove(0);
             at_line.push((call.line, call.column, Some(target), when_of(&call.context), None, Some(call)));
         }
+        let handed_over: HashSet<u32> = targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                let named = self.nodes[*target as usize].name.as_str();
+                calls.iter().any(|call| call.literals.iter().any(|literal| crate::names::leaf(literal) == named))
+            })
+            .collect();
         for target in targets {
             let inner = &self.nodes[target as usize];
             let line = match inner.id.contains(":callback:") && inner.file == node.file {
@@ -908,7 +894,7 @@ impl<'a> Reader<'a> {
             {
                 let mut within: Vec<Action> = Vec::new();
                 if visited.insert(target) {
-                    self.walk(target, depth + 1, context, &here, visited, &mut within);
+                    self.walk(target, if handed_over.contains(&target) { depth } else { depth + 1 }, context, &here, visited, &mut within);
                 }
                 let (handing, rest): (Vec<Action>, Vec<Action>) =
                     within.into_iter().partition(|action| matches!(action.kind, "hand_off" | "send" | "notify"));
@@ -935,7 +921,7 @@ impl<'a> Reader<'a> {
             {
                 let mut within: Vec<Action> = Vec::new();
                 if visited.insert(target) {
-                    self.walk(target, depth + 1, context, &here, visited, &mut within);
+                    self.walk(target, if handed_over.contains(&target) { depth } else { depth + 1 }, context, &here, visited, &mut within);
                 }
                 let removes = within.iter().any(|action| action.kind == "remove");
                 let stores = within.iter().any(|action| action.kind == "keep");
@@ -975,6 +961,7 @@ impl<'a> Reader<'a> {
                         actions.push(action);
                     }
                     let before = actions.len();
+                    let mut staged = false;
                     let built = &self.nodes[target as usize];
                     if built.kind.is_type()
                         && let Some(made_by) = self.constructors.get(&target)
@@ -996,7 +983,7 @@ impl<'a> Reader<'a> {
                         let named = self.nodes[target as usize].name.as_str();
                         if shared {
                             let mut within: Vec<Action> = Vec::new();
-                            self.walk(target, depth + 1, context, &here, visited, &mut within);
+                            self.walk(target, if handed_over.contains(&target) { depth } else { depth + 1 }, context, &here, visited, &mut within);
                             let checking = a_check(named);
                             let persists = within.iter().any(|action| match action.kind {
                                 "hand_off" | "raise" | "send" | "notify" | "keep" | "remove" | "commit" => true,
@@ -1004,13 +991,13 @@ impl<'a> Reader<'a> {
                                 "call" => action.writes,
                                 _ => false,
                             });
-                            let matters = persists || reached.callback_of.is_some();
+                            let matters = persists || reached.callback_of.is_some() || handed_over.contains(&target);
                             let looked_up = within.iter().find_map(|action| {
                                 (action.kind == "read").then_some(action.object.as_deref()).flatten().filter(|object| self.held.contains(object)).map(str::to_string)
                             });
                             match (matters, within.is_empty()) {
                                 (true, _) => actions.extend(self.condensed(within)),
-                                (false, true) if self.a_stage(node, reached, depth) => actions.push(self.stage(reached, context, &here, unit, shown_line(line))),
+                                (false, true) if self.a_stage(node, reached, depth) => staged = true,
                                 (false, true) => {}
                                 (false, false) if !checking && looked_up.is_some() => actions.push(Action {
                                     kind: "read",
@@ -1033,17 +1020,17 @@ impl<'a> Reader<'a> {
                             }
                         } else {
                             let mut within: Vec<Action> = Vec::new();
-                            self.walk(target, depth + 1, context, &here, visited, &mut within);
+                            self.walk(target, if handed_over.contains(&target) { depth } else { depth + 1 }, context, &here, visited, &mut within);
                             let about_records = within.iter().any(|action| {
                                 matches!(action.kind, "hand_off" | "raise" | "send" | "notify" | "refuse" | "respond")
                                     || (action.kind == "call" && action.writes)
                                     || action.object.as_deref().is_some_and(|object| self.held.contains(object))
                             });
                             let own = !reached.id.starts_with("package:") && !reached.id.starts_with("runtime:");
-                            let unnamed = reached.callback_of.is_some();
+                            let unnamed = reached.callback_of.is_some() || handed_over.contains(&target);
                             let a_body_of_work = depth == 0 && within.len() > HELPER_ACTIONS_AT_MOST;
                             if within.is_empty() && self.a_stage(node, reached, depth) {
-                                actions.push(self.stage(reached, context, &here, unit, shown_line(line)));
+                                staged = true;
                             } else if about_records || !own || within.len() < 2 || a_body_of_work || unnamed {
                                 actions.extend(within);
                             } else {
@@ -1069,6 +1056,9 @@ impl<'a> Reader<'a> {
                     let awaited = call.is_some_and(|call| call.context.awaited);
                     if own && awaited && actions.len() == before && !callee.is_empty() && crate::effects::by_words(callee) == Some("send") {
                         actions.push(Action { kind: "notify", object: None, doing: Some(spoken(callee)), when: context, arms: here.clone(), writes: true, unit, line: shown_line(line) });
+                    }
+                    if staged && actions.len() == before {
+                        actions.push(self.stage(&self.nodes[target as usize], context, &here, unit, shown_line(line)));
                     }
                 }
                 None => {
@@ -1116,7 +1106,6 @@ impl<'a> Reader<'a> {
             return (Vec::new(), Vec::new(), false);
         };
         self.cut.set(false);
-        self.pipeline.set(matches!(entry.kind, "lifecycle" | "cli"));
         *self.home.borrow_mut() = self.nodes[start as usize].project.clone();
         let mut actions: Vec<Action> = Vec::new();
         let first_line = self.nodes[start as usize].span.line;
@@ -1180,7 +1169,6 @@ impl<'a> Reader<'a> {
             }
             settled.push(action);
         }
-        let settled = spread(settled);
         let mut steps: Vec<LogicalStep> = Vec::new();
         let mut last_when: Vec<&'static str> = Vec::new();
         for action in settled {
@@ -1204,10 +1192,6 @@ impl<'a> Reader<'a> {
                 }
                 continue;
             }
-            if steps.len() >= STEPS_AT_MOST {
-                self.cut.set(true);
-                break;
-            }
             last_when.push(action.when);
             steps.push(LogicalStep {
                 id: format!("s{}", steps.len() + 1),
@@ -1224,6 +1208,7 @@ impl<'a> Reader<'a> {
                 regions: vec![region],
                 description: None,
                 lands_in: Vec::new(),
+                gathers: Vec::new(),
             });
         }
         let edges = steps
@@ -1244,14 +1229,7 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod reading {
-    use super::{acted_through_a_library, evenly};
-
-    #[test]
-    fn a_long_flow_keeps_its_beginning_and_its_end() {
-        assert_eq!(evenly(&[1, 2, 3, 4, 5, 6, 7, 8, 9], 3), [1, 5, 9]);
-        assert_eq!(evenly(&[4, 8], 5), [4, 8]);
-        assert_eq!(evenly(&[4, 8], 1), [8]);
-    }
+    use super::acted_through_a_library;
 
     #[test]
     fn an_action_taken_through_a_library_is_a_step_and_a_lookup_is_not() {

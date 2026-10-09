@@ -51,6 +51,8 @@ struct Said {
     id: String,
     #[serde(default)]
     said: String,
+    #[serde(default)]
+    with: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -229,12 +231,13 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, l
     format!("{}\n\n{asked}", lines.join("\n"))
 }
 
-fn asked_all(items: &[(String, String)]) -> std::collections::BTreeMap<String, Answer> {
+fn asked_all(items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>) -> std::collections::BTreeMap<String, Answer> {
     crate::author::asking(|| {
         items
             .par_iter()
             .filter_map(|(id, prompt)| {
-                let held = crate::author::behaviours_of(prompt)?;
+                let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
+                let held = crate::author::behaviours_of(prompt, &steps)?;
                 serde_json::from_value::<Answer>(held).ok().map(|answer| (id.clone(), answer))
             })
             .collect()
@@ -274,18 +277,45 @@ fn alternatives(behaviours: &[Behaviour], flow: &Flow, deciding: &HashSet<u64>) 
 const OUTCOMES: &[&str] = &["keep", "change", "create", "remove", "send", "hand_off", "notify", "refuse", "raise"];
 
 fn worded(flow: &Flow, behaviour: &Behaviour, alone: bool) -> Vec<crate::steps::LogicalStep> {
-    let said_of: HashMap<&str, &str> = behaviour.steps.iter().map(|said| (said.id.as_str(), said.said.trim())).collect();
-    flow.steps
-        .iter()
-        .filter(|step| said_of.contains_key(step.id.as_str()) || (alone && OUTCOMES.contains(&step.kind)))
-        .map(|step| {
-            let mut step = step.clone();
-            if let Some(said) = said_of.get(step.id.as_str()).filter(|said| !said.is_empty()) {
-                step.description = Some(said.to_string());
+    let mut gathered_into: HashMap<&str, &str> = HashMap::default();
+    for said in &behaviour.steps {
+        for other in &said.with {
+            gathered_into.entry(other.as_str()).or_insert(said.id.as_str());
+        }
+    }
+    let said_of: HashMap<&str, &Said> = behaviour.steps.iter().map(|said| (said.id.as_str(), said)).collect();
+    let mut steps: Vec<crate::steps::LogicalStep> = Vec::new();
+    for step in &flow.steps {
+        if let Some(lead) = gathered_into.get(step.id.as_str()).filter(|lead| **lead != step.id.as_str()) {
+            if let Some(into) = steps.iter_mut().find(|held| held.id == *lead) {
+                gather(into, step);
             }
-            step
-        })
-        .collect()
+            continue;
+        }
+        let said = said_of.get(step.id.as_str());
+        if said.is_none() && !(alone && OUTCOMES.contains(&step.kind)) {
+            continue;
+        }
+        let mut step = step.clone();
+        if let Some(said) = said.map(|said| said.said.trim()).filter(|said| !said.is_empty()) {
+            step.description = Some(said.to_string());
+        }
+        steps.push(step);
+    }
+    steps
+}
+
+fn gather(into: &mut crate::steps::LogicalStep, member: &crate::steps::LogicalStep) {
+    if into.gathers.is_empty() {
+        into.gathers.push(into.label.clone());
+    }
+    into.gathers.push(member.label.clone());
+    into.regions.extend(member.regions.iter().cloned());
+    into.lands_in.extend(member.lands_in.iter().cloned());
+    if !OUTCOMES.contains(&into.kind) && OUTCOMES.contains(&member.kind) {
+        into.kind = member.kind;
+        into.object = member.object.clone().or(into.object.take());
+    }
 }
 
 type MergeClass = (&'static str, String, bool, Option<String>);
@@ -435,7 +465,8 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         .iter()
         .map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, false)))
         .collect();
-    let answers = crate::memory::each("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, asked_all);
+    let steps_of: HashMap<String, Vec<String>> = kept.iter().map(|flow| (flow.id.clone(), flow.steps.iter().map(|step| step.id.clone()).collect())).collect();
+    let answers = crate::memory::each("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, |items| asked_all(items, &steps_of));
     let mut again: Vec<(String, String)> = Vec::new();
     for flow in &kept {
         let Some(answer) = answers.get(&flow.id) else { continue };
@@ -454,7 +485,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, true)));
         }
     }
-    let single = crate::memory::each("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, asked_all);
+    let single = crate::memory::each("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, |items| asked_all(items, &steps_of));
     let mut settled: Vec<Flow> = Vec::new();
     for flow in kept {
         let mut behaviours: Vec<Behaviour> = match single.get(&flow.id) {
@@ -564,6 +595,7 @@ mod tests {
             regions: Vec::new(),
             description: None,
             lands_in: Vec::new(),
+            gathers: Vec::new(),
         }
     }
 
@@ -604,8 +636,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn consecutive_steps_that_do_one_thing_become_one_step_that_keeps_every_region() {
+        let mut first = step("s1", "do", &[]);
+        first.regions = vec![crate::steps::Region { unit: "a".to_string(), file: 0, start_line: 1, end_line: 1 }];
+        let mut second = step("s2", "keep", &[]);
+        second.object = Some("Order".to_string());
+        second.regions = vec![crate::steps::Region { unit: "a".to_string(), file: 0, start_line: 2, end_line: 2 }];
+        let third = step("s3", "respond", &[]);
+        let held = flow(vec![first, second, third]);
+        let behaviour = Behaviour {
+            name: "Place an order".to_string(),
+            outcome: String::new(),
+            steps: vec![
+                Said { id: "s1".to_string(), said: "Keep the new order".to_string(), with: vec!["s2".to_string()] },
+                Said { id: "s3".to_string(), said: "Answer".to_string(), with: Vec::new() },
+            ],
+        };
+        let steps = worded(&held, &behaviour, true);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].kind, "keep", "the gathered step does what its strongest member does");
+        assert_eq!(steps[0].object.as_deref(), Some("Order"));
+        assert_eq!(steps[0].regions.len(), 2, "no member's code is dropped");
+        assert_eq!(steps[0].gathers, ["s1", "s2"]);
+        assert_eq!(steps[0].description.as_deref(), Some("Keep the new order"));
+    }
+
     fn behaviour(ids: &[&str]) -> Behaviour {
-        Behaviour { name: String::new(), outcome: String::new(), steps: ids.iter().map(|id| Said { id: id.to_string(), said: String::new() }).collect() }
+        Behaviour { name: String::new(), outcome: String::new(), steps: ids.iter().map(|id| Said { id: id.to_string(), said: String::new(), with: Vec::new() }).collect() }
     }
 
     const HERE: &str = "500000010.1";

@@ -394,6 +394,7 @@ mod tests {
             regions: Vec::new(),
             description: None,
             lands_in: Vec::new(),
+            gathers: Vec::new(),
         };
         third.steps = vec![step("call", "Call /events"), step("respond", "Respond")];
         assert_eq!(offered_together(2, "Log", &[&third]), "2. Log: Store | offers: Save | does: Call /events", "what the code does is told, never its replies");
