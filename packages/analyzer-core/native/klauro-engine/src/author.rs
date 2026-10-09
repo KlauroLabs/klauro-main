@@ -693,22 +693,42 @@ pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value>
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\nReturn JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
-    (0..PURPOSES_ASKED_AT_MOST).find_map(|_| {
-        answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK)
-            .filter(|answer| well_formed_purposes(answer, behaviours))
-    })
+    let mut correction = String::new();
+    for _ in 0..PURPOSES_ASKED_AT_MOST {
+        let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\n{correction}Return JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
+        let Some(answer) = answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
+        match what_is_wrong_with_purposes(&answer, behaviours) {
+            None => return Some(answer),
+            Some(wrong) => {
+                if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                    eprintln!("    capabilities answer refused ({behaviours} listed): {wrong}");
+                }
+                correction = format!("A previous answer was refused: {wrong}. Answer again, following the rules.\n\n");
+            }
+        }
+    }
+    None
 }
 
-pub(crate) fn well_formed_purposes(answer: &serde_json::Value, behaviours: usize) -> bool {
+pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours: usize) -> Option<String> {
     let numbered = |held: &serde_json::Value| held.as_u64().is_some_and(|number| number >= 1 && number <= behaviours as u64);
-    let Some(purposes) = answer["purposes"].as_array().filter(|purposes| !purposes.is_empty()) else { return false };
-    purposes.iter().all(|purpose| {
-        let named = purpose["name"].as_str().is_some_and(|name| !name.trim().is_empty());
-        let delivering = purpose["behaviours"].as_array().is_some_and(|numbers| !numbers.is_empty() && numbers.iter().all(numbered));
-        let supporting = purpose["supporting"].as_array().is_none_or(|numbers| numbers.iter().all(numbered));
-        named && delivering && supporting
-    })
+    let Some(purposes) = answer["purposes"].as_array().filter(|purposes| !purposes.is_empty()) else {
+        return Some("it gave no capability, and every part has at least one".to_string());
+    };
+    for purpose in purposes {
+        let name = purpose["name"].as_str().unwrap_or_default().trim();
+        if name.is_empty() {
+            return Some("a capability had no name".to_string());
+        }
+        if !purpose["behaviours"].as_array().is_some_and(|numbers| !numbers.is_empty()) {
+            return Some(format!("{name} listed no numbered behaviour it delivers"));
+        }
+        let all: Vec<&serde_json::Value> = purpose["behaviours"].as_array().into_iter().flatten().chain(purpose["supporting"].as_array().into_iter().flatten()).collect();
+        if let Some(stray) = all.iter().find(|held| !numbered(held)) {
+            return Some(format!("{name} listed {stray}, which is not one of the numbers 1 to {behaviours}"));
+        }
+    }
+    None
 }
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
@@ -1772,11 +1792,12 @@ pub fn what_it_means(expect: &Expectation) -> String {
 mod shapes {
     #[test]
     fn every_answer_asked_for_is_given_the_shape_it_is_read_back_in() {
-        assert!(super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": [2]}]}), 2));
-        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [], "supporting": [2]}]}), 2), "a capability delivers something");
-        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": ["health checks"]}]}), 2), "only listed numbers");
-        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [3]}]}), 2), "only listed numbers");
-        assert!(!super::well_formed_purposes(&serde_json::json!({"purposes": []}), 2));
+        let wrong = |answer: serde_json::Value| super::what_is_wrong_with_purposes(&answer, 2);
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": [2]}]})), None);
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [], "supporting": [2]}]})).as_deref(), Some("Place orders listed no numbered behaviour it delivers"));
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": ["health checks"]}]})).as_deref(), Some("Place orders listed \"health checks\", which is not one of the numbers 1 to 2"));
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [3]}]})).as_deref(), Some("Place orders listed 3, which is not one of the numbers 1 to 2"));
+        assert!(wrong(serde_json::json!({"purposes": []})).is_some());
         let steps = ["s1", "s2", "s3"];
         let wrong = |answer: serde_json::Value| super::what_is_wrong_with_behaviours(&answer, &steps);
         assert_eq!(wrong(serde_json::json!({"behaviours": [{"name": "Place an order", "steps": [{"ids": ["s1", "s2"], "said": "Check"}, {"ids": ["s3"], "said": "Keep"}]}]})), None);
