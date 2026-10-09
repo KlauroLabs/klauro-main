@@ -18,10 +18,20 @@ pub struct Purpose {
     pub name: String,
     #[serde(default)]
     pub outcome: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "numbers_only")]
     pub behaviours: Vec<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "numbers_only")]
     pub supporting: Vec<usize>,
+}
+
+fn numbers_only<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<usize>, D::Error> {
+    let held: Option<Vec<serde_json::Value>> = Option::deserialize(deserializer)?;
+    Ok(held
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| value.as_u64().or_else(|| value.as_str().and_then(|said| said.trim().parse().ok())))
+        .map(|number| number as usize)
+        .collect())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -176,6 +186,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
             pending: if surface_only { BTreeSet::new() } else { offered.iter().map(|flow| flow.id.clone()).collect() },
         };
     };
+    if std::env::var("KLAURO_OFFERED_DUMP").is_ok() {
+        eprintln!("answered[{remembered_as}]: {answer}");
+    }
     let purposes: Purposes = serde_json::from_value(answer.clone()).unwrap_or_default();
     let (capabilities, placed) = formed(purposes, &groups, &lines, surface_only);
     let pending: BTreeSet<String> = offered
@@ -378,6 +391,15 @@ mod tests {
         let grouped = by_folder(&[&first, &second, &third]);
         assert_eq!(grouped.iter().map(|(folder, group)| (*folder, group.len())).collect::<Vec<_>>(), [("Bus", 2), ("Log", 1)]);
         assert_eq!(folder_of(&third), "Log");
+    }
+
+    #[test]
+    fn an_answer_that_names_supporting_work_in_words_keeps_its_numbered_behaviours() {
+        let answer = serde_json::json!({"purposes": [{"name": "Orchestrate services", "outcome": "", "behaviours": [1], "supporting": ["health monitoring", "2"]}]});
+        let purposes: Purposes = serde_json::from_value(answer).unwrap_or_default();
+        assert_eq!(purposes.purposes.len(), 1);
+        assert_eq!(purposes.purposes[0].behaviours, [1]);
+        assert_eq!(purposes.purposes[0].supporting, [2]);
     }
 
     #[test]

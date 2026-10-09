@@ -1368,6 +1368,7 @@ pub fn author(
             })
         };
         held.flows.retain(|flow| chosen(&flow.project));
+        held.offered.retain(|flow| chosen(&flow.project));
         held.entities.retain(|entity| chosen(&entity.project));
     }
     let spoken = spoken_for(root, nodes, files);
