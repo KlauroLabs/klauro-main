@@ -96,6 +96,25 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
         };
     };
     let purposes: Purposes = serde_json::from_value(answer.clone()).unwrap_or_default();
+    let (capabilities, placed) = formed(purposes, &offered, &lines, surface_only);
+    let pending: BTreeSet<String> = offered
+        .iter()
+        .filter(|_| !surface_only)
+        .enumerate()
+        .filter(|(at, _)| !placed.contains(&(at + 1)))
+        .map(|(_, flow)| flow.id.clone())
+        .collect();
+    OfAPart {
+        state: PartState {
+            capabilities: if capabilities.is_empty() { PENDING } else { crate::capabilities::SETTLED },
+            reason: None,
+        },
+        capabilities,
+        pending,
+    }
+}
+
+fn formed(purposes: Purposes, offered: &[&Flow], lines: &[String], surface_only: bool) -> (Vec<Capability>, BTreeSet<usize>) {
     let mut capabilities: Vec<Capability> = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
     for purpose in purposes.purposes {
@@ -128,7 +147,12 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
             evidence: String::new(),
         };
         let mut primaries = 0usize;
-        for (numbers, role) in [(&purpose.behaviours, "primary"), (&purpose.supporting, "supporting")] {
+        let serves_itself = !purpose.behaviours.iter().any(|number| (1..=offered.len()).contains(number) && !placed.contains(number));
+        let (behaviours, supporting) = match serves_itself {
+            true => (purpose.supporting.clone(), Vec::new()),
+            false => (purpose.behaviours.clone(), purpose.supporting.clone()),
+        };
+        for (numbers, role) in [(&behaviours, "primary"), (&supporting, "supporting")] {
             for number in numbers {
                 let Some(flow) = number.checked_sub(1).and_then(|at| offered.get(at)) else { continue };
                 if !placed.insert(*number) {
@@ -162,21 +186,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], quiet: &[&Flow], said: &str, remembered
         }
         capabilities.push(capability);
     }
-    let pending: BTreeSet<String> = offered
-        .iter()
-        .filter(|_| !surface_only)
-        .enumerate()
-        .filter(|(at, _)| !placed.contains(&(at + 1)))
-        .map(|(_, flow)| flow.id.clone())
-        .collect();
-    OfAPart {
-        state: PartState {
-            capabilities: if capabilities.is_empty() { PENDING } else { crate::capabilities::SETTLED },
-            reason: None,
-        },
-        capabilities,
-        pending,
-    }
+    (capabilities, placed)
 }
 
 #[cfg(test)]
@@ -226,6 +236,33 @@ mod tests {
         let part = of_a_part(&[], &quiet, "Event bus", "events", &HashMap::default());
         assert_ne!(part.state.capabilities, ABSENT, "a library with code has capabilities at its own level");
         assert!(part.pending.is_empty(), "what a library offers is not a flow of its own, so nothing waits on it");
+    }
+
+    fn purpose(name: &str, behaviours: &[usize], supporting: &[usize]) -> Purpose {
+        Purpose { name: name.to_string(), outcome: String::new(), behaviours: behaviours.to_vec(), supporting: supporting.to_vec() }
+    }
+
+    #[test]
+    fn a_purpose_whose_behaviours_are_all_supporting_delivers_them_itself() {
+        let mut started = offered("Start the scheduler");
+        started.kind = "lifecycle";
+        let held = [started];
+        let offered: Vec<&Flow> = held.iter().collect();
+        let lines = vec!["1. Start the scheduler".to_string()];
+        let (capabilities, placed) = formed(Purposes { purposes: vec![purpose("Run scheduled jobs", &[], &[1])] }, &offered, &lines, false);
+        assert_eq!(capabilities.len(), 1, "supporting work that serves nothing else in the part is the part's purpose");
+        assert_eq!(capabilities[0].delivered[0].role, "primary");
+        assert!(placed.contains(&1));
+    }
+
+    #[test]
+    fn supporting_behaviours_stay_under_the_capability_they_serve() {
+        let held = [offered("Place order"), offered("Sign in")];
+        let offered: Vec<&Flow> = held.iter().collect();
+        let lines = vec!["1. Place order".to_string(), "2. Sign in".to_string()];
+        let (capabilities, _) = formed(Purposes { purposes: vec![purpose("Place orders", &[1], &[2])] }, &offered, &lines, false);
+        let roles: Vec<&str> = capabilities[0].delivered.iter().map(|delivered| delivered.role).collect();
+        assert_eq!(roles, ["primary", "supporting"]);
     }
 
     #[test]

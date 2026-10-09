@@ -1212,6 +1212,10 @@ fn read_it() {
     let listening = listeners::inherited(&index.nodes, &index.calls, &index.type_references, &index.entry_points);
     index.entry_points.extend(listening);
     timers::recurring(&mut index.entry_points, &index.calls);
+    if let Some(partition) = index.partition.as_ref() {
+        let public = surfaces::public_where_nothing_enters(partition, &index.nodes, &index.entry_points, &paths);
+        index.entry_points.extend(public);
+    }
     let published = effects::published(&index.calls, &index.locals, &index.entry_points, &paths);
     if !published.is_empty() {
         index.exit_points.extend(published);

@@ -92,6 +92,9 @@ fn set_aside_because(flow: &Flow, facts: &Facts) -> Option<&'static str> {
     if matches!(flow.kind, "lifecycle" | "test") {
         return Some("a program starting up");
     }
+    if flow.kind == "public" {
+        return Some("code nothing here calls: what it makes public is all it offers");
+    }
     if !matches!(flow.kind, "ui" | "http" | "rpc" | "graphql") && flow.path.len() <= 1
         && flow.steps.is_empty()
         && flow.open == 0
