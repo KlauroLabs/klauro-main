@@ -10,7 +10,7 @@ const RECORDS_TOLD: usize = 4;
 const LANDINGS_TOLD: usize = 3;
 const MADE_TOLD: usize = 16;
 const MEMBERS_TOLD: usize = 8;
-const FOLDERS_TOLD_AT_MOST: usize = 30;
+const FOLDERS_TOLD_AT_MOST: usize = 80;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Purpose {

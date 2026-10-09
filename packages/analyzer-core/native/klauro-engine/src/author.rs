@@ -683,7 +683,8 @@ A capability gathers every behaviour that serves the same outcome: the creating,
 A capability holding a single behaviour is right only when nothing else here serves its outcome. A reader should hold the whole list in mind at once, so a part rarely has more than eight. \
 Name each capability in plain, grammatical words a product manager would use, a verb and its object in at most six words, never code names, and say its outcome in one sentence. \
 A behaviour that exists only to support others, such as signing in, settings, health checks, start-up, diagnostics or housekeeping, is not a capability of its own: list it as supporting under the capability it serves. \
-Put each behaviour number in exactly one capability, either among its behaviours or among its supporting behaviours. Two capabilities never share a name or an outcome.";
+Put each behaviour number in exactly one capability, either among its behaviours or among its supporting behaviours. Two capabilities never share a name or an outcome. \
+Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services.";
 
 pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value> {
     if !asked() {
