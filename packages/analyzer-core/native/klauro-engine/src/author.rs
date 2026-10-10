@@ -432,6 +432,7 @@ Describe only what this part does. When it hands something to another part, say 
 
 pub const JOURNEY_ASKED: &str = "This is one journey through a whole software system: it starts where a person or another system reaches the system, and each listed step is one part of the system doing its own work before handing on to the next. \
 Name it as one behaviour of the whole system, as a product manager would describe it to a customer. \
+Name it for what the person or system asked for where the journey starts: the later steps are how the system answers, and they name the journey only when they are what was asked for. \
 For it give:\n\
 - name: a short verb phrase in plain words (\"Place an order\", \"Pay for an order\"), never class, function, file, event, package or part names;\n\
 - outcome: one plain sentence saying what is different for the person or the system once the whole journey has run, across every part it reaches;\n\
@@ -451,7 +452,7 @@ Group together only the ones a person could not tell apart: the same action on t
 Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
 When in doubt keep them apart. Every number appears in exactly one group.";
 
-pub const DESCRIBED_BEFORE: &str = "When this was last read it was described as below. Keep the same names and outcomes unless the steps above now show a different behaviour:";
+pub const DESCRIBED_BEFORE: &str = "When this was last read it was described as below. Keep the same names and outcomes where they still follow the rules above and the steps above still show that behaviour:";
 
 pub fn behaviours_before(answer: &serde_json::Value) -> Option<String> {
     let listed: Vec<String> = answer["behaviours"]
@@ -469,7 +470,7 @@ pub fn with_before(prompt: &str, before: Option<String>) -> String {
     }
 }
 
-pub const KEPT_FROM_BEFORE: &str = "When this was last read its capabilities were the ones below. Keep each with the same name and outcome while the behaviours above still deliver it, \
+pub const KEPT_FROM_BEFORE: &str = "When this was last read its capabilities were the ones below. Keep each with the same name and outcome while the behaviours above still deliver it and it still follows the rules above, \
 drop one that nothing above delivers any more, and add one only for an outcome none of them covers. Renaming, splitting or merging one needs a change in the behaviours above that calls for it:";
 pub const CAPABILITIES_ASKED: &str = "These are the behaviours of one part of a software system, each with what it achieves, the trigger that starts it, the records it keeps or reads, and what it hands on to. \
 Group them into the capabilities this part gives the people or systems it serves. A capability is an outcome someone comes to this part for, such as placing an order or keeping a catalogue of products, not a technical mechanism. \
