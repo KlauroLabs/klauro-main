@@ -138,7 +138,7 @@ pub(crate) struct Asked<'a> {
     pub remembered_as: &'a str,
     pub landed: &'a HashMap<&'a str, String>,
     pub journeys: bool,
-    pub weights: &'a HashMap<String, &'static str>,
+    pub weights: &'a HashMap<String, crate::journeys::Weight>,
     pub delivers: &'a HashMap<String, Vec<String>>,
 }
 
@@ -194,7 +194,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
                 told(at + 1, group[0], landed),
                 crate::journeys::through(group[0]),
                 delivers.get(&group[0].id).filter(|held| !held.is_empty()).map(|held| held.join("; ")).unwrap_or_else(|| "nothing of its own".to_string()),
-                weights.get(&group[0].id).copied().unwrap_or("supporting")
+                weights.get(&group[0].id).map(|weight| weight.said()).unwrap_or_else(|| "supporting work".to_string())
             ),
             (false, false) => told(at + 1, group[0], landed),
         })
@@ -214,7 +214,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
     let supporting_only: BTreeSet<usize> = groups
         .iter()
         .enumerate()
-        .filter(|(_, group)| journeys && group.first().is_some_and(|flow| weights.get(&flow.id).copied() == Some("supporting")))
+        .filter(|(_, group)| journeys && group.first().is_some_and(|flow| weights.get(&flow.id).copied() == Some(crate::journeys::Weight::Supporting)))
         .map(|(at, _)| at + 1)
         .collect();
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count).is_none();
@@ -267,7 +267,7 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             surfaces: Vec::new(),
             project: project.clone(),
             also_in: Vec::new(),
-            place: None,
+            supporting: false,
             name: Some(name),
             description: Some(purpose.outcome.trim().to_string()).filter(|outcome| !outcome.is_empty()),
             grounding: None,

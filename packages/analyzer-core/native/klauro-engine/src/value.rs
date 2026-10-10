@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::comprehend::Capability;
 
 const GIVES_ON_ITS_OWN: f64 = 0.5;
-const TAIL: f64 = 0.25;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Value {
@@ -59,15 +58,8 @@ pub(crate) fn centrality_of(closer: &BTreeMap<(usize, usize), f64>, count: usize
         .collect()
 }
 
-pub(crate) fn places(values: &[Value]) -> Vec<&'static str> {
-    let mut giving: Vec<usize> = (0..values.len()).filter(|at| values[*at].own >= GIVES_ON_ITS_OWN).collect();
-    giving.sort_by(|left, right| values[*right].impact.total_cmp(&values[*left].impact));
-    let tail = (giving.len() as f64 * TAIL).ceil() as usize;
-    let mut placed = vec!["supporting"; values.len()];
-    for (rank, at) in giving.into_iter().enumerate() {
-        placed[at] = if rank < tail { "terminal" } else { "proximal" };
-    }
-    placed
+pub(crate) fn supporting(value: &Value) -> bool {
+    value.own < GIVES_ON_ITS_OWN
 }
 
 pub(crate) fn valued(own: &[f64], centrality: &[f64], position: &[f64]) -> Vec<Value> {
@@ -142,9 +134,8 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
         .map(|at| (decided.get(&format!("own_{at}")).and_then(|decision| decision.noul).unwrap_or(0.0) + if judged[at] == Some(true) { 1.0 } else { 0.0 }) / 2.0)
         .collect();
     let values = valued(&own, &centrality_of(&closer, count), &position_of(&before, count));
-    let placed = places(&values);
-    for ((capability, value), place) in capabilities.iter_mut().zip(values).zip(placed) {
-        capability.place = Some(place);
+    for (capability, value) in capabilities.iter_mut().zip(values) {
+        capability.supporting = supporting(&value);
         capability.value = Some(Value { own: rounded(value.own), centrality: rounded(value.centrality), position: rounded(value.position), impact: rounded(value.impact), share: rounded(value.share) });
     }
 }
@@ -177,9 +168,10 @@ mod tests {
     }
 
     #[test]
-    fn what_gives_nothing_on_its_own_is_supporting_and_the_most_valuable_quarter_of_the_rest_is_terminal() {
-        let values = valued(&[0.1, 0.9, 0.9, 0.9, 0.9], &[0.9, 0.3, 0.9, 0.4, 0.5], &[1.0, 1.0, 0.6, 0.3, 0.1]);
-        assert_eq!(places(&values), ["supporting", "proximal", "terminal", "proximal", "proximal"], "coming last in the chain alone never makes a capability terminal");
+    fn what_gives_nothing_on_its_own_is_supporting_and_nothing_else_is_ranked_by_a_label() {
+        let values = valued(&[0.2, 0.9], &[0.5, 0.5], &[0.5, 0.5]);
+        assert!(supporting(&values[0]));
+        assert!(!supporting(&values[1]));
     }
 
     #[test]

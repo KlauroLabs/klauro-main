@@ -220,22 +220,52 @@ fn marked_as_tooling(mut journey: Flow, parts: &Parts) -> Flow {
     journey
 }
 
-pub fn weights<'a>(capabilities: &[crate::comprehend::Capability], journeys: impl Iterator<Item = &'a Flow>) -> HashMap<String, &'static str> {
-    let mut place_of: HashMap<&str, &'static str> = HashMap::default();
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Weight {
+    Supporting,
+    Valued(f64),
+}
+
+impl Weight {
+    pub fn said(&self) -> String {
+        match self {
+            Weight::Supporting => "supporting work".to_string(),
+            Weight::Valued(share) => format!("{:.0}% of its part's value", share * 100.0),
+        }
+    }
+
+    fn worth(&self) -> f64 {
+        match self {
+            Weight::Supporting => -1.0,
+            Weight::Valued(share) => *share,
+        }
+    }
+}
+
+fn weight_of(capability: &crate::comprehend::Capability) -> Option<Weight> {
+    match (capability.supporting, capability.value.as_ref()) {
+        (true, _) => Some(Weight::Supporting),
+        (false, Some(value)) => Some(Weight::Valued(value.share)),
+        (false, None) => None,
+    }
+}
+
+pub fn weights<'a>(capabilities: &[crate::comprehend::Capability], journeys: impl Iterator<Item = &'a Flow>) -> HashMap<String, Weight> {
+    let mut weight_of_flow: HashMap<&str, Weight> = HashMap::default();
     for capability in capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
-        let Some(place) = capability.place else { continue };
+        let Some(weight) = weight_of(capability) else { continue };
         for delivered in capability.delivered.iter().filter(|delivered| delivered.role == "primary") {
-            let held = place_of.entry(delivered.flow.as_str()).or_insert(place);
-            if rank(place) > rank(held) {
-                *held = place;
+            let held = weight_of_flow.entry(delivered.flow.as_str()).or_insert(weight);
+            if weight.worth() > held.worth() {
+                *held = weight;
             }
         }
     }
     journeys
         .filter_map(|journey| {
             let mut members = journey.steps.iter().flat_map(|step| step.lands_in.iter());
-            let start = members.next().and_then(|first| place_of.get(first.as_str()).copied());
-            let weight = start.or_else(|| members.filter_map(|member| place_of.get(member.as_str()).copied()).max_by_key(|place| rank(place)))?;
+            let start = members.next().and_then(|first| weight_of_flow.get(first.as_str()).copied());
+            let weight = start.or_else(|| members.filter_map(|member| weight_of_flow.get(member.as_str()).copied()).max_by(|left, right| left.worth().total_cmp(&right.worth())))?;
             Some((journey.id.clone(), weight))
         })
         .collect()
@@ -245,7 +275,8 @@ pub fn delivering<'a>(capabilities: &[crate::comprehend::Capability], names: &Ha
     let mut named_of: HashMap<&str, Vec<String>> = HashMap::default();
     for capability in capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
         let part = capability.project.as_deref().map(|part| names.get(part).map(String::as_str).unwrap_or(part)).unwrap_or("the repository");
-        let said = format!("{} ({part}, {})", capability.name.as_deref().unwrap_or_default(), capability.place.unwrap_or("unplaced"));
+        let weighed = weight_of(capability).map(|weight| weight.said()).unwrap_or_else(|| "not weighed".to_string());
+        let said = format!("{} ({part}, {weighed})", capability.name.as_deref().unwrap_or_default());
         for delivered in capability.delivered.iter().filter(|delivered| delivered.role == "primary") {
             named_of.entry(delivered.flow.as_str()).or_default().push(said.clone());
         }
@@ -263,15 +294,6 @@ pub fn delivering<'a>(capabilities: &[crate::comprehend::Capability], names: &Ha
             (journey.id.clone(), said)
         })
         .collect()
-}
-
-fn rank(place: &str) -> u8 {
-    match place {
-        "terminal" => 3,
-        "proximal" => 2,
-        "supporting" => 1,
-        _ => 0,
-    }
 }
 
 pub fn through(journey: &Flow) -> String {
@@ -331,7 +353,7 @@ mod tests {
             surfaces: Vec::new(),
             project: None,
             also_in: Vec::new(),
-            place: None,
+            supporting: false,
             name: Some(id.to_string()),
             description: None,
             grounding: None,
@@ -404,15 +426,16 @@ mod tests {
         let seams = vec![seam("checkout", "create-order"), seam("sign-in", "verify-user")];
         let (names, roles) = parts();
         let found = of(&flows, &seams, &Parts { names: &names, roles: &roles });
-        let held = |id: &str, flow: &str, place: &'static str| {
+        let held = |id: &str, flow: &str, share: Option<f64>| {
             let mut capability = capability(id, flow);
-            capability.place = Some(place);
+            capability.supporting = share.is_none();
+            capability.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: share.unwrap_or(0.0) });
             capability
         };
-        let capabilities = vec![held("place-orders", "create-order", "terminal"), held("sign-in", "sign-in", "supporting"), held("identity", "verify-user", "proximal")];
+        let capabilities = vec![held("place-orders", "create-order", Some(0.6)), held("sign-in", "sign-in", None), held("identity", "verify-user", Some(0.4))];
         let weighed = weights(&capabilities, found.product.iter());
-        assert_eq!(weighed.get("journey:checkout").copied(), Some("terminal"), "the app flow delivers nothing itself, but the order it hands to is terminal");
-        assert_eq!(weighed.get("journey:sign-in").copied(), Some("supporting"), "what the person came to do decides, not what the journey later reaches");
+        assert_eq!(weighed.get("journey:checkout").copied(), Some(Weight::Valued(0.6)), "the app flow delivers nothing itself, but the order it hands to carries value");
+        assert_eq!(weighed.get("journey:sign-in").copied(), Some(Weight::Supporting), "what the person came to do decides, not what the journey later reaches");
         assert!(!weighed.contains_key("journey:dismiss"), "a journey that delivers no part capability never reaches the whole system's capabilities");
     }
 
@@ -423,9 +446,9 @@ mod tests {
         let found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles });
         let mut take = capability("Take orders", "create-order");
         take.project = Some("orders".to_string());
-        take.place = Some("terminal");
+        take.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: 0.6 });
         let said = delivering(&[take], &names, found.product.iter());
-        assert_eq!(said.get("journey:checkout").cloned().unwrap_or_default(), ["Take orders (Orders API, terminal)"]);
+        assert_eq!(said.get("journey:checkout").cloned().unwrap_or_default(), ["Take orders (Orders API, 60% of its part's value)"]);
     }
 
     #[test]

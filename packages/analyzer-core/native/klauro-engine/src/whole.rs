@@ -275,7 +275,7 @@ mod tests {
             surfaces: Vec::new(),
             project: None,
             also_in: Vec::new(),
-            place: Some("terminal"),
+            supporting: false,
             name: Some(id.to_string()),
             description: None,
             grounding: None,

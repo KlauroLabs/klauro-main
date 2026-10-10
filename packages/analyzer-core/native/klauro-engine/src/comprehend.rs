@@ -178,8 +178,8 @@ pub struct Capability {
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_in: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub place: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub supporting: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -908,7 +908,7 @@ fn describe_one(
     let leading: Vec<&Capability> = mine
         .iter()
         .copied()
-        .filter(|capability| capability.place != Some("supporting"))
+        .filter(|capability| !capability.supporting)
         .collect();
     let capabilities = if leading.is_empty() { mine } else { leading };
     if capabilities.is_empty() {
@@ -1284,7 +1284,7 @@ pub fn author(
             }
         }
         let landed = &landed;
-        let no_weights: HashMap<String, &'static str> = HashMap::default();
+        let no_weights: HashMap<String, crate::journeys::Weight> = HashMap::default();
         let no_delivers: HashMap<String, Vec<String>> = HashMap::default();
         let several = parts.iter().filter(|part| part.is_some()).count() > 1;
         let (describing, described_rx) = std::sync::mpsc::channel::<Option<Product>>();
@@ -1441,10 +1441,10 @@ pub fn author(
                 );
                 crate::capabilities::merge_the_same(&mut whole, same);
                 crate::value::weigh(&mut whole, &said);
-                for capability in whole.iter().filter(|capability| capability.place == Some("supporting")) {
+                for capability in whole.iter().filter(|capability| capability.supporting) {
                     eprintln!("  supporting, so not a capability of the whole: {}", capability.name.as_deref().unwrap_or_default());
                 }
-                whole.retain(|capability| capability.place != Some("supporting"));
+                whole.retain(|capability| !capability.supporting);
                 let mut tooling = tooling;
                 crate::value::weigh(&mut tooling, &said);
                 capabilities.extend(whole);
@@ -4576,7 +4576,7 @@ mod tests {
             surfaces: Vec::new(),
             project: None,
             also_in: Vec::new(),
-            place: None,
+            supporting: false,
             name: None,
             description: None,
             grounding: None,

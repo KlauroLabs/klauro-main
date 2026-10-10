@@ -263,7 +263,7 @@ mod tests {
             surfaces: Vec::new(),
             project: Some(part.to_string()),
             also_in: Vec::new(),
-            place: Some("terminal"),
+            supporting: false,
             name: Some(id.to_string()),
             description: None,
             grounding: None,
