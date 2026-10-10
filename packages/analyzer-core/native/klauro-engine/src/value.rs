@@ -97,9 +97,12 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
             questions.insert(
                 format!("toward_{first}_{second}"),
                 noul(
-                    format!("Do people do \"{earlier}\" ({earlier_does}) on the way to \"{later}\" ({later_does}), so that getting the result of \"{later}\" is what doing \"{earlier}\" is for?"),
-                    format!("\"{earlier}\" is done on the way to \"{later}\""),
-                    format!("\"{earlier}\" is not done for the sake of \"{later}\""),
+                    format!(
+                        "Do people do \"{earlier}\" ({earlier_does}) to prepare for or decide on \"{later}\" ({later_does}), because \"{later}\" is what they are working toward? \
+Answer no when \"{later}\" only looks at, reports on, undoes or follows up what \"{earlier}\" already gave them."
+                    ),
+                    format!("\"{earlier}\" is done working toward \"{later}\""),
+                    format!("\"{later}\" is not what \"{earlier}\" works toward"),
                 ),
             );
             questions.insert(format!("closer_{first}_{second}"), choice(format!("{earlier}: {earlier_does}"), format!("{later}: {later_does}")));
