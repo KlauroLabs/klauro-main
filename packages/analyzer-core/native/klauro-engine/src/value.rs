@@ -40,9 +40,9 @@ fn choice(first: String, second: String) -> crate::jev::Question {
     crate::jev::Question { kind: "choice", instructions: CLOSER_ASKED.to_string(), criteria: BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]).into() }
 }
 
-pub(crate) fn position_of(before: &BTreeMap<(usize, usize), f64>, count: usize) -> Vec<f64> {
+pub(crate) fn position_of(toward: &BTreeMap<(usize, usize), f64>, count: usize) -> Vec<f64> {
     let net: Vec<f64> = (0..count)
-        .map(|at| (0..count).filter(|other| *other != at).map(|other| before.get(&(other, at)).copied().unwrap_or(0.0) - before.get(&(at, other)).copied().unwrap_or(0.0)).sum())
+        .map(|at| (0..count).filter(|other| *other != at).map(|other| toward.get(&(other, at)).copied().unwrap_or(0.0) - toward.get(&(at, other)).copied().unwrap_or(0.0)).sum())
         .collect();
     let lowest = net.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = net.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -95,11 +95,11 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
             let (earlier, earlier_does) = &listed[first];
             let (later, later_does) = &listed[second];
             questions.insert(
-                format!("before_{first}_{second}"),
+                format!("toward_{first}_{second}"),
                 noul(
-                    format!("Before someone does \"{later}\" ({later_does}), must or would they first have done \"{earlier}\" ({earlier_does}), because it needs it or because they decide based on it?"),
-                    format!("\"{earlier}\" comes before \"{later}\""),
-                    "it does not need to come first".to_string(),
+                    format!("Do people do \"{earlier}\" ({earlier_does}) on the way to \"{later}\" ({later_does}), so that getting the result of \"{later}\" is what doing \"{earlier}\" is for?"),
+                    format!("\"{earlier}\" is done on the way to \"{later}\""),
+                    format!("\"{earlier}\" is not done for the sake of \"{later}\""),
                 ),
             );
             questions.insert(format!("closer_{first}_{second}"), choice(format!("{earlier}: {earlier_does}"), format!("{later}: {later_does}")));
@@ -125,7 +125,7 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
         }
         held
     };
-    let before = pair("before", &|decision| decision.noul.unwrap_or(0.0));
+    let toward = pair("toward", &|decision| decision.noul.unwrap_or(0.0));
     let closer = pair("closer", &|decision| decision.probabilities.as_ref().and_then(|held| held.get("first").copied()).unwrap_or(match decision.choice.as_deref() {
         Some("first") => 1.0,
         Some("second") => 0.0,
@@ -134,7 +134,7 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     let gives: Vec<f64> = (0..count).map(|at| decided.get(&format!("own_{at}")).and_then(|decision| decision.noul).unwrap_or(0.0)).collect();
     let judged: Vec<bool> = judged.into_iter().map(|answer| answer == Some(true)).collect();
     let own: Vec<f64> = (0..count).map(|at| (gives[at] + if judged[at] { 1.0 } else { 0.0 }) / 2.0).collect();
-    let values = valued(&own, &centrality_of(&closer, count), &position_of(&before, count));
+    let values = valued(&own, &centrality_of(&closer, count), &position_of(&toward, count));
     for (at, (capability, value)) in capabilities.iter_mut().zip(values).enumerate() {
         capability.supporting = supporting(gives[at], judged[at]);
         capability.value = Some(Value { own: rounded(value.own), centrality: rounded(value.centrality), position: rounded(value.position), impact: rounded(value.impact), share: rounded(value.share) });
@@ -150,9 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn what_everything_else_comes_before_sits_at_the_end_of_the_chain() {
-        let before = pairs(&[((0, 1), 0.9), ((1, 0), 0.1), ((1, 2), 0.9), ((2, 1), 0.1), ((0, 2), 0.9), ((2, 0), 0.1)]);
-        assert_eq!(position_of(&before, 3), vec![0.0, 0.5, 1.0]);
+    fn what_everything_else_is_done_on_the_way_to_sits_at_the_end_of_the_chain() {
+        let toward = pairs(&[((0, 1), 0.9), ((1, 0), 0.1), ((1, 2), 0.9), ((2, 1), 0.1), ((0, 2), 0.9), ((2, 0), 0.1)]);
+        assert_eq!(position_of(&toward, 3), vec![0.0, 0.5, 1.0]);
     }
 
     #[test]
