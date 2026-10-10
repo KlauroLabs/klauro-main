@@ -177,7 +177,7 @@ fn drawn_from(held: &mut Comprehension, journeys: &[Flow]) {
     let ties_of: HashMap<&str, Vec<String>> = held
         .flows
         .iter()
-        .map(|flow| (flow.id.as_str(), flow.capabilities.iter().map(|tie| tie.capability.clone()).collect()))
+        .map(|flow| (flow.id.as_str(), flow.capabilities.iter().filter(|tie| tie.role == "delivers").map(|tie| tie.capability.clone()).collect()))
         .collect();
     let members_of: HashMap<&str, Vec<&str>> = journeys
         .iter()
@@ -193,6 +193,7 @@ fn drawn_from(held: &mut Comprehension, journeys: &[Flow]) {
             let mut from: Vec<String> = capability
                 .delivered
                 .iter()
+                .filter(|delivered| delivered.role == "primary")
                 .flat_map(|delivered| members_of.get(delivered.flow.as_str()).into_iter().flatten())
                 .flat_map(|member| ties_of.get(member).into_iter().flatten().cloned())
                 .collect();
@@ -376,6 +377,12 @@ mod tests {
         let summaries = HashMap::default();
         compose(&mut held, &Parts { names: &names, roles: &roles, summaries: &summaries, architecture: None, services: &[] });
         assert_eq!(held.capabilities[1].drawn_from, ["capability:orders:take-orders"]);
+        let mut supported = capability("capability:whole:sign-in", crate::capabilities::WHOLE, &[], &[]);
+        supported.delivered.push(Delivery { flow: "journey:checkout".to_string(), role: "supporting", rationale: String::new(), unshipped: None });
+        held.capabilities.push(supported);
+        let journeys = held.whole.as_ref().unwrap().flows.clone();
+        drawn_from(&mut held, &journeys);
+        assert!(held.capabilities[2].drawn_from.is_empty(), "a capability is drawn only from the journeys that deliver it");
         assert_eq!(held.capabilities[1].keeps, ["entity:whole:Order"], "the whole system keeps its own record, which points at the part's");
         let whole = held.whole.as_ref().unwrap();
         assert_eq!(whole.entities[0].capabilities[0].capability, "capability:whole:buy-books");
