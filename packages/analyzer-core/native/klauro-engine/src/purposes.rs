@@ -230,7 +230,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
             missing
                 .iter()
                 .filter_map(|(key, prompt)| {
-                    let before = crate::memory::last::<serde_json::Value>("part capabilities", key);
+                    let before = crate::memory::last::<serde_json::Value>("part capabilities", crate::author::CAPABILITIES_ASKED, key);
                     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
                         eprintln!("    capabilities asked {} their last answer", if before.is_some() { "with" } else { "without" });
                     }

@@ -249,7 +249,7 @@ fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, 
             .par_iter()
             .filter_map(|(id, prompt)| {
                 let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
-                let before = crate::memory::last::<serde_json::Value>(kind, id);
+                let before = crate::memory::last::<serde_json::Value>(kind, crate::author::BEHAVIOURS_ASKED, id);
                 let held = crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps)?;
                 serde_json::from_value::<Answer>(held).ok().map(|answer| (id.clone(), answer))
             })

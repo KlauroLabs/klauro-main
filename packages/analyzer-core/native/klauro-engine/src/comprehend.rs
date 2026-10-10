@@ -449,10 +449,16 @@ fn own_words_of_parts(
 }
 
 pub(crate) fn outside_of(services: &[crate::services::Service], part: Option<&str>) -> String {
-    let named: Vec<&str> = services
+    let named: Vec<String> = services
         .iter()
         .filter(|service| part.is_none_or(|part| service.projects.iter().any(|held| held == part)))
-        .map(|service| service.name.as_str())
+        .map(|service| {
+            let set_as: Vec<&str> = service.evidence.iter().filter(|evidence| evidence.how == "configured endpoint").map(|evidence| evidence.what.as_str()).collect();
+            match set_as.is_empty() {
+                true => service.name.clone(),
+                false => format!("{} (set as {})", service.name, set_as.join(", ")),
+            }
+        })
         .collect();
     match named.is_empty() {
         true => String::new(),
