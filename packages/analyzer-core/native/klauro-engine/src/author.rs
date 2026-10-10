@@ -455,6 +455,14 @@ Name the behaviour from what its steps do. Function and method names can be wron
 Steps marked with the same branch letters but different numbers are alternatives: only those can be different behaviours. \
 Describe only what this part does. When it hands something to another part, say it hands it over; never claim the other part's outcome.";
 
+pub const JOURNEY_ASKED: &str = "This is one journey through a whole software system: it starts where a person or another system reaches the system, and each listed step is one part of the system doing its own work before handing on to the next. \
+Name it as one behaviour of the whole system, as a product manager would describe it to a customer. \
+For it give:\n\
+- name: a short verb phrase in plain words (\"Place an order\", \"Pay for an order\"), never class, function, file, event, package or part names;\n\
+- outcome: one plain sentence saying what is different for the person or the system once the whole journey has run, across every part it reaches;\n\
+- steps: every listed step, in order. Each step you give lists in ids the step ids it covers, the s-numbers at the start of the lines above, and says in one sentence what happens there in plain words. Consecutive steps that together do one thing a person would recognise may be given as one step with several ids. Never invent, split or leave out a listed step.\n\
+Return exactly one behaviour. Always answer, judging from what is shown.";
+
 pub const SEVERAL_ALLOWED: &str = "Most triggers are exactly one behaviour. Give several only when the trigger leads to clearly different outcomes on different paths (for example: a command that either creates or updates, or a handler that confirms or rejects).";
 
 pub const ONE_ONLY: &str = "This trigger is exactly one behaviour: return one, named for what the trigger achieves when it succeeds; refusals and failures along the way are part of it.";

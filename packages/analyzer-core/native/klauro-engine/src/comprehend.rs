@@ -208,6 +208,8 @@ pub struct Capability {
     pub keeps_through: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads_through: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drawn_from: Vec<String>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -231,8 +233,8 @@ pub struct Comprehension {
     pub chained: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_coverage: Option<crate::capabilities::Coverage>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub journeys: Vec<Flow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whole: Option<crate::whole::Whole>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub set_aside: Vec<crate::behaviours::SetAside>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1355,10 +1357,15 @@ pub fn author(
                 let describes_parts = parts_of(&capabilities).len() >= 2;
                 capabilities.sort_by(|left, right| left.id.cmp(&right.id));
                 crate::author::mark("parts merged");
-                let journeys = match several {
+                let mut journeys = match several {
                     true => crate::journeys::of(&held.flows, &held.seams, &crate::journeys::Parts { names: &told.part_names, roles: &told.roles }),
                     false => crate::journeys::Journeys { product: Vec::new(), tooling: Vec::new() },
                 };
+                let opening = opening_of(&spoken);
+                rayon::join(
+                    || crate::journeys::named(&mut journeys.product, &held.flows, &opening),
+                    || crate::journeys::named(&mut journeys.tooling, &held.flows, &opening),
+                );
                 let said = spoken_of_part(&spoken, None, &own_words, told.composition);
                 let of_the_whole = |held: &[Flow], kind: &str, place: &'static str| -> Vec<Capability> {
                     let offered: Vec<&Flow> = held.iter().collect();
@@ -1462,7 +1469,7 @@ pub fn author(
         &pending_flows,
     ));
     held.products = products;
-    held.journeys = journeys;
+    held.whole = (!journeys.is_empty()).then(|| crate::whole::Whole { flows: journeys, ..Default::default() });
     let confidence_of: HashMap<&str, f64> = held
         .flows
         .iter()
@@ -2500,7 +2507,7 @@ pub fn derive(
         terminal,
         chained,
         semantic_coverage: None,
-        journeys: Vec::new(),
+        whole: None,
         set_aside: Vec::new(),
         seams: Vec::new(),
         offered: Vec::new(),
@@ -4564,6 +4571,7 @@ mod tests {
             reads: Vec::new(),
             keeps_through: Vec::new(),
             reads_through: Vec::new(),
+            drawn_from: Vec::new(),
             evidence: String::new(),
         }
     }

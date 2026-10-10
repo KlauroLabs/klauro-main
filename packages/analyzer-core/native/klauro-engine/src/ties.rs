@@ -39,7 +39,7 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
             held_by.entry(delivered.flow.clone()).or_default().push(Held { capability: capability.id.clone(), role });
         }
     }
-    for flow in held.flows.iter_mut().chain(held.journeys.iter_mut()) {
+    for flow in held.flows.iter_mut().chain(held.whole.iter_mut().flat_map(|whole| whole.flows.iter_mut())) {
         flow.capabilities = held_by.remove(&flow.id).unwrap_or_default();
     }
 
@@ -157,7 +157,7 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
             }
         }
     }
-    for (at, capability) in held.capabilities.iter().enumerate() {
+    for (at, capability) in held.capabilities.iter().enumerate().filter(|(_, capability)| capability.level == crate::capabilities::PART) {
         let part = capability.project.as_deref();
         for named in &capability.records {
             for entity in chosen(named, part) {
@@ -279,6 +279,7 @@ mod tests {
             reads: Vec::new(),
             keeps_through: Vec::new(),
             reads_through: Vec::new(),
+            drawn_from: Vec::new(),
             evidence: String::new(),
         }
     }
@@ -319,7 +320,7 @@ mod tests {
             terminal: 0,
             chained: 0,
             semantic_coverage: None,
-            journeys: Vec::new(),
+            whole: None,
             set_aside: Vec::new(),
             seams: Vec::new(),
             offered: Vec::new(),
@@ -367,11 +368,12 @@ mod tests {
         whole.level = crate::capabilities::WHOLE;
         whole.project = None;
         let mut held = held(vec![whole], Vec::new(), vec![entity("Order", "orders")]);
-        held.journeys.push(flow("journey:checkout", "shop", "shop/Checkout.cs:function:Pay"));
+        held.whole = Some(crate::whole::Whole { flows: vec![flow("journey:checkout", "shop", "shop/Checkout.cs:function:Pay")], ..Default::default() });
         tie(&mut held, &[], &[]);
-        assert_eq!(held.journeys[0].capabilities.len(), 1);
-        assert_eq!(held.journeys[0].capabilities[0].role, DELIVERS);
-        assert_eq!(held.entities[0].capabilities[0].capability, "capability:whole:buy-books", "a whole-system capability keeps the record wherever it is defined");
+        let journey = &held.whole.as_ref().unwrap().flows[0];
+        assert_eq!(journey.capabilities.len(), 1);
+        assert_eq!(journey.capabilities[0].role, DELIVERS);
+        assert!(held.entities[0].capabilities.is_empty(), "a whole-system capability ties to the whole system's own records, not a part's");
     }
 
     #[test]

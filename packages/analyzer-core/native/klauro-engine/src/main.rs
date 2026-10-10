@@ -89,6 +89,7 @@ mod scope;
 mod screens;
 mod seams;
 mod journeys;
+mod whole;
 mod ties;
 mod sdk;
 mod shared;
@@ -1708,6 +1709,12 @@ fn read_it() {
         for project in &partition.sub_projects {
             eprintln!("  part {} | {} | {} | {}", project.id, project.display_name, project.role, project.summary);
         }
+    }
+    if let Some(split) = index.partition.as_ref() {
+        let names: rustc_hash::FxHashMap<String, String> = split.sub_projects.iter().map(|part| (part.id.clone(), part.display_name.clone())).collect();
+        let roles: rustc_hash::FxHashMap<String, &'static str> = split.sub_projects.iter().map(|part| (part.id.clone(), part.role)).collect();
+        let summaries: rustc_hash::FxHashMap<String, String> = split.sub_projects.iter().map(|part| (part.id.clone(), part.summary.clone())).collect();
+        whole::compose(&mut comprehension, &whole::Parts { names: &names, roles: &roles, summaries: &summaries, architecture: index.architecture.as_ref(), services: &index.services });
     }
     index.comprehension = Some(comprehension);
 

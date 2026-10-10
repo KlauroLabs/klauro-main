@@ -125,6 +125,87 @@ fn journey_of(flows: &[Flow], chain: &[(usize, Option<&Seam>)], parts: &Parts) -
     journey
 }
 
+fn told(journey: &Flow, opening: &str, outcome_of: &HashMap<&str, &str>) -> String {
+    let mut lines = Vec::new();
+    if !opening.is_empty() {
+        lines.push(format!("The system describes itself: {opening}"));
+    }
+    lines.push(format!("Reached through: {} {}", journey.kind, journey.surface.as_deref().unwrap_or(&journey.operation)));
+    for step in &journey.steps {
+        let outcome = step.lands_in.first().and_then(|member| outcome_of.get(member.as_str())).map(|said| format!(" — {said}")).unwrap_or_default();
+        lines.push(format!("{}: {}{outcome}", step.id, step.label));
+    }
+    format!("{}\n\n{}", lines.join("\n"), crate::author::JOURNEY_ASKED)
+}
+
+pub fn named(journeys: &mut [Flow], flows: &[Flow], opening: &str) {
+    let outcome_of: HashMap<&str, &str> = flows.iter().filter_map(|flow| Some((flow.id.as_str(), flow.description.as_deref()?))).collect();
+    let asking: Vec<(String, String)> = journeys
+        .iter()
+        .filter(|journey| journey.steps.len() > 1)
+        .map(|journey| (journey.id.clone(), told(journey, opening, &outcome_of)))
+        .collect();
+    let steps_of: HashMap<String, Vec<String>> = journeys.iter().map(|journey| (journey.id.clone(), journey.steps.iter().map(|step| step.id.clone()).collect())).collect();
+    let answers = crate::memory::each("journey behaviours", crate::author::JOURNEY_ASKED, &asking, |missing| {
+        crate::author::asking(|| {
+            use rayon::prelude::*;
+            missing
+                .par_iter()
+                .filter_map(|(id, prompt)| {
+                    let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
+                    crate::author::behaviours_of(prompt, &steps).map(|answer| (id.clone(), answer))
+                })
+                .collect()
+        })
+    });
+    for journey in journeys.iter_mut() {
+        let Some(behaviour) = answers.get(&journey.id).and_then(|answer| answer["behaviours"].as_array()).and_then(|held| held.first()) else { continue };
+        if let Some(name) = behaviour["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+            journey.name = Some(name.to_string());
+        }
+        if let Some(outcome) = behaviour["outcome"].as_str().map(str::trim).filter(|outcome| !outcome.is_empty()) {
+            journey.description = Some(outcome.to_string());
+        }
+        let said: Vec<(Vec<String>, String)> = behaviour["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|step| {
+                let ids = step["ids"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_string)).collect();
+                (ids, step["said"].as_str().unwrap_or_default().trim().to_string())
+            })
+            .collect();
+        journey.steps = gathered(std::mem::take(&mut journey.steps), &said);
+    }
+}
+
+fn gathered(steps: Vec<LogicalStep>, said: &[(Vec<String>, String)]) -> Vec<LogicalStep> {
+    let lead_of: HashMap<&str, &str> = said
+        .iter()
+        .flat_map(|(ids, _)| ids.iter().skip(1).filter_map(|other| Some((other.as_str(), ids.first()?.as_str()))))
+        .collect();
+    let said_of: HashMap<&str, &str> = said.iter().filter_map(|(ids, words)| Some((ids.first()?.as_str(), words.as_str()))).collect();
+    let mut out: Vec<LogicalStep> = Vec::new();
+    for mut step in steps {
+        if let Some(lead) = lead_of.get(step.id.as_str()).filter(|lead| **lead != step.id.as_str())
+            && let Some(into) = out.iter_mut().find(|held| held.id == *lead)
+        {
+            if into.gathers.is_empty() {
+                into.gathers.push(into.label.clone());
+            }
+            into.gathers.push(step.label.clone());
+            into.regions.extend(step.regions);
+            into.lands_in.extend(step.lands_in);
+            continue;
+        }
+        if let Some(words) = said_of.get(step.id.as_str()).filter(|words| !words.is_empty()) {
+            step.description = Some((*words).to_string());
+        }
+        out.push(step);
+    }
+    out
+}
+
 fn marked_as_tooling(mut journey: Flow, parts: &Parts) -> Flow {
     if journey.unshipped.is_none() {
         let part = home(&journey).unwrap_or_default().to_string();
@@ -210,6 +291,19 @@ mod tests {
         let (names, roles) = parts();
         let found = of(&flows, &[], &Parts { names: &names, roles: &roles });
         assert_eq!(found.product.iter().map(|journey| journey.id.as_str()).collect::<Vec<_>>(), ["journey:list-orders"]);
+    }
+
+    #[test]
+    fn a_step_the_ai_gathers_keeps_the_part_flows_it_covers() {
+        let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"]), flow("take-payment", "message", "payments", &["Payment"])];
+        let seams = vec![seam("checkout", "create-order"), seam("create-order", "take-payment")];
+        let (names, roles) = parts();
+        let journey = of(&flows, &seams, &Parts { names: &names, roles: &roles }).product.remove(0);
+        let said = vec![(vec!["s1".to_string()], "The customer checks out".to_string()), (vec!["s2".to_string(), "s3".to_string()], "The order is created and paid".to_string())];
+        let steps = gathered(journey.steps, &said);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].lands_in, ["create-order", "take-payment"]);
+        assert_eq!(steps[1].description.as_deref(), Some("The order is created and paid"));
     }
 
     #[test]
