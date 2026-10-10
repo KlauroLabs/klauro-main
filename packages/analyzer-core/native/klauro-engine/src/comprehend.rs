@@ -1283,6 +1283,7 @@ pub fn author(
         }
         let landed = &landed;
         let no_weights: HashMap<String, &'static str> = HashMap::default();
+        let no_delivers: HashMap<String, Vec<String>> = HashMap::default();
         let several = parts.iter().filter(|part| part.is_some()).count() > 1;
         let (describing, described_rx) = std::sync::mpsc::channel::<Option<Product>>();
         let described_rx = std::sync::Mutex::new(described_rx);
@@ -1330,6 +1331,7 @@ pub fn author(
                         landed,
                         journeys: false,
                         weights: &no_weights,
+                        delivers: &no_delivers,
                     });
                     if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
                         kept.insert(part.clone(), of_the_part.state);
@@ -1372,6 +1374,7 @@ pub fn author(
                 );
                 let said = spoken_of_part(&spoken, None, &own_words, told.composition);
                 let weights = crate::journeys::weights(&capabilities, journeys.product.iter().chain(journeys.tooling.iter()));
+                let delivers = crate::journeys::delivering(&capabilities, &told.part_names, journeys.product.iter().chain(journeys.tooling.iter()));
                 let of_the_whole = |held: &[Flow], kind: &str, low_weight: bool| -> Vec<Capability> {
                     let offered: Vec<&Flow> = held.iter().filter(|journey| weights.contains_key(&journey.id)).collect();
                     if offered.is_empty() {
@@ -1388,6 +1391,7 @@ pub fn author(
                         landed,
                         journeys: true,
                         weights: &weights,
+                        delivers: &delivers,
                     });
                     asked
                         .capabilities

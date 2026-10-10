@@ -241,6 +241,30 @@ pub fn weights<'a>(capabilities: &[crate::comprehend::Capability], journeys: imp
         .collect()
 }
 
+pub fn delivering<'a>(capabilities: &[crate::comprehend::Capability], names: &HashMap<String, String>, journeys: impl Iterator<Item = &'a Flow>) -> HashMap<String, Vec<String>> {
+    let mut named_of: HashMap<&str, Vec<String>> = HashMap::default();
+    for capability in capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
+        let part = capability.project.as_deref().map(|part| names.get(part).map(String::as_str).unwrap_or(part)).unwrap_or("the repository");
+        let said = format!("{} ({part}, {})", capability.name.as_deref().unwrap_or_default(), capability.place.unwrap_or("unplaced"));
+        for delivered in capability.delivered.iter().filter(|delivered| delivered.role == "primary") {
+            named_of.entry(delivered.flow.as_str()).or_default().push(said.clone());
+        }
+    }
+    journeys
+        .map(|journey| {
+            let mut said: Vec<String> = Vec::new();
+            for member in journey.steps.iter().flat_map(|step| step.lands_in.iter()) {
+                for named in named_of.get(member.as_str()).into_iter().flatten() {
+                    if !said.contains(named) {
+                        said.push(named.clone());
+                    }
+                }
+            }
+            (journey.id.clone(), said)
+        })
+        .collect()
+}
+
 fn rank(place: &str) -> u8 {
     match place {
         "terminal" => 3,
@@ -389,6 +413,18 @@ mod tests {
         assert_eq!(weighed.get("journey:checkout").copied(), Some("terminal"), "the app flow delivers nothing itself, but the order it hands to is terminal");
         assert_eq!(weighed.get("journey:sign-in").copied(), Some("supporting"), "what the person came to do decides, not what the journey later reaches");
         assert!(!weighed.contains_key("journey:dismiss"), "a journey that delivers no part capability never reaches the whole system's capabilities");
+    }
+
+    #[test]
+    fn a_journey_tells_which_part_capabilities_its_flows_deliver() {
+        let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"])];
+        let (names, roles) = parts();
+        let found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles });
+        let mut take = capability("Take orders", "create-order");
+        take.project = Some("orders".to_string());
+        take.place = Some("terminal");
+        let said = delivering(&[take], &names, found.product.iter());
+        assert_eq!(said.get("journey:checkout").cloned().unwrap_or_default(), ["Take orders (Orders API, terminal)"]);
     }
 
     #[test]
