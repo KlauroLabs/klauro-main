@@ -49,11 +49,21 @@ pub(crate) fn each<T: Serialize + DeserializeOwned>(
     items: &[(String, String)],
     ask: impl FnOnce(&[(String, String)]) -> std::collections::BTreeMap<String, T>,
 ) -> std::collections::BTreeMap<String, T> {
+    each_holding(kind, context, items, |_, _| true, ask)
+}
+
+pub(crate) fn each_holding<T: Serialize + DeserializeOwned>(
+    kind: &str,
+    context: &str,
+    items: &[(String, String)],
+    holds: impl Fn(&str, &T) -> bool,
+    ask: impl FnOnce(&[(String, String)]) -> std::collections::BTreeMap<String, T>,
+) -> std::collections::BTreeMap<String, T> {
     let keyed = |told: &str| format!("{context}\u{1}{told}");
     let mut known = std::collections::BTreeMap::new();
     let mut missing: Vec<(String, String)> = Vec::new();
     for (id, told) in items {
-        match recalled::<T>(kind, &keyed(told)) {
+        match recalled::<T>(kind, &keyed(told)).filter(|held| holds(id, held)) {
             Some(held) => {
                 known.insert(id.clone(), held);
             }

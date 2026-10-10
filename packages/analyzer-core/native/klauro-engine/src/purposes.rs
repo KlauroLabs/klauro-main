@@ -217,7 +217,8 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .filter(|(_, group)| journeys && group.first().is_some_and(|flow| weights.get(&flow.id).copied() == Some("supporting")))
         .map(|(at, _)| at + 1)
         .collect();
-    let answered = crate::memory::each("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], |missing| {
+    let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count, &supporting_only, journeys).is_none();
+    let answered = crate::memory::each_holding("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], holds, |missing| {
         crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count, &supporting_only, journeys).map(|held| (key.clone(), held))).collect())
     });
     let Some(answer) = answered.get(&key) else {

@@ -146,7 +146,11 @@ pub fn named(journeys: &mut [Flow], flows: &[Flow], opening: &str) {
         .map(|journey| (journey.id.clone(), told(journey, opening, &outcome_of)))
         .collect();
     let steps_of: HashMap<String, Vec<String>> = journeys.iter().map(|journey| (journey.id.clone(), journey.steps.iter().map(|step| step.id.clone()).collect())).collect();
-    let answers = crate::memory::each("journey behaviours", crate::author::JOURNEY_ASKED, &asking, |missing| {
+    let holds = |id: &str, answer: &serde_json::Value| {
+        let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
+        crate::author::what_is_wrong_with_behaviours(answer, &steps).is_none()
+    };
+    let answers = crate::memory::each_holding("journey behaviours", crate::author::JOURNEY_ASKED, &asking, holds, |missing| {
         crate::author::asking(|| {
             use rayon::prelude::*;
             missing
