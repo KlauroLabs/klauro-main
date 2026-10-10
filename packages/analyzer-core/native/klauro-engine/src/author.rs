@@ -507,9 +507,8 @@ pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
 
-pub const WHOLE_CAPABILITY_ASKED: &str = "The capabilities listed below come from the parts of one software system and were judged to be one purpose of the system as a whole; \
-the journeys listed, if any, start with them. Name the capability of the whole system they are together: the outcome the listed capabilities give, \
-never a broader one, never the outcome of the whole system or of other steps the journeys pass through. \
+pub const WHOLE_CAPABILITY_ASKED: &str = "The capabilities listed below come from the parts of one software system and were judged to be one purpose of the system as a whole. \
+Name the capability of the whole system they are together: the outcome the listed capabilities give, never a broader one and never the purpose of the whole system. \
 Use plain, grammatical words a product manager would use, starting with a verb followed by its object in at most six words, in sentence case, never code names or the names of parts. \
 Say its outcome in one sentence, and say in a few words who comes for it.";
 const WHOLE_CAPABILITY_ASKED_AT_MOST: usize = 3;

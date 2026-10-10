@@ -54,20 +54,13 @@ pub(crate) fn grouped(count: usize, joined: Vec<Joined>) -> Vec<Vec<usize>> {
     groups
 }
 
-fn told(said: &str, members: &[&Capability], reaching: &[&Flow], part_names: &HashMap<String, String>) -> String {
+fn told(said: &str, members: &[&Capability], part_names: &HashMap<String, String>) -> String {
     let part = |capability: &Capability| capability.project.as_deref().map(|part| part_names.get(part).map(String::as_str).unwrap_or(part)).unwrap_or("the repository").to_string();
     let capabilities: Vec<String> = members
         .iter()
         .map(|capability| format!("- {} ({}): {}", capability.name.as_deref().unwrap_or_default(), part(capability), capability.description.as_deref().unwrap_or_default()))
         .collect();
-    let journeys: Vec<String> = reaching
-        .iter()
-        .map(|journey| format!("- {}: {}", journey.name.as_deref().unwrap_or(journey.operation.as_str()), journey.description.as_deref().unwrap_or_default()))
-        .collect();
-    match journeys.is_empty() {
-        true => format!("{said}\n\nCapabilities:\n{}", capabilities.join("\n")),
-        false => format!("{said}\n\nCapabilities:\n{}\n\nJourneys that start with them:\n{}", capabilities.join("\n"), journeys.join("\n")),
-    }
+    format!("{said}\n\nCapabilities:\n{}", capabilities.join("\n"))
 }
 
 fn united(members: &[&Capability], of: impl Fn(&Capability) -> &Vec<String>) -> Vec<String> {
@@ -138,12 +131,7 @@ pub(crate) fn of(capabilities: &[Capability], journeys: &[Flow], said: &str, par
         .iter()
         .map(|group| {
             let members: Vec<&Capability> = group.iter().map(|member| &compared[*member]).collect();
-            let reaching: Vec<&Flow> = deliveries(group, &reach.candidates, journeys, &reach.journeys)
-                .iter()
-                .filter(|delivery| delivery.role == DELIVERS)
-                .filter_map(|delivery| journeys.iter().find(|journey| journey.id == delivery.flow))
-                .collect();
-            (members.iter().map(|member| member.id.as_str()).collect::<Vec<_>>().join("|"), told(said, &members, &reaching, part_names))
+            (members.iter().map(|member| member.id.as_str()).collect::<Vec<_>>().join("|"), told(said, &members, part_names))
         })
         .collect();
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_a_whole_capability(answer).is_none();
