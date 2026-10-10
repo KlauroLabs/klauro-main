@@ -54,13 +54,13 @@ pub(crate) fn grouped(count: usize, joined: Vec<Joined>) -> Vec<Vec<usize>> {
     groups
 }
 
-fn told(said: &str, members: &[&Capability], part_names: &HashMap<String, String>) -> String {
+fn told(opening: &str, members: &[&Capability], part_names: &HashMap<String, String>) -> String {
     let part = |capability: &Capability| capability.project.as_deref().map(|part| part_names.get(part).map(String::as_str).unwrap_or(part)).unwrap_or("the repository").to_string();
     let capabilities: Vec<String> = members
         .iter()
         .map(|capability| format!("- {} ({}): {}", capability.name.as_deref().unwrap_or_default(), part(capability), capability.description.as_deref().unwrap_or_default()))
         .collect();
-    format!("{said}\n\nCapabilities:\n{}", capabilities.join("\n"))
+    format!("{opening}\n\nCapabilities:\n{}", capabilities.join("\n"))
 }
 
 fn united(members: &[&Capability], of: impl Fn(&Capability) -> &Vec<String>) -> Vec<String> {
@@ -120,7 +120,7 @@ pub(crate) fn deliveries(group: &[usize], candidates: &[usize], journeys: &[Flow
         .collect()
 }
 
-pub(crate) fn of(capabilities: &[Capability], journeys: &[Flow], said: &str, part_names: &HashMap<String, String>) -> Vec<Capability> {
+pub(crate) fn of(capabilities: &[Capability], journeys: &[Flow], said: &str, opening: &str, part_names: &HashMap<String, String>) -> Vec<Capability> {
     let reach = reach(capabilities, journeys);
     if reach.candidates.is_empty() {
         return Vec::new();
@@ -131,7 +131,7 @@ pub(crate) fn of(capabilities: &[Capability], journeys: &[Flow], said: &str, par
         .iter()
         .map(|group| {
             let members: Vec<&Capability> = group.iter().map(|member| &compared[*member]).collect();
-            (members.iter().map(|member| member.id.as_str()).collect::<Vec<_>>().join("|"), told(said, &members, part_names))
+            (members.iter().map(|member| member.id.as_str()).collect::<Vec<_>>().join("|"), told(opening, &members, part_names))
         })
         .collect();
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_a_whole_capability(answer).is_none();

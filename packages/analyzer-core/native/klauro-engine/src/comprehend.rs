@@ -1414,7 +1414,7 @@ pub fn author(
                         .collect()
                 };
                 let (mut whole, tooling) = rayon::join(
-                    || crate::whole_purposes::of(&capabilities, &journeys.product, &said, &told.part_names),
+                    || crate::whole_purposes::of(&capabilities, &journeys.product, &said, &opening, &told.part_names),
                     || of_the_whole(&journeys.tooling, "tooling", true),
                 );
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
