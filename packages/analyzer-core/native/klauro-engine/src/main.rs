@@ -90,6 +90,7 @@ mod screens;
 mod seams;
 mod journeys;
 mod whole;
+mod whole_purposes;
 mod ties;
 mod value;
 mod sdk;

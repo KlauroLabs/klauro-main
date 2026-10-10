@@ -1414,7 +1414,7 @@ pub fn author(
                         .collect()
                 };
                 let (mut whole, tooling) = rayon::join(
-                    || of_the_whole(&journeys.product, "whole", false),
+                    || crate::whole_purposes::of(&capabilities, &journeys.product, &said, &told.part_names),
                     || of_the_whole(&journeys.tooling, "tooling", true),
                 );
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1429,9 +1429,7 @@ pub fn author(
                 together.extend(whole.iter().cloned());
                 together.sort_by(|left, right| left.id.cmp(&right.id));
                 let formed = started.elapsed();
-                let (same, products) = rayon::join(
-                    || crate::capabilities::which_are_the_same(&whole, &spoken),
-                    || {
+                let products = {
                         let mut described: Vec<Product> = (0..expected
                             .load(std::sync::atomic::Ordering::Relaxed))
                             .filter_map(|_| described_rx.lock().ok()?.recv().ok().flatten())
@@ -1441,9 +1439,7 @@ pub fn author(
                         }
                         described.sort_by(|left, right| left.project.cmp(&right.project));
                         describe_product(&together, &held.entities, &held.flows, &spoken, told, described)
-                    },
-                );
-                crate::capabilities::merge_the_same(&mut whole, same);
+                };
                 crate::value::weigh(&mut whole, &said);
                 for capability in whole.iter().filter(|capability| capability.supporting) {
                     eprintln!("  supporting, so not a capability of the whole: {}", capability.name.as_deref().unwrap_or_default());
