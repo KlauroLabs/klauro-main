@@ -451,6 +451,26 @@ Group together only the ones a person could not tell apart: the same action on t
 Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
 When in doubt keep them apart. Every number appears in exactly one group.";
 
+pub const DESCRIBED_BEFORE: &str = "When this was last read it was described as below. Keep the same names and outcomes unless the steps above now show a different behaviour:";
+
+pub fn behaviours_before(answer: &serde_json::Value) -> Option<String> {
+    let listed: Vec<String> = answer["behaviours"]
+        .as_array()?
+        .iter()
+        .filter_map(|behaviour| Some(format!("- {}: {}", behaviour["name"].as_str()?.trim(), behaviour["outcome"].as_str().unwrap_or_default().trim())))
+        .collect();
+    (!listed.is_empty()).then(|| format!("{DESCRIBED_BEFORE}\n{}", listed.join("\n")))
+}
+
+pub fn with_before(prompt: &str, before: Option<String>) -> String {
+    match before {
+        Some(before) => format!("{prompt}\n\n{before}"),
+        None => prompt.to_string(),
+    }
+}
+
+pub const KEPT_FROM_BEFORE: &str = "When this was last read its capabilities were the ones below. Keep each with the same name and outcome while the behaviours above still deliver it, \
+drop one that nothing above delivers any more, and add one only for an outcome none of them covers. Renaming, splitting or merging one needs a change in the behaviours above that calls for it:";
 pub const CAPABILITIES_ASKED: &str = "These are the behaviours of one part of a software system, each with what it achieves, the trigger that starts it, the records it keeps or reads, and what it hands on to. \
 Group them into the capabilities this part gives the people or systems it serves. A capability is an outcome someone comes to this part for, such as placing an order or keeping a catalogue of products, not a technical mechanism. \
 A capability gathers every behaviour that serves the same outcome: the creating, changing and viewing of the same thing, the requests and screens of one area of the product, the recurring jobs that together keep one kind of information current. \

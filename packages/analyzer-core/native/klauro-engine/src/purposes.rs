@@ -164,6 +164,15 @@ fn checks_by_folder<'a>(part: Option<&str>, checks: &'a [(String, String)]) -> V
     held.into_iter().collect()
 }
 
+pub(crate) fn told_before(answer: &serde_json::Value) -> Option<String> {
+    let listed: Vec<String> = answer["purposes"]
+        .as_array()?
+        .iter()
+        .filter_map(|purpose| Some(format!("- {}: {}", purpose["name"].as_str()?.trim(), purpose["outcome"].as_str().unwrap_or_default().trim())))
+        .collect();
+    (!listed.is_empty()).then(|| format!("{}\n{}", crate::author::KEPT_FROM_BEFORE, listed.join("\n")))
+}
+
 pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
     let Asked { part, flows, quiet, checks, said, remembered_as, landed, journeys, weights } = *asked;
     let named: Vec<&Flow> = flows.iter().copied().filter(|flow| flow.kind != "test").collect();
@@ -207,7 +216,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
     }
     let heading = if journeys { "Flows of the whole system, each starting where a person or another system reaches it, with the steps it takes across the system and the weight of the work it carries: the system's capabilities are derived from these flows, as the outcomes the system as a whole is for, named for its customers, never naming a vendor, protocol or library" } else if checking { "What its tests check. Its capabilities are what those tests prove the system does, each named as verifying an outcome, and it has at least one" } else if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
-    let key = format!("{remembered_as}\u{1}{prompt}");
+    let key = remembered_as.to_string();
     let count = groups.len();
     let supporting_only: BTreeSet<usize> = groups
         .iter()
@@ -217,7 +226,16 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .collect();
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count).is_none();
     let answered = crate::memory::each_holding("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], holds, |missing| {
-        crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count).map(|held| (key.clone(), held))).collect())
+        crate::author::asking(|| {
+            missing
+                .iter()
+                .filter_map(|(key, prompt)| {
+                    let before = crate::memory::last::<serde_json::Value>("part capabilities", crate::author::CAPABILITIES_ASKED, key);
+                    let asked = crate::author::with_before(prompt, before.as_ref().and_then(told_before));
+                    crate::author::purposes_of(&asked, count).map(|held| (key.clone(), held))
+                })
+                .collect()
+        })
     });
     let Some(answer) = answered.get(&key) else {
         return OfAPart {
@@ -485,5 +503,22 @@ mod tests {
         let landed = HashMap::default();
         let part = of_a_part(&Asked { part: Some("subproject:suite"), flows: &[], quiet: &[], checks: &checks, said: "Suite", remembered_as: "suite", landed: &landed, journeys: false, weights: &HashMap::default() });
         assert_ne!(part.state.capabilities, ABSENT, "a test suite has capabilities from what it checks");
+    }
+
+    #[test]
+    fn what_was_said_last_time_is_told_by_name_and_outcome_never_by_number() {
+        let before = serde_json::json!({"purposes": [{"name": "Place orders", "outcome": "Shoppers buy.", "behaviours": [3, 4]}, {"name": "Browse products", "outcome": "Shoppers look.", "behaviours": [1]}]});
+        let told = told_before(&before).unwrap_or_default();
+        assert!(told.starts_with(crate::author::KEPT_FROM_BEFORE));
+        assert!(told.ends_with("- Place orders: Shoppers buy.\n- Browse products: Shoppers look."), "{told}");
+        assert!(told_before(&serde_json::json!({"purposes": []})).is_none());
+        assert_eq!(crate::author::with_before("Asked", None), "Asked");
+    }
+
+    #[test]
+    fn a_flow_told_last_time_is_told_by_name_and_outcome() {
+        let before = serde_json::json!({"behaviours": [{"name": "Place an order", "outcome": "The order is kept.", "steps": []}]});
+        let told = crate::author::behaviours_before(&before).unwrap_or_default();
+        assert_eq!(told, format!("{}\n- Place an order: The order is kept.", crate::author::DESCRIBED_BEFORE));
     }
 }

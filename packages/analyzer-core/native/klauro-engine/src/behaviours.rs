@@ -243,13 +243,14 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, l
     format!("{}\n\n{asked}", lines.join("\n"))
 }
 
-fn asked_all(items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>) -> std::collections::BTreeMap<String, Answer> {
+fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>) -> std::collections::BTreeMap<String, Answer> {
     crate::author::asking(|| {
         items
             .par_iter()
             .filter_map(|(id, prompt)| {
                 let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
-                let held = crate::author::behaviours_of(prompt, &steps)?;
+                let before = crate::memory::last::<serde_json::Value>(kind, crate::author::BEHAVIOURS_ASKED, id);
+                let held = crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps)?;
                 serde_json::from_value::<Answer>(held).ok().map(|answer| (id.clone(), answer))
             })
             .collect()
@@ -482,7 +483,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
         serde_json::to_value(answer).is_ok_and(|answer| crate::author::what_is_wrong_with_behaviours(&answer, &steps).is_none())
     };
-    let answers = crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all(items, &steps_of));
+    let answers = crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of));
     let mut again: Vec<(String, String)> = Vec::new();
     for flow in &kept {
         let Some(answer) = answers.get(&flow.id) else { continue };
@@ -501,7 +502,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, true)));
         }
     }
-    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all(items, &steps_of));
+    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all("flow behaviour, one", items, &steps_of));
     let mut settled: Vec<Flow> = Vec::new();
     for flow in kept {
         let mut behaviours: Vec<Behaviour> = match single.get(&flow.id) {
