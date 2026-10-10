@@ -231,6 +231,9 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
                 .iter()
                 .filter_map(|(key, prompt)| {
                     let before = crate::memory::last::<serde_json::Value>("part capabilities", key);
+                    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                        eprintln!("    capabilities asked {} their last answer", if before.is_some() { "with" } else { "without" });
+                    }
                     let asked = crate::author::with_before(prompt, before.as_ref().and_then(told_before));
                     crate::author::purposes_of(&asked, count).map(|held| (key.clone(), held))
                 })
