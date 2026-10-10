@@ -432,7 +432,7 @@ Describe only what this part does. When it hands something to another part, say 
 
 pub const JOURNEY_ASKED: &str = "This is one journey through a whole software system: it starts where a person or another system reaches the system, and each listed step is one part of the system doing its own work before handing on to the next. \
 Name it as one behaviour of the whole system, as a product manager would describe it to a customer. \
-Name it for what the person or system asked for where the journey starts: the later steps are how the system answers, and they name the journey only when they are what was asked for. \
+Name it for what was asked for at the start, the line above saying so: the later steps are how the system answers, and they name the journey only when they are what was asked for, never because they deliver more value. \
 For it give:\n\
 - name: a short verb phrase in plain words (\"Place an order\", \"Pay for an order\"), never class, function, file, event, package or part names;\n\
 - outcome: one plain sentence saying what is different for the person or the system once the whole journey has run, across every part it reaches;\n\

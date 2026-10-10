@@ -131,6 +131,9 @@ fn told(journey: &Flow, opening: &str, flows: &HashMap<&str, &Flow>, children: &
         lines.push(format!("The system describes itself: {opening}"));
     }
     lines.push(format!("Reached through: {} {}", journey.kind, journey.surface.as_deref().unwrap_or(&journey.operation)));
+    if let Some(start) = journey.steps.first().and_then(|step| step.lands_in.first()).and_then(|member| flows.get(member.as_str())) {
+        lines.push(format!("Asked for at the start: {} — {}", start.name.as_deref().unwrap_or(&start.operation), start.description.as_deref().unwrap_or_default()));
+    }
     for step in &journey.steps {
         let layer = step.lands_in.first().and_then(|member| flows.get(member.as_str())).map(|flow| format!("\n    the part's flow here: {}", children.of_flow(flow))).unwrap_or_default();
         lines.push(format!("{}: {}{layer}", step.id, step.label));
