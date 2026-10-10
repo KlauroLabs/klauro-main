@@ -448,6 +448,18 @@ fn own_words_of_parts(
     own
 }
 
+pub(crate) fn outside_of(services: &[crate::services::Service], part: Option<&str>) -> String {
+    let named: Vec<&str> = services
+        .iter()
+        .filter(|service| part.is_none_or(|part| service.projects.iter().any(|held| held == part)))
+        .map(|service| service.name.as_str())
+        .collect();
+    match named.is_empty() {
+        true => String::new(),
+        false => format!("\nOutside products it works with, never part of a capability's name: {}", named.join(", ")),
+    }
+}
+
 fn spoken_of_part(
     spoken: &str,
     part: Option<&str>,
@@ -562,6 +574,7 @@ pub struct Telling<'a> {
     pub part_names: HashMap<String, String>,
     pub roles: HashMap<String, &'static str>,
     pub checks: HashMap<String, Vec<(String, String)>>,
+    pub services: &'a [crate::services::Service],
 }
 
 const SPOKEN_TO_BY: f64 = 0.15;
@@ -1317,7 +1330,7 @@ pub fn author(
                         .filter(|flow| flow.runs_in.as_ref().or(flow.project.as_ref()) == part.as_ref())
                         .collect();
                     crate::author::weighing(flows.len() as u32, || {
-                    let said = spoken_of_part(&spoken, part.as_deref(), &own_words, told.composition);
+                    let said = format!("{}{}", spoken_of_part(&spoken, part.as_deref(), &own_words, told.composition), outside_of(told.services, part.as_deref()));
                     let remembered_as =
                         format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let label = part.as_deref().unwrap_or("root").to_string();
@@ -1380,7 +1393,7 @@ pub fn author(
                     || crate::journeys::named(&mut journeys.tooling, &held.flows, &opening, &children),
                 );
 
-                let said = spoken_of_part(&spoken, None, &own_words, told.composition);
+                let said = format!("{}{}", spoken_of_part(&spoken, None, &own_words, told.composition), outside_of(told.services, None));
                 let weights = crate::journeys::weights(&capabilities, journeys.product.iter().chain(journeys.tooling.iter()));
                 let of_the_whole = |held: &[Flow], kind: &str, low_weight: bool| -> Vec<Capability> {
                     let offered: Vec<&Flow> = held.iter().filter(|journey| weights.contains_key(&journey.id)).collect();

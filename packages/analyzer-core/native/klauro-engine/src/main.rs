@@ -1632,6 +1632,7 @@ fn read_it() {
         checks: test_cases_of_suites(&index, &paths),
         part_names: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.display_name.clone())).collect()).unwrap_or_default(),
         roles: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.role)).collect()).unwrap_or_default(),
+        services: &index.services,
     };
     if let Some(split) = index.partition.as_ref() {
         let said_of_itself = comprehend::said_of_itself(&root, &index.nodes, &paths);
