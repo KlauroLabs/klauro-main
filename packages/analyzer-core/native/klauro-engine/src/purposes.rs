@@ -230,7 +230,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
             missing
                 .iter()
                 .filter_map(|(key, prompt)| {
-                    let before = crate::memory::last::<serde_json::Value>("part capabilities", crate::author::CAPABILITIES_ASKED, key);
+                    let before = crate::memory::last::<serde_json::Value>("part capabilities", key);
                     let asked = crate::author::with_before(prompt, before.as_ref().and_then(told_before));
                     crate::author::purposes_of(&asked, count).map(|held| (key.clone(), held))
                 })

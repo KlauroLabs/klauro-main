@@ -31,12 +31,8 @@ fn last_of(kind: &str) -> String {
     format!("{kind} last")
 }
 
-fn last_key(context: &str, id: &str) -> String {
-    format!("{context}\u{2}{id}")
-}
-
-pub(crate) fn last<T: DeserializeOwned>(kind: &str, context: &str, id: &str) -> Option<T> {
-    recalled(&last_of(kind), &last_key(context, id))
+pub(crate) fn last<T: DeserializeOwned>(kind: &str, id: &str) -> Option<T> {
+    recalled(&last_of(kind), id)
 }
 
 pub(crate) fn unless_changed<T: Serialize + DeserializeOwned>(
@@ -77,7 +73,7 @@ pub(crate) fn each_holding<T: Serialize + DeserializeOwned>(
     for (id, told) in items {
         match recalled::<T>(kind, &keyed(told)).filter(|held| holds(id, held)) {
             Some(held) => {
-                keep(&last_of(kind), &last_key(context, id), &held);
+                keep(&last_of(kind), id, &held);
                 known.insert(id.clone(), held);
             }
             None => missing.push((id.clone(), told.clone())),
@@ -91,7 +87,7 @@ pub(crate) fn each_holding<T: Serialize + DeserializeOwned>(
         if let Some(held) = answered.remove(id) {
             if crate::author::asked() {
                 keep(kind, &keyed(told), &held);
-                keep(&last_of(kind), &last_key(context, id), &held);
+                keep(&last_of(kind), id, &held);
             }
             known.insert(id.clone(), held);
         }

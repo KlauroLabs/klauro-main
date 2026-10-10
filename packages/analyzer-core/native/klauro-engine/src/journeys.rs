@@ -157,7 +157,7 @@ pub fn named(journeys: &mut [Flow], flows: &[Flow], opening: &str, children: &cr
                 .par_iter()
                 .filter_map(|(id, prompt)| {
                     let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
-                    let before = crate::memory::last::<serde_json::Value>("journey behaviours", crate::author::JOURNEY_ASKED, id);
+                    let before = crate::memory::last::<serde_json::Value>("journey behaviours", id);
                     crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps).map(|answer| (id.clone(), answer))
                 })
                 .collect()
