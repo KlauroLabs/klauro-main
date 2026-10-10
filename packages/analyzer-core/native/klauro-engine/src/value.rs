@@ -19,7 +19,7 @@ pub struct Value {
 pub(crate) const OWN_VALUE_ASKED: &str = "Would whoever uses \"{name}\" ({outcome}), a person or another system that works with this one, \
 be glad to have done only this, because it gives them a result they care about for its own sake (getting, seeing or changing their money, goods, \
 content or information, getting help, or being told that something happened to them or their things), or does its result only make something else possible \
-(signing in or out, verifying, generating links or tokens, checking a status, changing settings)?";
+(signing in or out, verifying, generating links or tokens, checking a status, changing settings, installing or setting up the product)?";
 pub(crate) const GIVES: &str = "it gives a result its user cares about by itself";
 pub(crate) const ONLY_ENABLES: &str = "its result only makes something else possible";
 const CLOSER_ASKED: &str = "Which of these is closer to the reason this product exists: the result people come to it for, rather than something that supports, configures or follows that result?";
