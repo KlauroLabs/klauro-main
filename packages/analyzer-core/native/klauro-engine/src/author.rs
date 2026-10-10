@@ -352,18 +352,6 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Same {
-    #[serde(default)]
-    pub of: Vec<String>,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub audience: String,
-}
-
 pub const PURPOSE: &str = "A capability is a purpose: why the system was built, something its product description, \
 a user's objective, a business offering or an operational responsibility would list. A flow is a behavior that serves \
 a purpose, such as one command, route, screen or job, and many flows serve one purpose: creating, renaming, listing and \
@@ -381,44 +369,31 @@ history or whether it is still maintained; what the software does is read from t
 When it does say what the software is for, the purposes below are the ones it names in its own words. When it says \
 nothing about itself, name a purpose only when the outcomes below jointly deliver it.";
 
-pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
-    if !asked() || listed.len() < 2 {
-        return Vec::new();
-    }
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
-         Below is the complete list of capabilities read from it, each with an id, its name and what someone \
-         gets. The list was put together piece by piece, so one purpose may appear more than once under different \
-         words, or be split into narrower pieces.\n\n{PURPOSE}\n\n\
-         Which of these serve the same purpose? Two are the same only when they are the same purpose: the same outcome \
-         for the same audience, named two ways, or one a stage, a way in or a narrower view of the other that ends \
-         in that same outcome. Opening external links and opening external URLs are one. Keep two apart when the \
-         product's description would list them as separate purposes, even when they act on the same thing or are \
-         used by the same person, and when they end in different outcomes or serve different audiences. A group \
-         whose name would need a list of unrelated things, or the word and, to cover its members is not one \
-         purpose. Two that are reached through the same entry points or change the same records, and differ only \
-         in the words used, are one purpose. Being related, or belonging to the same area of the product, is not \
-         being the same. A capability whose result is trivial to the person, a small step they take while doing something larger \
-         (seeing a version, replacing a word, opening a panel), is not a purpose of its own: it goes into the \
-         capability it serves.\n\n\
-         List only groups of two or more ids, and leave every other id out. For each group give the name that \
-         says the shared purpose best, keeping one of the names given when one says it, one sentence saying \
-         what someone gets, and the audience it is for.\n\
-         Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
-         The capabilities:\n{}",
-        listed.iter().map(|(id, told)| format!("- {id}: {told}")).collect::<Vec<_>>().join("\n")
-    );
-    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "groups", 0, JOINING)
-    else {
-        return Vec::new();
-    };
-    held["groups"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
-        .filter(|group| group.of.len() > 1)
-        .collect()
+pub const SAME_PURPOSE_ASKED: &str = "Are these two the same purpose: the same outcome for the same audience, named two ways, or one a stage, \
+a way in or a narrower view of the other that ends in that same outcome? Two reached through the same entry points or changing the same \
+records, differing only in the words used, are one purpose, and so is a small step a person takes while doing the other. Keep them apart \
+when the product's description would list them as separate purposes, even when they act on the same thing or are used by the same \
+person, and when they end in different outcomes or serve different audiences. Being related, or belonging to the same area of the \
+product, is not being the same.";
+
+pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
+    let state = format!("A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n{PURPOSE}");
+    let questions: BTreeMap<String, crate::jev::Question> = pairs
+        .iter()
+        .map(|(first, second)| {
+            let told = |at: usize| format!("{} | {}", listed[at].0.trim(), listed[at].1);
+            (
+                format!("same_{first}_{second}"),
+                crate::jev::Question {
+                    kind: "noul",
+                    instructions: format!("{SAME_PURPOSE_ASKED}\nFirst: {}\nSecond: {}", told(*first), told(*second)),
+                    criteria: BTreeMap::from([("true".to_string(), "they are the same purpose".to_string()), ("false".to_string(), "they are different purposes".to_string())]).into(),
+                },
+            )
+        })
+        .collect();
+    let decided = crate::jev::decide(&state, questions);
+    pairs.iter().filter_map(|(first, second)| Some(((*first, *second), decided.get(&format!("same_{first}_{second}"))?.noul?))).collect()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -912,20 +887,6 @@ fn shaped(of: &str) -> serde_json::Value {
             "properties": {"together": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}},
             "required": ["together"],
         }),
-        "groups" => serde_json::json!({
-            "type": "object",
-            "properties": {"groups": {"type": "array", "items": {
-                "type": "object",
-                "properties": {
-                    "of": {"type": "array", "items": text},
-                    "name": text,
-                    "description": text,
-                    "audience": text,
-                },
-                "required": ["of", "name", "description", "audience"],
-            }}},
-            "required": ["groups"],
-        }),
         "gives" => serde_json::json!({
             "type": "object",
             "properties": {"gives": {"type": "boolean"}},
@@ -1296,7 +1257,7 @@ mod shapes {
             .filter_map(|(at, found)| source[at + found.len()..].split('"').next())
             .filter(|key| !key.is_empty() && *key != "description")
             .collect();
-        assert!(asked.contains("purposes") && asked.contains("groups"), "{asked:?}");
+        assert!(asked.contains("purposes") && asked.contains("gives"), "{asked:?}");
         for key in asked {
             let shape = super::shaped(key);
             let required = shape["required"].as_array().cloned().unwrap_or_default();

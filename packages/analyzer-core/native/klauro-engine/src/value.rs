@@ -61,7 +61,7 @@ pub(crate) fn centrality_of(closer: &BTreeMap<(usize, usize), f64>, count: usize
 
 pub(crate) fn places(values: &[Value]) -> Vec<&'static str> {
     let mut giving: Vec<usize> = (0..values.len()).filter(|at| values[*at].own >= GIVES_ON_ITS_OWN).collect();
-    giving.sort_by(|left, right| values[*right].position.total_cmp(&values[*left].position));
+    giving.sort_by(|left, right| values[*right].impact.total_cmp(&values[*left].impact));
     let tail = (giving.len() as f64 * TAIL).ceil() as usize;
     let mut placed = vec!["supporting"; values.len()];
     for (rank, at) in giving.into_iter().enumerate() {
@@ -71,7 +71,7 @@ pub(crate) fn places(values: &[Value]) -> Vec<&'static str> {
 }
 
 pub(crate) fn valued(own: &[f64], centrality: &[f64], position: &[f64]) -> Vec<Value> {
-    let impacts: Vec<f64> = (0..own.len()).map(|at| own[at] * (centrality[at] + position[at]) / 2.0).collect();
+    let impacts: Vec<f64> = (0..own.len()).map(|at| own[at] * centrality[at] * (1.0 + position[at]) / 2.0).collect();
     let total: f64 = impacts.iter().sum();
     (0..own.len())
         .map(|at| Value { own: own[at], centrality: centrality[at], position: position[at], impact: impacts[at], share: if total > 0.0 { impacts[at] / total } else { 0.0 } })
@@ -173,16 +173,21 @@ mod tests {
     }
 
     #[test]
-    fn what_gives_nothing_on_its_own_is_supporting_and_the_tail_of_the_rest_is_terminal() {
-        let values = valued(&[0.1, 0.9, 0.9, 0.9, 0.9], &[0.2, 0.9, 0.5, 0.4, 0.3], &[1.0, 0.9, 0.6, 0.3, 0.1]);
-        assert_eq!(places(&values), ["supporting", "terminal", "proximal", "proximal", "proximal"]);
+    fn what_gives_nothing_on_its_own_is_supporting_and_the_most_valuable_quarter_of_the_rest_is_terminal() {
+        let values = valued(&[0.1, 0.9, 0.9, 0.9, 0.9], &[0.9, 0.3, 0.9, 0.4, 0.5], &[1.0, 1.0, 0.6, 0.3, 0.1]);
+        assert_eq!(places(&values), ["supporting", "proximal", "terminal", "proximal", "proximal"], "coming last in the chain alone never makes a capability terminal");
     }
 
     #[test]
-    fn value_impact_is_own_value_times_centrality_and_chain_position_and_shares_sum_to_one() {
-        let values = valued(&[1.0, 0.5, 0.0], &[1.0, 0.5, 1.0], &[1.0, 0.5, 1.0]);
-        assert_eq!(values.iter().map(|value| value.impact).collect::<Vec<_>>(), vec![1.0, 0.25, 0.0]);
+    fn value_impact_is_own_value_times_centrality_raised_by_chain_position_and_shares_sum_to_one() {
+        let values = valued(&[1.0, 0.5, 0.0], &[1.0, 0.5, 1.0], &[1.0, 0.0, 1.0]);
+        assert_eq!(values.iter().map(|value| value.impact).collect::<Vec<_>>(), vec![1.0, 0.125, 0.0]);
         assert!((values.iter().map(|value| value.share).sum::<f64>() - 1.0).abs() < 1e-9);
-        assert_eq!(values[0].share, 0.8);
+    }
+
+    #[test]
+    fn what_follows_the_goal_never_outweighs_the_goal_for_coming_last() {
+        let values = valued(&[0.95, 0.93], &[0.98, 0.41], &[0.36, 1.0]);
+        assert!(values[0].impact > values[1].impact, "placing an order matters more than cancelling one, though cancelling comes after");
     }
 }

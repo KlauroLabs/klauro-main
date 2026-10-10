@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::comprehend::{carved_name, Capability, Flow};
@@ -128,7 +127,6 @@ pub(crate) fn coverage_of(
     }
 }
 
-const LISTED_AT_ONCE: usize = 120;
 const TOLD_IN_A_LINE: usize = 160;
 
 fn singular(word: &str) -> String {
@@ -163,20 +161,6 @@ fn in_a_line(told: &str) -> String {
     }
 }
 
-fn asked_together(listed: &[usize]) -> Vec<Vec<usize>> {
-    if listed.len() <= LISTED_AT_ONCE {
-        return vec![listed.to_vec()];
-    }
-    let halves: Vec<&[usize]> = listed.chunks(LISTED_AT_ONCE / 2).collect();
-    let mut asked: Vec<Vec<usize>> = Vec::new();
-    for first in 0..halves.len() {
-        for second in first + 1..halves.len() {
-            asked.push(halves[first].iter().chain(halves[second].iter()).copied().collect());
-        }
-    }
-    asked
-}
-
 pub(crate) struct Joined {
     pub(crate) members: Vec<usize>,
     pub(crate) name: String,
@@ -184,100 +168,7 @@ pub(crate) struct Joined {
     pub(crate) audience: String,
 }
 
-pub(crate) fn the_same_among(
-    listed: &[(String, String)],
-    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
-) -> Vec<Joined> {
-    let mut leader: Vec<usize> = (0..listed.len()).collect();
-    fn found(leader: &mut [usize], at: usize) -> usize {
-        let mut current = at;
-        while leader[current] != current {
-            leader[current] = leader[leader[current]];
-            current = leader[current];
-        }
-        current
-    }
-    let join = |leader: &mut Vec<usize>, first: usize, second: usize| {
-        let (left, right) = (found(leader, first), found(leader, second));
-        if left != right {
-            leader[left.max(right)] = left.min(right);
-        }
-    };
-    let mut first_named: BTreeMap<String, usize> = BTreeMap::new();
-    for (at, (name, _)) in listed.iter().enumerate() {
-        let key = name_key(name);
-        if key.is_empty() {
-            continue;
-        }
-        match first_named.get(&key).copied() {
-            Some(earlier) => join(&mut leader, earlier, at),
-            None => {
-                first_named.insert(key, at);
-            }
-        }
-    }
-    let shown: Vec<usize> = (0..listed.len()).filter(|at| found(&mut leader, *at) == *at).collect();
-    let weight = crate::author::weight();
-    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = crate::author::asking(|| {
-        asked_together(&shown)
-            .into_par_iter()
-            .filter(|chunk| chunk.len() > 1)
-            .map(|chunk| crate::author::weighing(weight, || {
-                let offered: BTreeMap<String, String> = chunk
-                    .iter()
-                    .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), listed[*at].1)))
-                    .collect();
-                let said = ask(&offered);
-                (chunk, said)
-            }))
-            .collect()
-    });
-    let mut named: Vec<(Vec<usize>, String, String, String)> = Vec::new();
-    for (chunk, said) in answers {
-        for same in said {
-            let members: Vec<usize> = same
-                .of
-                .iter()
-                .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
-                .filter(|at| chunk.contains(at))
-                .collect::<BTreeSet<usize>>()
-                .into_iter()
-                .collect();
-            if members.len() < 2 {
-                continue;
-            }
-            for at in &members[1..] {
-                join(&mut leader, members[0], *at);
-            }
-            named.push((members, same.name.trim().to_string(), same.description.trim().to_string(), same.audience.trim().to_string()));
-        }
-    }
-    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for at in 0..listed.len() {
-        let root = found(&mut leader, at);
-        components.entry(root).or_default().push(at);
-    }
-    components
-        .into_values()
-        .filter(|members| members.len() > 1)
-        .map(|members| {
-            let chosen = named
-                .iter()
-                .filter(|(held, name, _, _)| !name.is_empty() && held.iter().all(|at| members.contains(at)))
-                .max_by_key(|(held, _, _, _)| held.len());
-            match chosen {
-                Some((_, name, description, audience)) => Joined {
-                    members,
-                    name: name.clone(),
-                    description: description.clone(),
-                    audience: audience.clone(),
-                },
-                None => Joined { members, name: String::new(), description: String::new(), audience: String::new() },
-            }
-        })
-        .collect()
-}
-
+const SAME_AT_LEAST: f64 = 0.5;
 const SURFACES_COMPARED: usize = 4;
 const RECORDS_COMPARED: usize = 3;
 
@@ -297,52 +188,55 @@ fn reached_by(capability: &Capability) -> String {
     }
 }
 
-const NEAR_FLOW_SHARE: f64 = 0.5;
-
-fn near_in_flows(left: &[String], right: &[String]) -> bool {
-    let shared = left.iter().filter(|flow| right.contains(flow)).count();
-    let smaller = left.len().min(right.len());
-    smaller >= 1 && shared as f64 >= NEAR_FLOW_SHARE * smaller as f64
-}
-
-fn near_duplicates(capabilities: &[Capability]) -> Vec<usize> {
-    let mut near: BTreeSet<usize> = BTreeSet::new();
-    for first in 0..capabilities.len() {
-        for second in first + 1..capabilities.len() {
-            if near_in_flows(&capabilities[first].flows, &capabilities[second].flows) {
-                near.insert(first);
-                near.insert(second);
-            }
+pub(crate) fn the_same_among(
+    listed: &[(String, String)],
+    decide: impl Fn(&[(usize, usize)]) -> BTreeMap<(usize, usize), f64>,
+) -> Vec<Joined> {
+    let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut unnamed: Vec<Vec<usize>> = Vec::new();
+    for (at, (name, _)) in listed.iter().enumerate() {
+        let key = name_key(name);
+        match key.is_empty() {
+            true => unnamed.push(vec![at]),
+            false => by_name.entry(key).or_default().push(at),
         }
     }
-    near.into_iter().collect()
-}
-
-fn united(groups: Vec<Joined>) -> Vec<Joined> {
-    let mut united: Vec<Joined> = Vec::new();
-    for group in groups {
-        let mut group = group;
-        while let Some(at) = united.iter().position(|held| held.members.iter().any(|member| group.members.contains(member))) {
-            let held = united.remove(at);
-            let (keeper, other) = if held.members.len() >= group.members.len() { (held, group) } else { (group, held) };
-            let mut members = keeper.members.clone();
-            members.extend(other.members.iter().copied().filter(|member| !keeper.members.contains(member)));
+    let mut clusters: Vec<Vec<usize>> = by_name.into_values().chain(unnamed).collect();
+    clusters.sort();
+    let shown: Vec<usize> = clusters.iter().map(|members| members[0]).collect();
+    let pairs: Vec<(usize, usize)> = (0..shown.len()).flat_map(|first| (first + 1..shown.len()).map(move |second| (first, second))).map(|(first, second)| (shown[first], shown[second])).collect();
+    let same = if pairs.is_empty() { BTreeMap::new() } else { decide(&pairs) };
+    let alike = |first: usize, second: usize| same.get(&(first.min(second), first.max(second))).copied().unwrap_or(0.0);
+    let mut ranked: Vec<((usize, usize), f64)> = same.iter().map(|(pair, held)| (*pair, *held)).filter(|(_, held)| *held >= SAME_AT_LEAST).collect();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    let mut leads: Vec<Vec<usize>> = shown.iter().map(|lead| vec![*lead]).collect();
+    let cluster_of = |leads: &[Vec<usize>], lead: usize| leads.iter().position(|held| held.contains(&lead));
+    for ((first, second), _) in ranked {
+        let (Some(left), Some(right)) = (cluster_of(&leads, first), cluster_of(&leads, second)) else { continue };
+        if left == right {
+            continue;
+        }
+        let every_pair_same = leads[left].iter().all(|one| leads[right].iter().all(|other| alike(*one, *other) >= SAME_AT_LEAST));
+        if !every_pair_same {
+            continue;
+        }
+        let moved = leads[right].clone();
+        leads[left].extend(moved);
+        leads.remove(right);
+    }
+    leads
+        .into_iter()
+        .map(|held| {
+            let mut members: Vec<usize> = held.iter().flat_map(|lead| clusters.iter().find(|members| members[0] == *lead).cloned().unwrap_or_default()).collect();
             members.sort_unstable();
-            group = Joined { members, ..keeper };
-        }
-        united.push(group);
-    }
-    united
+            members
+        })
+        .filter(|members| members.len() > 1)
+        .map(|members| Joined { members, name: String::new(), description: String::new(), audience: String::new() })
+        .collect()
 }
 
 pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec<Joined> {
-    groups_of_the_same(capabilities, |offered| crate::author::same_capability(said, offered))
-}
-
-fn groups_of_the_same(
-    capabilities: &[Capability],
-    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
-) -> Vec<Joined> {
     if capabilities.len() < 2 {
         return Vec::new();
     }
@@ -351,32 +245,11 @@ fn groups_of_the_same(
         .map(|capability| {
             (
                 capability.name.clone().unwrap_or_default(),
-                format!(
-                    "{}{}",
-                    in_a_line(capability.description.as_deref().unwrap_or_default()),
-                    reached_by(capability)
-                ),
+                format!("{}{}", in_a_line(capability.description.as_deref().unwrap_or_default()), reached_by(capability)),
             )
         })
         .collect();
-    let near = near_duplicates(capabilities);
-    let narrowed: Vec<(String, String)> = near.iter().map(|at| listed[*at].clone()).collect();
-    let (groups, again) = rayon::join(
-        || the_same_among(&listed, &ask),
-        || match near.len() > 1 {
-            true => the_same_among(&narrowed, &ask),
-            false => Vec::new(),
-        },
-    );
-    let again = again.into_iter().map(|joined| Joined {
-        members: joined.members.into_iter().map(|at| near[at]).collect(),
-        ..joined
-    });
-    let groups = match near.len() > 1 {
-        true => united(groups.into_iter().chain(again).collect()),
-        false => groups,
-    };
-    groups
+    the_same_among(&listed, |pairs| crate::author::same_purposes(said, &listed, pairs))
 }
 
 pub(crate) fn merge_the_same(capabilities: &mut Vec<Capability>, groups: Vec<Joined>) {
@@ -492,29 +365,6 @@ mod command_family_tests {
     }
 
     #[test]
-    fn capabilities_that_mostly_share_their_flows_are_near_duplicates() {
-        let flows = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
-        assert!(near_in_flows(&flows(&["a", "b", "c"]), &flows(&["b", "c", "d", "e"])));
-        assert!(!near_in_flows(&flows(&["a", "b", "c"]), &flows(&["c", "d", "e"])));
-        assert!(near_in_flows(&flows(&["a"]), &flows(&["a", "b"])));
-        assert!(!near_in_flows(&flows(&["a"]), &flows(&["b"])));
-    }
-
-    #[test]
-    fn a_group_found_twice_is_united_with_the_larger_naming_it() {
-        let group = |members: &[usize], name: &str| Joined {
-            members: members.to_vec(),
-            name: name.to_string(),
-            description: String::new(),
-            audience: String::new(),
-        };
-        let united = united(vec![group(&[0, 1], "Pair"), group(&[1, 2, 3], "Trio"), group(&[5, 6], "Apart")]);
-        assert_eq!(united.len(), 2);
-        let trio = united.iter().find(|held| held.name == "Trio").unwrap();
-        assert_eq!(trio.members, vec![0, 1, 2, 3]);
-    }
-
-    #[test]
     fn product_surfaces_rank_before_programs_and_what_programs_alone_run() {
         let mut route = flow("flow:route", "http", Some("POST"), "/v1/analyze", &[], &[]);
         route.units = 10;
@@ -565,18 +415,10 @@ mod one_of_each_tests {
         names.iter().map(|name| (name.clone(), format!("Someone gets {name}."))).collect()
     }
 
-    fn synonyms_asked(offered: &BTreeMap<String, String>) -> Vec<crate::author::Same> {
-        let links = offered.iter().find(|(_, told)| told.starts_with("Open external links |"));
-        let urls = offered.iter().find(|(_, told)| told.starts_with("Open external URLs |"));
-        match (links, urls) {
-            (Some((first, _)), Some((second, _))) => vec![crate::author::Same {
-                of: vec![first.clone(), second.clone()],
-                name: "Open external links".to_string(),
-                description: "Opens links outside the app.".to_string(),
-                audience: "user".to_string(),
-            }],
-            _ => Vec::new(),
-        }
+    fn decided(listed: &[(String, String)], same: &[(&str, &str, f64)]) -> impl Fn(&[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
+        let at = |name: &str| listed.iter().position(|(held, _)| held == name).unwrap();
+        let held: BTreeMap<(usize, usize), f64> = same.iter().map(|(first, second, chance)| ((at(first).min(at(second)), at(first).max(at(second))), *chance)).collect();
+        move |pairs: &[(usize, usize)]| pairs.iter().map(|pair| (*pair, held.get(pair).copied().unwrap_or(0.0))).collect()
     }
 
     #[test]
@@ -590,43 +432,38 @@ mod one_of_each_tests {
     #[test]
     fn the_same_normalized_name_is_merged_without_asking() {
         let names = vec!["Configure engine environment".to_string(), "Delete a post".to_string(), "configure Engine environments!".to_string()];
-        let asked = std::sync::atomic::AtomicUsize::new(0);
-        let groups = the_same_among(&listed(&names), |offered| {
-            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            assert_eq!(offered.len(), 2, "a name already merged is listed once: {offered:?}");
-            Vec::new()
+        let groups = the_same_among(&listed(&names), |pairs| {
+            assert_eq!(pairs, [(0, 1)], "a name already merged is asked about once");
+            BTreeMap::new()
         });
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members, vec![0, 2]);
     }
 
     #[test]
-    fn a_synonym_pair_planted_in_different_chunks_comes_out_as_one() {
-        let mut names: Vec<String> = (0..300).map(|at| format!("Distinct capability {at}")).collect();
+    fn every_pair_is_decided_however_long_the_list() {
+        let names: Vec<String> = (0..300).map(|at| format!("Distinct capability {at}")).collect();
+        let mut names = names;
         names[5] = "Open external links".to_string();
         names[280] = "Open external URLs".to_string();
         let items = listed(&names);
-        assert!(asked_together(&(0..300).collect::<Vec<_>>()).iter().all(|chunk| chunk.len() <= LISTED_AT_ONCE));
-        let groups = the_same_among(&items, synonyms_asked);
+        let groups = the_same_among(&items, decided(&items, &[("Open external links", "Open external URLs", 0.9)]));
         assert_eq!(groups.len(), 1, "exactly the planted pair merges");
         assert_eq!(groups[0].members, vec![5, 280]);
-        assert_eq!(groups[0].name, "Open external links");
     }
 
     #[test]
-    fn every_pair_is_asked_together_at_least_once() {
-        let shown: Vec<usize> = (0..400).collect();
-        let chunks = asked_together(&shown);
-        for first in (0..400).step_by(37) {
-            for second in (0..400).step_by(41) {
-                assert!(chunks.iter().any(|chunk| chunk.contains(&first) && chunk.contains(&second)), "{first} and {second}");
-            }
-        }
+    fn a_group_forms_only_when_every_member_is_the_same_purpose_as_every_other() {
+        let names = vec!["Trade cryptocurrency".to_string(), "Update transfer status".to_string(), "Manage deposits".to_string(), "Buy crypto".to_string()];
+        let items = listed(&names);
+        let same = [("Trade cryptocurrency", "Buy crypto", 0.9), ("Trade cryptocurrency", "Update transfer status", 0.6), ("Update transfer status", "Manage deposits", 0.7)];
+        let groups = the_same_among(&items, decided(&items, &same));
+        assert_eq!(groups.iter().map(|group| group.members.clone()).collect::<Vec<_>>(), vec![vec![0, 3], vec![1, 2]], "a link through a third purpose never chains two unlike ones together");
     }
 
     #[test]
     fn names_that_are_not_the_same_stay_apart_when_nothing_is_said_the_same() {
         let names = vec!["Sign in".to_string(), "Sign out".to_string(), "Delete a post".to_string()];
-        assert!(the_same_among(&listed(&names), |_| Vec::new()).is_empty());
+        assert!(the_same_among(&listed(&names), |_| BTreeMap::new()).is_empty());
     }
 }

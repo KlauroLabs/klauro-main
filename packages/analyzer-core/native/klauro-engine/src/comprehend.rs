@@ -1441,6 +1441,9 @@ pub fn author(
                 );
                 crate::capabilities::merge_the_same(&mut whole, same);
                 crate::value::weigh(&mut whole, &said);
+                for capability in whole.iter().filter(|capability| capability.place == Some("supporting")) {
+                    eprintln!("  supporting, so not a capability of the whole: {}", capability.name.as_deref().unwrap_or_default());
+                }
                 whole.retain(|capability| capability.place != Some("supporting"));
                 let mut tooling = tooling;
                 crate::value::weigh(&mut tooling, &said);
