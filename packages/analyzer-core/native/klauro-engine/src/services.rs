@@ -205,6 +205,59 @@ fn beyond_the_system(host: &str) -> bool {
         .any(|held| lowered == *held || lowered.ends_with(&format!(".{held}")))
 }
 
+fn read_at_run_time(path: &str) -> bool {
+    let named = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let settings = (named.starts_with("appsettings") && named.ends_with(".json"))
+        || (named.starts_with("application") && [".yml", ".yaml", ".properties"].iter().any(|ending| named.ends_with(ending)));
+    settings && !crate::paths::is_test(path)
+}
+
+fn serves_sites(path: &str) -> bool {
+    let named = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    named == "caddyfile" || named.ends_with(".caddyfile") || named == "nginx.conf" || (named.ends_with(".conf") && path.to_ascii_lowercase().contains("nginx"))
+}
+
+fn sites_in(text: &str) -> Vec<String> {
+    let mut sites = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(named) = trimmed.strip_prefix("server_name") {
+            sites.extend(named.trim_end_matches(';').split_whitespace().map(str::to_string));
+        } else if !line.starts_with(char::is_whitespace) && trimmed.ends_with('{') {
+            sites.extend(trimmed.trim_end_matches('{').split([',', ' ']).filter(|site| !site.is_empty()).map(str::to_string));
+        }
+    }
+    sites
+        .into_iter()
+        .filter_map(|site| {
+            let host = site.split("://").last()?.split(['/', ':']).next()?.trim_start_matches("*.").to_string();
+            (host.contains('.') && host.chars().all(|letter| letter.is_ascii_alphanumeric() || letter == '.' || letter == '-')).then_some(host)
+        })
+        .collect()
+}
+
+fn served_here(root: &Path, paths: &[&str]) -> HashSet<String> {
+    paths
+        .iter()
+        .filter(|path| serves_sites(path) && !crate::paths::is_test(path))
+        .filter_map(|path| {
+            let absolute = crate::paths::kept_inside(root, Path::new(path))?;
+            let small = std::fs::metadata(&absolute).is_ok_and(|held| held.len() <= SETTINGS_FILE_AT_MOST);
+            small.then(|| std::fs::read_to_string(&absolute).ok()).flatten()
+        })
+        .flat_map(|text| sites_in(&text))
+        .map(|host| registered(&host))
+        .collect()
+}
+
+fn registered(host: &str) -> String {
+    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    let country = labels.last().is_some_and(|last| last.len() == 2);
+    let second_level = labels.len() >= 3 && labels[labels.len() - 2].len() <= 3;
+    let kept = if country && second_level { 3 } else { 2 };
+    labels[labels.len().saturating_sub(kept)..].join(".").to_ascii_lowercase()
+}
+
 fn settings_files<'p>(paths: &[&'p str]) -> Vec<(u32, &'p str)> {
     paths
         .iter()
@@ -271,6 +324,8 @@ pub fn derive(sources: &Sources) -> Found {
         .filter_map(|node| Some((node.file, node.project.as_deref()?)))
         .collect();
     let mut gathering = Gathering { held: BTreeMap::new(), project_of_file };
+    let ours = served_here(sources.root, sources.paths);
+    let outside = |host: &str| beyond_the_system(host) && !ours.contains(&registered(host));
     let set_aside: Vec<bool> = sources
         .paths
         .iter()
@@ -377,7 +432,7 @@ pub fn derive(sources: &Sources) -> Found {
                 gathering.note(known, "endpoint", literal, Some(call.file), call.line);
                 reached(&mut gathering, known.name);
             } else if exits.is_some_and(|exits| exits.iter().any(|exit| exit.kind == "api"))
-                && beyond_the_system(host)
+                && outside(host)
             {
                 let host = host.to_ascii_lowercase();
                 gathering.note_unknown(&host, "endpoint", literal, Some(call.file), call.line);
@@ -428,11 +483,14 @@ pub fn derive(sources: &Sources) -> Found {
             if let Some(known) = service_catalog::by_scheme(address.scheme) {
                 gathering.note(known, "connection", value, Some(node.file), node.span.line);
             } else if NETWORK_SCHEMES.contains(&address.scheme.to_ascii_lowercase().as_str())
-                && !a_page_for_people(value, &address)
                 && let Some(host) = address.host
-                && let Some(known) = service_catalog::by_host(host)
             {
-                gathering.note(known, "endpoint", value, Some(node.file), node.span.line);
+                let setting = sources.paths.get(node.file as usize).is_some_and(|path| read_at_run_time(path));
+                match service_catalog::by_host(host) {
+                    Some(known) if setting || !a_page_for_people(value, &address) => gathering.note(known, "endpoint", value, Some(node.file), node.span.line),
+                    None if setting && outside(host) => gathering.note_unknown(&registered(host), "configured endpoint", named, Some(node.file), node.span.line),
+                    _ => {}
+                }
             }
         }
     }
@@ -445,10 +503,12 @@ pub fn derive(sources: &Sources) -> Found {
             let Some(address) = address_in(&value) else { continue };
             if let Some(known) = service_catalog::by_scheme(address.scheme) {
                 gathering.note(known, "connection", &named, Some(file), line);
-            } else if let Some(host) = address.host
-                && let Some(known) = service_catalog::by_host(host)
-            {
-                gathering.note(known, "endpoint", &named, Some(file), line);
+            } else if let Some(host) = address.host {
+                match service_catalog::by_host(host) {
+                    Some(known) => gathering.note(known, "endpoint", &named, Some(file), line),
+                    None if outside(host) => gathering.note_unknown(&registered(host), "configured endpoint", &named, Some(file), line),
+                    None => {}
+                }
             }
         }
     }
@@ -520,6 +580,30 @@ pub fn derive(sources: &Sources) -> Found {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_sites_a_web_server_serves_are_the_system_s_own() {
+        let caddy = "{\n\temail ops@shop.example.org\n}\n\napp.shop.io {\n\troot * /srv\n}\n\napi.shop.io, www.shop.io {\n\treverse_proxy api:8080\n}\n";
+        assert_eq!(super::sites_in(caddy), ["app.shop.io", "api.shop.io", "www.shop.io"]);
+        assert_eq!(super::sites_in("server {\n    server_name shop.io *.shop.io;\n}\n"), ["shop.io", "shop.io"]);
+    }
+
+    #[test]
+    fn an_outside_host_is_named_by_the_domain_it_is_registered_under() {
+        assert_eq!(super::registered("api.sandbox.fortressapi.com"), "fortressapi.com");
+        assert_eq!(super::registered("bo-api.drivewealth.io"), "drivewealth.io");
+        assert_eq!(super::registered("api.example.co.uk"), "example.co.uk");
+        assert_eq!(super::registered("plaid.com"), "plaid.com");
+    }
+
+    #[test]
+    fn settings_a_program_reads_when_it_runs_are_where_its_outside_addresses_live() {
+        assert!(super::read_at_run_time("Finance.Presentation.WebApi/appsettings.json"));
+        assert!(super::read_at_run_time("src/main/resources/application-prod.yml"));
+        assert!(!super::read_at_run_time("package.json"));
+        assert!(!super::read_at_run_time("tests/Api.Tests/appsettings.json"));
+    }
+
     #[test]
     fn a_pipeline_that_builds_the_repository_says_nothing_of_what_the_system_uses() {
         assert!(super::builds_the_repository(".github/workflows/test.yml"));

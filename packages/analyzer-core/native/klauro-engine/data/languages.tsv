@@ -17,6 +17,8 @@ name	jenkinsfile	groovy	source
 name	artisan	php	source
 name	console	php	source
 name	procfile	-	source
+name	caddyfile	-	source
+name	nginx.conf	-	source
 name	pkgbuild	shell	source
 name	apkbuild	shell	source
 name	.bashrc	shell	source
