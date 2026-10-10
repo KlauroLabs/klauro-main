@@ -84,7 +84,11 @@ fn rounded(held: f64) -> f64 {
 
 pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     let count = capabilities.len();
-    if count == 0 || !crate::jev::asked() || !crate::author::asked() {
+    if count == 0 || !crate::author::asked() {
+        return;
+    }
+    if !crate::jev::asked() {
+        eprintln!("  value not weighed: the decision model is not configured");
         return;
     }
     let listed: Vec<(String, String)> = capabilities.iter().map(told).collect();
