@@ -341,6 +341,7 @@ mod command_family_tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            value: None,
         }
     }
 

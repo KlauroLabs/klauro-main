@@ -1717,6 +1717,7 @@ fn read_it() {
         let summaries: rustc_hash::FxHashMap<String, String> = split.sub_projects.iter().map(|part| (part.id.clone(), part.summary.clone())).collect();
         whole::compose(&mut comprehension, &whole::Parts { names: &names, roles: &roles, summaries: &summaries, architecture: index.architecture.as_ref(), services: &index.services });
     }
+    ties::valued(&mut comprehension);
     index.comprehension = Some(comprehension);
 
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {

@@ -209,6 +209,29 @@ pub fn tie(held: &mut Comprehension, nodes: &[IndexNode], edges: &[IndexEdge]) {
     }
 }
 
+pub(crate) fn valued(held: &mut Comprehension) {
+    let share_of: HashMap<&str, f64> = held.capabilities.iter().filter_map(|capability| Some((capability.id.as_str(), capability.value.as_ref()?.share))).collect();
+    let delivered = |ties: &[Held]| ties.iter().filter(|tie| tie.role == DELIVERS).filter_map(|tie| share_of.get(tie.capability.as_str()).copied()).reduce(f64::max);
+    let journeys = held.whole.iter().flat_map(|whole| whole.flows.iter());
+    let flows: Vec<Option<f64>> = held.flows.iter().chain(journeys).map(|flow| delivered(&flow.capabilities)).collect();
+    let entities: Vec<Option<f64>> = held.entities.iter().map(|entity| depended_on(&entity.capabilities, &share_of)).collect();
+    let records: Vec<Option<f64>> = held.whole.iter().flat_map(|whole| whole.entities.iter()).map(|entity| depended_on(&entity.capabilities, &share_of)).collect();
+    for (flow, value) in held.flows.iter_mut().chain(held.whole.iter_mut().flat_map(|whole| whole.flows.iter_mut())).zip(flows) {
+        flow.value = value;
+    }
+    for (entity, value) in held.entities.iter_mut().zip(entities) {
+        entity.value = value;
+    }
+    for (entity, value) in held.whole.iter_mut().flat_map(|whole| whole.entities.iter_mut()).zip(records) {
+        entity.value = value;
+    }
+}
+
+pub(crate) fn depended_on(ties: &[Held], share_of: &HashMap<&str, f64>) -> Option<f64> {
+    let shares: Vec<f64> = ties.iter().filter_map(|tie| share_of.get(tie.capability.as_str()).copied()).collect();
+    (!shares.is_empty()).then(|| (shares.iter().sum::<f64>() * 1000.0).round() / 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +272,7 @@ mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            value: None,
         }
     }
 
@@ -310,6 +334,7 @@ mod tests {
             standing: None,
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         }
     }
 
@@ -376,6 +401,21 @@ mod tests {
         assert_eq!(journey.capabilities.len(), 1);
         assert_eq!(journey.capabilities[0].role, DELIVERS);
         assert!(held.entities[0].capabilities.is_empty(), "a whole-system capability ties to the whole system's own records, not a part's");
+    }
+
+    #[test]
+    fn a_flow_carries_the_value_of_what_it_delivers_and_a_record_the_value_that_depends_on_it() {
+        let mut orders = capability("capability:shop:place-orders", "shop", &[("place", "primary")], &["Order"], &["Order", "Product"], &[]);
+        orders.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: 0.7 });
+        let mut browse = capability("capability:shop:browse", "shop", &[("browse", "primary"), ("place", "supporting")], &[], &["Product"], &[]);
+        browse.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: 0.3 });
+        let mut held = held(vec![orders, browse], vec![flow("place", "shop", "a"), flow("browse", "shop", "b")], vec![entity("Order", "shop"), entity("Product", "shop")]);
+        tie(&mut held, &[], &[]);
+        valued(&mut held);
+        assert_eq!(held.flows[0].value, Some(0.7), "a flow carries the value of the capability it delivers, not one it only supports");
+        assert_eq!(held.flows[1].value, Some(0.3));
+        assert_eq!(held.entities[0].value, Some(0.7));
+        assert_eq!(held.entities[1].value, Some(1.0), "every capability that keeps or reads a record depends on it");
     }
 
     #[test]

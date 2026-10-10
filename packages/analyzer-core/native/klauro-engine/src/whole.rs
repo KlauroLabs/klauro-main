@@ -40,6 +40,8 @@ pub struct WholeEntity {
     pub defined_more_than_once: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<Held>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +122,7 @@ fn entities_of(held: &Comprehension) -> Vec<WholeEntity> {
                 defined_in: members.iter().map(|member| Defined { part: member.project.clone().unwrap_or_default(), entity: member.id.clone() }).collect(),
                 defined_more_than_once: parts.len() > 1,
                 capabilities: Vec::new(),
+                value: None,
             }
         })
         .collect()
@@ -261,6 +264,7 @@ mod tests {
             standing: Some("domain"),
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         }
     }
 
@@ -333,6 +337,7 @@ mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            value: None,
         }
     }
 

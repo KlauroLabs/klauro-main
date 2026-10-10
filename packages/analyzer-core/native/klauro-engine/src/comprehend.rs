@@ -82,6 +82,8 @@ pub struct Flow {
     pub runs_in: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<crate::ties::Held>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,6 +153,8 @@ pub struct Entity {
     pub used_by: Vec<crate::records::Use>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<crate::ties::Held>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2391,6 +2395,7 @@ pub fn derive(
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            value: None,
         });
     }
     set_aside_what_only_programs_run(&mut flows, &delegates, &product_count, &tooling_reach);
@@ -4239,6 +4244,7 @@ fn entities(
             standing: None,
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity
@@ -4281,6 +4287,7 @@ fn entities(
             standing: None,
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         });
     }
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
@@ -4439,6 +4446,7 @@ fn entities(
             standing: None,
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         });
     }
     let record_of: HashMap<String, String> = entities
@@ -4512,6 +4520,7 @@ fn entities(
             standing: None,
             used_by: Vec::new(),
             capabilities: Vec::new(),
+            value: None,
         });
     }
     let known: HashMap<String, String> = entities
