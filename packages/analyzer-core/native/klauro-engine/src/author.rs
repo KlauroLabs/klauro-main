@@ -486,17 +486,18 @@ A behaviour that exists only to support others, such as signing in, settings, he
 A behaviour that delivers or supports no capability is left out; never force it into one. Two capabilities never share a name or an outcome. \
 A behaviour marked not shipped (a build, release, benchmark or development tool) never belongs to a product capability; when it serves the people who build and run this part, it belongs to their capabilities, such as releasing it. \
 Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services. \
+Give each capability its place: terminal when it is an outcome people come to this part for and leaves something they care about kept, changed or sent; proximal when it is what people do on the way to such an outcome, such as finding or viewing what they will act on; supporting when it exists so that other capabilities can work, such as signing in, managing access, settings, health checks or start-up. \
 Every capability lists at least one behaviour number it delivers, and every entry in behaviours and supporting is a listed number.";
 
-pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value> {
+pub fn purposes_of(prompt: &str, behaviours: usize, supporting_only: &std::collections::BTreeSet<usize>) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
     let mut correction = String::new();
     for _ in 0..PURPOSES_ASKED_AT_MOST {
-        let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\n{correction}Return JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
+        let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\n{correction}Return JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"place\":\"terminal\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
         let Some(answer) = answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
-        match what_is_wrong_with_purposes(&answer, behaviours) {
+        match what_is_wrong_with_purposes(&answer, behaviours, supporting_only) {
             None => return Some(answer),
             Some(wrong) => {
                 if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
@@ -509,7 +510,9 @@ pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value>
     None
 }
 
-pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours: usize) -> Option<String> {
+pub(crate) const PLACES: &[&str] = &["terminal", "proximal", "supporting"];
+
+pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours: usize, supporting_only: &std::collections::BTreeSet<usize>) -> Option<String> {
     let numbered = |held: &serde_json::Value| held.as_u64().is_some_and(|number| number >= 1 && number <= behaviours as u64);
     let Some(purposes) = answer["purposes"].as_array().filter(|purposes| !purposes.is_empty()) else {
         return Some("it gave no capability, and every part has at least one".to_string());
@@ -521,6 +524,13 @@ pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours
         }
         if !purpose["behaviours"].as_array().is_some_and(|numbers| !numbers.is_empty()) {
             return Some(format!("{name} listed no numbered behaviour it delivers"));
+        }
+        if !purpose["place"].as_str().is_some_and(|place| PLACES.contains(&place)) {
+            return Some(format!("{name} gave no place of terminal, proximal or supporting"));
+        }
+        let delivering: Vec<u64> = purpose["behaviours"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_u64).collect();
+        if !supporting_only.is_empty() && !delivering.is_empty() && delivering.iter().all(|number| supporting_only.contains(&(*number as usize))) {
+            return Some(format!("{name} is built only from behaviours marked supporting work, which never make a capability of their own: list them as supporting under the capabilities they serve"));
         }
         let all: Vec<&serde_json::Value> = purpose["behaviours"].as_array().into_iter().flatten().chain(purpose["supporting"].as_array().into_iter().flatten()).collect();
         if let Some(stray) = all.iter().find(|held| !numbered(held)) {
@@ -889,9 +899,10 @@ fn shaped(of: &str) -> serde_json::Value {
             "type": "object",
             "properties": {"purposes": {"type": "array", "items": {"type": "object", "properties": {
                 "name": text, "outcome": text,
+                "place": {"type": "string", "enum": ["terminal", "proximal", "supporting"]},
                 "behaviours": {"type": "array", "items": {"type": "integer"}},
                 "supporting": {"type": "array", "items": {"type": "integer"}},
-            }, "required": ["name", "outcome", "behaviours"]}}},
+            }, "required": ["name", "outcome", "place", "behaviours"]}}},
             "required": ["purposes"],
         }),
         "kinds" => serde_json::json!({
@@ -1262,11 +1273,15 @@ pub fn what_it_means(expect: &Expectation) -> String {
 mod shapes {
     #[test]
     fn every_answer_asked_for_is_given_the_shape_it_is_read_back_in() {
-        let wrong = |answer: serde_json::Value| super::what_is_wrong_with_purposes(&answer, 2);
-        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": [2]}]})), None);
-        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [], "supporting": [2]}]})).as_deref(), Some("Place orders listed no numbered behaviour it delivers"));
-        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1], "supporting": ["health checks"]}]})).as_deref(), Some("Place orders listed \"health checks\", which is not one of the numbers 1 to 2"));
-        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [3]}]})).as_deref(), Some("Place orders listed 3, which is not one of the numbers 1 to 2"));
+        let none = std::collections::BTreeSet::new();
+        let wrong = |answer: serde_json::Value| super::what_is_wrong_with_purposes(&answer, 2, &none);
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "place": "terminal", "behaviours": [1], "supporting": [2]}]})), None);
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "place": "terminal", "behaviours": [], "supporting": [2]}]})).as_deref(), Some("Place orders listed no numbered behaviour it delivers"));
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "place": "terminal", "behaviours": [1], "supporting": ["health checks"]}]})).as_deref(), Some("Place orders listed \"health checks\", which is not one of the numbers 1 to 2"));
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "place": "terminal", "behaviours": [3]}]})).as_deref(), Some("Place orders listed 3, which is not one of the numbers 1 to 2"));
+        assert_eq!(wrong(serde_json::json!({"purposes": [{"name": "Place orders", "behaviours": [1]}]})).as_deref(), Some("Place orders gave no place of terminal, proximal or supporting"));
+        let supporting = std::collections::BTreeSet::from([2]);
+        assert!(super::what_is_wrong_with_purposes(&serde_json::json!({"purposes": [{"name": "Sign in", "place": "supporting", "behaviours": [2]}]}), 2, &supporting).is_some(), "supporting work never makes a capability of its own");
         assert!(wrong(serde_json::json!({"purposes": []})).is_some());
         let steps = ["s1", "s2", "s3"];
         let wrong = |answer: serde_json::Value| super::what_is_wrong_with_behaviours(&answer, &steps);

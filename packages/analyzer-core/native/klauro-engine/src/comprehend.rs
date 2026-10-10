@@ -210,6 +210,8 @@ pub struct Capability {
     pub reads_through: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub drawn_from: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub low_weight: bool,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -1280,6 +1282,7 @@ pub fn author(
             }
         }
         let landed = &landed;
+        let no_weights: HashMap<String, &'static str> = HashMap::default();
         let several = parts.iter().filter(|part| part.is_some()).count() > 1;
         let (describing, described_rx) = std::sync::mpsc::channel::<Option<Product>>();
         let described_rx = std::sync::Mutex::new(described_rx);
@@ -1326,6 +1329,7 @@ pub fn author(
                         remembered_as: &remembered_as,
                         landed,
                         journeys: false,
+                        weights: &no_weights,
                     });
                     if let (Ok(mut kept), Ok(mut waiting)) = (part_states.lock(), pending_flows.lock()) {
                         kept.insert(part.clone(), of_the_part.state);
@@ -1367,8 +1371,9 @@ pub fn author(
                     || crate::journeys::named(&mut journeys.tooling, &held.flows, &opening),
                 );
                 let said = spoken_of_part(&spoken, None, &own_words, told.composition);
-                let of_the_whole = |held: &[Flow], kind: &str, place: &'static str| -> Vec<Capability> {
-                    let offered: Vec<&Flow> = held.iter().collect();
+                let weights = crate::journeys::weights(&capabilities, journeys.product.iter().chain(journeys.tooling.iter()));
+                let of_the_whole = |held: &[Flow], kind: &str, low_weight: bool| -> Vec<Capability> {
+                    let offered: Vec<&Flow> = held.iter().filter(|journey| weights.contains_key(&journey.id)).collect();
                     if offered.is_empty() {
                         return Vec::new();
                     }
@@ -1382,6 +1387,7 @@ pub fn author(
                         remembered_as: &remembered_as,
                         landed,
                         journeys: true,
+                        weights: &weights,
                     });
                     asked
                         .capabilities
@@ -1389,15 +1395,15 @@ pub fn author(
                         .map(|mut capability| {
                             capability.level = crate::capabilities::WHOLE;
                             capability.project = None;
-                            capability.place = Some(place);
+                            capability.low_weight = low_weight;
                             capability.id = format!("capability:{kind}:{}", carved_name(capability.name.as_deref().unwrap_or_default()));
                             capability
                         })
                         .collect()
                 };
                 let (mut whole, tooling) = rayon::join(
-                    || of_the_whole(&journeys.product, "whole", "core"),
-                    || of_the_whole(&journeys.tooling, "tooling", "tooling"),
+                    || of_the_whole(&journeys.product, "whole", false),
+                    || of_the_whole(&journeys.tooling, "tooling", true),
                 );
                 whole.sort_by(|left, right| left.id.cmp(&right.id));
                 eprintln!(
@@ -4572,6 +4578,7 @@ mod tests {
             keeps_through: Vec::new(),
             reads_through: Vec::new(),
             drawn_from: Vec::new(),
+            low_weight: false,
             evidence: String::new(),
         }
     }

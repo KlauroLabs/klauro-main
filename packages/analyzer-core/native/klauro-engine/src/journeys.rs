@@ -216,6 +216,39 @@ fn marked_as_tooling(mut journey: Flow, parts: &Parts) -> Flow {
     journey
 }
 
+pub fn weights<'a>(capabilities: &[crate::comprehend::Capability], journeys: impl Iterator<Item = &'a Flow>) -> HashMap<String, &'static str> {
+    let mut place_of: HashMap<&str, &'static str> = HashMap::default();
+    for capability in capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
+        let Some(place) = capability.place else { continue };
+        for delivered in capability.delivered.iter().filter(|delivered| delivered.role == "primary") {
+            let held = place_of.entry(delivered.flow.as_str()).or_insert(place);
+            if rank(place) > rank(held) {
+                *held = place;
+            }
+        }
+    }
+    journeys
+        .filter_map(|journey| {
+            let best = journey
+                .steps
+                .iter()
+                .flat_map(|step| step.lands_in.iter())
+                .filter_map(|member| place_of.get(member.as_str()).copied())
+                .max_by_key(|place| rank(place))?;
+            Some((journey.id.clone(), best))
+        })
+        .collect()
+}
+
+fn rank(place: &str) -> u8 {
+    match place {
+        "terminal" => 3,
+        "proximal" => 2,
+        "supporting" => 1,
+        _ => 0,
+    }
+}
+
 pub fn through(journey: &Flow) -> String {
     journey.steps.iter().map(|step| step.label.as_str()).collect::<Vec<_>>().join(" → ")
 }
@@ -262,6 +295,39 @@ mod tests {
         }
     }
 
+    fn capability(id: &str, delivers: &str) -> crate::comprehend::Capability {
+        crate::comprehend::Capability {
+            id: id.to_string(),
+            audience: None,
+            delivered: vec![crate::comprehend::Delivery { flow: delivers.to_string(), role: "primary", rationale: String::new(), unshipped: None }],
+            records: Vec::new(),
+            changes: Vec::new(),
+            flows: vec![delivers.to_string()],
+            surfaces: Vec::new(),
+            project: None,
+            also_in: Vec::new(),
+            place: None,
+            name: Some(id.to_string()),
+            description: None,
+            grounding: None,
+            standing: crate::comprehend::PUBLISHED,
+            level: crate::capabilities::PART,
+            touches: Vec::new(),
+            terminality: None,
+            confidence: None,
+            unsettled: None,
+            offers: Vec::new(),
+            used_in: Vec::new(),
+            keeps: Vec::new(),
+            reads: Vec::new(),
+            keeps_through: Vec::new(),
+            reads_through: Vec::new(),
+            drawn_from: Vec::new(),
+            low_weight: false,
+            evidence: String::new(),
+        }
+    }
+
     fn seam(from: &str, to: &str) -> Seam {
         Seam { from: String::new(), from_flow: from.to_string(), step: None, via: "http", by: "route", carries: "POST /orders".to_string(), to: String::new(), to_entry: String::new(), to_flows: vec![to.to_string()] }
     }
@@ -304,6 +370,24 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[1].lands_in, ["create-order", "take-payment"]);
         assert_eq!(steps[1].description.as_deref(), Some("The order is created and paid"));
+    }
+
+    #[test]
+    fn a_journey_weighs_what_its_part_flows_deliver_and_one_delivering_nothing_has_no_weight() {
+        let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"]), flow("dismiss", "ui", "app", &[]), flow("sign-in", "ui", "app", &[])];
+        let seams = vec![seam("checkout", "create-order")];
+        let (names, roles) = parts();
+        let found = of(&flows, &seams, &Parts { names: &names, roles: &roles });
+        let held = |id: &str, flow: &str, place: &'static str| {
+            let mut capability = capability(id, flow);
+            capability.place = Some(place);
+            capability
+        };
+        let capabilities = vec![held("place-orders", "create-order", "terminal"), held("sign-in", "sign-in", "supporting")];
+        let weighed = weights(&capabilities, found.product.iter());
+        assert_eq!(weighed.get("journey:checkout").copied(), Some("terminal"), "the app flow delivers nothing itself, but the order it hands to is terminal");
+        assert_eq!(weighed.get("journey:sign-in").copied(), Some("supporting"));
+        assert!(!weighed.contains_key("journey:dismiss"), "a journey that delivers no part capability never reaches the whole system's capabilities");
     }
 
     #[test]

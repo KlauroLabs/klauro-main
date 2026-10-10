@@ -275,7 +275,7 @@ mod tests {
             surfaces: Vec::new(),
             project: None,
             also_in: Vec::new(),
-            place: Some("core"),
+            place: Some("terminal"),
             name: Some(id.to_string()),
             description: None,
             grounding: None,
@@ -292,6 +292,7 @@ mod tests {
             keeps_through: Vec::new(),
             reads_through: Vec::new(),
             drawn_from: Vec::new(),
+            low_weight: false,
             evidence: String::new(),
         }
     }
