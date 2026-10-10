@@ -7,7 +7,7 @@ use crate::seams::Seam;
 use crate::steps::LogicalStep;
 
 static FEEDS_THE_PRODUCT: &[&str] = &["app", "website", "service", "app backend", "tool", "orchestrator"];
-pub(crate) static TOOLING: &[&str] = &["tooling", "test suite", "unused"];
+static TOOLING: &[&str] = &["tooling", "test suite", "unused"];
 
 pub struct Parts<'a> {
     pub names: &'a HashMap<String, String>,
@@ -271,33 +271,8 @@ pub fn weights<'a>(capabilities: &[crate::comprehend::Capability], journeys: imp
         .collect()
 }
 
-pub fn delivering<'a>(capabilities: &[crate::comprehend::Capability], names: &HashMap<String, String>, journeys: impl Iterator<Item = &'a Flow>) -> HashMap<String, Vec<String>> {
-    let mut named_of: HashMap<&str, Vec<String>> = HashMap::default();
-    for capability in capabilities.iter().filter(|capability| capability.level == crate::capabilities::PART) {
-        let part = capability.project.as_deref().map(|part| names.get(part).map(String::as_str).unwrap_or(part)).unwrap_or("the repository");
-        let weighed = weight_of(capability).map(|weight| weight.said()).unwrap_or_else(|| "not weighed".to_string());
-        let said = format!("{} ({part}, {weighed})", capability.name.as_deref().unwrap_or_default());
-        for delivered in capability.delivered.iter().filter(|delivered| delivered.role == "primary") {
-            named_of.entry(delivered.flow.as_str()).or_default().push(said.clone());
-        }
-    }
-    journeys
-        .map(|journey| {
-            let mut said: Vec<String> = Vec::new();
-            for member in journey.steps.iter().flat_map(|step| step.lands_in.iter()) {
-                for named in named_of.get(member.as_str()).into_iter().flatten() {
-                    if !said.contains(named) {
-                        said.push(named.clone());
-                    }
-                }
-            }
-            (journey.id.clone(), said)
-        })
-        .collect()
-}
-
 pub fn through(journey: &Flow) -> String {
-    journey.steps.iter().map(|step| step.label.as_str()).collect::<Vec<_>>().join(" → ")
+    journey.steps.iter().map(|step| step.description.as_deref().unwrap_or(&step.label)).collect::<Vec<_>>().join(" → ")
 }
 
 #[cfg(test)]
@@ -441,15 +416,14 @@ mod tests {
     }
 
     #[test]
-    fn a_journey_tells_which_part_capabilities_its_flows_deliver() {
+    fn a_journey_is_told_by_its_own_steps_not_the_names_of_the_part_flows_it_crosses() {
         let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"])];
         let (names, roles) = parts();
-        let found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles });
-        let mut take = capability("Take orders", "create-order");
-        take.project = Some("orders".to_string());
-        take.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: 0.6 });
-        let said = delivering(&[take], &names, found.product.iter());
-        assert_eq!(said.get("journey:checkout").cloned().unwrap_or_default(), ["Take orders (Orders API, 60% of its part's value)"]);
+        let mut found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles });
+        let journey = &mut found.product[0];
+        journey.steps[0].description = Some("The shopper confirms the basket".to_string());
+        journey.steps[1].description = Some("The order is recorded".to_string());
+        assert_eq!(through(journey), "The shopper confirms the basket → The order is recorded");
     }
 
     #[test]

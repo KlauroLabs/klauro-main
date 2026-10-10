@@ -5,11 +5,8 @@ use crate::comprehend::{Capability, Entity, Flow};
 
 pub(crate) struct Children<'a> {
     pub capabilities: &'a [Capability],
-    pub flows: &'a [Flow],
     pub entities: &'a [Entity],
-    pub seams: &'a [crate::seams::Seam],
     pub names: &'a HashMap<String, String>,
-    pub roles: &'a HashMap<String, &'static str>,
 }
 
 fn home(flow: &Flow) -> Option<&str> {
@@ -62,79 +59,6 @@ impl Children<'_> {
         }
         lines.join("\n    ")
     }
-
-    pub(crate) fn told(&self) -> String {
-        let mut parts: Vec<&str> = self.capabilities.iter().filter(|capability| capability.level == PART).filter_map(|capability| capability.project.as_deref()).collect();
-        parts.extend(self.flows.iter().filter_map(home));
-        parts.sort_unstable();
-        parts.dedup();
-        let mut told: Vec<String> = parts.iter().map(|part| self.of_part(part)).collect();
-        let mut seams: Vec<String> = self
-            .seams
-            .iter()
-            .map(|seam| format!("- {} hands on to {} by {} carrying {}", self.name_of(&seam.from), self.name_of(&seam.to), seam.by, seam.carries))
-            .collect();
-        seams.sort();
-        seams.dedup();
-        if !seams.is_empty() {
-            told.push(format!("How the parts hand on to each other:\n{}", seams.join("\n")));
-        }
-        told.join("\n\n")
-    }
-
-    fn of_part(&self, part: &str) -> String {
-        let role = self.roles.get(part).copied().unwrap_or("part");
-        let weight = if crate::journeys::TOOLING.contains(&role) { "low weight: it serves the people who build and run the system" } else { "full weight" };
-        let mut lines = vec![format!("Part {} ({role}, {weight})", self.name_of(part))];
-        let capabilities: Vec<&Capability> = self.capabilities.iter().filter(|capability| capability.level == PART && capability.project.as_deref() == Some(part)).collect();
-        if !capabilities.is_empty() {
-            lines.push("Its capabilities:".to_string());
-        }
-        for capability in capabilities {
-            let mut said = format!("- {} ({}): {}", capability.name.as_deref().unwrap_or_default(), weighed(capability), capability.description.as_deref().unwrap_or_default());
-            let kept: Vec<String> = capability.records.clone();
-            let read: Vec<String> = capability.touches.iter().filter(|named| !kept.contains(named)).cloned().collect();
-            if !kept.is_empty() {
-                said.push_str(&format!("; keeps {}", self.records_of(&kept)));
-            }
-            if !read.is_empty() {
-                said.push_str(&format!("; reads {}", self.records_of(&read)));
-            }
-            lines.push(said);
-        }
-        let flows: Vec<&Flow> = self.flows.iter().filter(|flow| home(flow) == Some(part)).collect();
-        if !flows.is_empty() {
-            lines.push("Its flows:".to_string());
-        }
-        for flow in flows {
-            let ties: Vec<String> = self
-                .tied(flow)
-                .into_iter()
-                .map(|(capability, role)| format!("{} {}", if role == "primary" { "delivers" } else { "supports" }, capability.name.as_deref().unwrap_or_default()))
-                .collect();
-            let mut said = format!("- {}: {}", flow.name.as_deref().unwrap_or(&flow.operation), flow.description.as_deref().unwrap_or_default());
-            if !flow.steps.is_empty() {
-                said.push_str(&format!(" | steps: {}", steps_of(flow)));
-            }
-            if !ties.is_empty() {
-                said.push_str(&format!(" | {}", ties.join("; ")));
-            }
-            lines.push(said);
-        }
-        let records: Vec<&Entity> = self.entities.iter().filter(|entity| entity.project.as_deref() == Some(part)).collect();
-        if !records.is_empty() {
-            lines.push("Its records:".to_string());
-        }
-        for entity in records {
-            lines.push(format!(
-                "- {}{}: {}",
-                entity.name.as_deref().unwrap_or(&entity.declared_as),
-                entity.standing.map(|standing| format!(" ({standing})")).unwrap_or_default(),
-                entity.description.as_deref().unwrap_or_default()
-            ));
-        }
-        lines.join("\n")
-    }
 }
 
 #[cfg(test)]
@@ -147,32 +71,22 @@ mod tests {
     }
 
     #[test]
-    fn every_child_is_told_with_its_whole_layer_and_its_weight() {
+    fn a_part_flow_is_told_with_its_steps_what_it_delivers_and_what_it_keeps() {
         let mut checkout = flow("checkout", "subproject:shop", "shop/Checkout.cs:function:Pay");
         checkout.name = Some("Pay for an order".to_string());
         checkout.description = Some("The order is paid.".to_string());
         checkout.steps = vec![step("s1", "Check the basket"), step("s2", "Charge the card")];
         checkout.writes = vec!["Order".to_string()];
-        let mut pay = capability("capability:shop:place-orders", "subproject:shop", &[("checkout", "primary")], &["Order"], &["Order", "Product"], &[]);
+        let mut pay = capability("capability:shop:place-orders", "subproject:shop", &[("checkout", "primary")], &["Order"], &["Order"], &[]);
         pay.name = Some("Place orders".to_string());
         pay.description = Some("Shoppers buy what is in their basket.".to_string());
         pay.value = Some(crate::value::Value { own: 1.0, centrality: 1.0, position: 1.0, impact: 1.0, share: 0.6 });
-        let mut order = entity("Order", "subproject:shop");
-        order.description = Some("What a shopper bought.".to_string());
-        let names = HashMap::from_iter([("subproject:shop".to_string(), "Shop".to_string()), ("subproject:tests".to_string(), "Tests".to_string())]);
-        let roles = HashMap::from_iter([("subproject:shop".to_string(), "app"), ("subproject:tests".to_string(), "test suite")]);
-        let checked = flow("check", "subproject:tests", "tests/Check.cs:function:Run");
-        let flows = vec![checkout, checked];
-        let children = Children { capabilities: &[pay], flows: &flows, entities: &[order], seams: &[], names: &names, roles: &roles };
-        let told = children.told();
-        assert!(told.contains("Part Shop (app, full weight)"), "{told}");
-        assert!(told.contains("- Place orders (60% of its part's value): Shoppers buy what is in their basket.; keeps Order; reads Product"), "{told}");
-        assert!(told.contains("- Pay for an order: The order is paid. | steps: Check the basket; Charge the card | delivers Place orders"), "{told}");
-        assert!(told.contains("- Order: What a shopper bought."), "{told}");
-        assert!(told.contains("Part Tests (test suite, low weight"), "{told}");
-        let one = children.of_flow(&flows[0]);
-        assert!(one.contains("its steps: Check the basket; Charge the card"), "{one}");
-        assert!(one.contains("it delivers the part's capability Place orders (60% of its part's value)"), "{one}");
-        assert!(one.contains("it keeps: Order"), "{one}");
+        let names = HashMap::from_iter([("subproject:shop".to_string(), "Shop".to_string())]);
+        let children = Children { capabilities: &[pay], entities: &[entity("Order", "subproject:shop")], names: &names };
+        let told = children.of_flow(&checkout);
+        assert!(told.starts_with("Pay for an order (Shop): The order is paid."), "{told}");
+        assert!(told.contains("its steps: Check the basket; Charge the card"), "{told}");
+        assert!(told.contains("it delivers the part's capability Place orders (60% of its part's value): Shoppers buy what is in their basket."), "{told}");
+        assert!(told.contains("it keeps: Order"), "{told}");
     }
 }
