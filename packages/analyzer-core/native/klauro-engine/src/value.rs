@@ -59,8 +59,8 @@ pub(crate) fn centrality_of(closer: &BTreeMap<(usize, usize), f64>, count: usize
         .collect()
 }
 
-pub(crate) fn supporting(value: &Value) -> bool {
-    value.own < GIVES_ON_ITS_OWN
+pub(crate) fn supporting(decided: f64, judged: bool) -> bool {
+    decided < GIVES_ON_ITS_OWN && !judged
 }
 
 pub(crate) fn valued(own: &[f64], centrality: &[f64], position: &[f64]) -> Vec<Value> {
@@ -131,12 +131,12 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
         Some("second") => 0.0,
         _ => 0.5,
     }));
-    let own: Vec<f64> = (0..count)
-        .map(|at| (decided.get(&format!("own_{at}")).and_then(|decision| decision.noul).unwrap_or(0.0) + if judged[at] == Some(true) { 1.0 } else { 0.0 }) / 2.0)
-        .collect();
+    let gives: Vec<f64> = (0..count).map(|at| decided.get(&format!("own_{at}")).and_then(|decision| decision.noul).unwrap_or(0.0)).collect();
+    let judged: Vec<bool> = judged.into_iter().map(|answer| answer == Some(true)).collect();
+    let own: Vec<f64> = (0..count).map(|at| (gives[at] + if judged[at] { 1.0 } else { 0.0 }) / 2.0).collect();
     let values = valued(&own, &centrality_of(&closer, count), &position_of(&before, count));
-    for (capability, value) in capabilities.iter_mut().zip(values) {
-        capability.supporting = supporting(&value);
+    for (at, (capability, value)) in capabilities.iter_mut().zip(values).enumerate() {
+        capability.supporting = supporting(gives[at], judged[at]);
         capability.value = Some(Value { own: rounded(value.own), centrality: rounded(value.centrality), position: rounded(value.position), impact: rounded(value.impact), share: rounded(value.share) });
     }
 }
@@ -169,10 +169,11 @@ mod tests {
     }
 
     #[test]
-    fn what_gives_nothing_on_its_own_is_supporting_and_nothing_else_is_ranked_by_a_label() {
-        let values = valued(&[0.2, 0.9], &[0.5, 0.5], &[0.5, 0.5]);
-        assert!(supporting(&values[0]));
-        assert!(!supporting(&values[1]));
+    fn a_capability_is_supporting_only_when_both_judges_find_it_gives_nothing_on_its_own() {
+        assert!(supporting(0.2, false));
+        assert!(!supporting(0.2, true), "one judge finding a result of its own keeps the capability");
+        assert!(!supporting(0.7, false), "one judge finding a result of its own keeps the capability");
+        assert!(!supporting(0.9, true));
     }
 
     #[test]
