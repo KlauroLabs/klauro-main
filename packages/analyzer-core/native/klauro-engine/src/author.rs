@@ -507,43 +507,6 @@ pub(crate) fn what_is_wrong_with_purposes(answer: &serde_json::Value, behaviours
 
 const PURPOSES_ASKED_AT_MOST: usize = 3;
 
-pub const WHOLE_CAPABILITY_ASKED: &str = "The capabilities listed below come from the parts of one software system and were judged to be one purpose of the system as a whole. \
-Name the capability of the whole system they are together: the outcome the listed capabilities give, never a broader one and never the purpose of the whole system. \
-Use plain, grammatical words a product manager would use, starting with a verb followed by its object in at most six words, in sentence case, never code names or the names of parts. \
-Say its outcome in one sentence, and say in a few words who comes for it.";
-const WHOLE_CAPABILITY_ASKED_AT_MOST: usize = 3;
-const WORDS_IN_A_NAME: usize = 6;
-
-pub fn whole_capability_of(prompt: &str) -> Option<serde_json::Value> {
-    if !asked() {
-        return None;
-    }
-    let mut correction = String::new();
-    for _ in 0..WHOLE_CAPABILITY_ASKED_AT_MOST {
-        let asked = format!("{prompt}\n\n{WHOLE_CAPABILITY_ASKED}\n\n{correction}Return JSON only: {{\"name\":\"...\",\"outcome\":\"...\",\"audience\":\"...\"}}");
-        let Some(answer) = answered::<serde_json::Value>(&asked, 300, &proposing(), "name", 1, DESCRIBING_ASK) else { continue };
-        match what_is_wrong_with_a_whole_capability(&answer) {
-            None => return Some(answer),
-            Some(wrong) => correction = format!("A previous answer was refused: {wrong}. Answer again, following the rules.\n\n"),
-        }
-    }
-    None
-}
-
-pub fn what_is_wrong_with_a_whole_capability(answer: &serde_json::Value) -> Option<String> {
-    let name = answer["name"].as_str().unwrap_or_default().trim();
-    if name.is_empty() {
-        return Some("it gave no name".to_string());
-    }
-    if name.split_whitespace().count() > WORDS_IN_A_NAME {
-        return Some(format!("the name {name} is longer than {WORDS_IN_A_NAME} words"));
-    }
-    if answer["outcome"].as_str().unwrap_or_default().trim().is_empty() {
-        return Some(format!("{name} has no outcome"));
-    }
-    None
-}
-
 pub const RECORDS_ASKED: &str = "These are the kinds of records one part of a software system keeps in storage, each with some of its fields, the records it is made of, and the flows that use it. \
 For each record decide who it is kept for. \
 about: the system exists to keep it for its users. Users create, own, ask for, pay, receive or are told about it, choose from it (kinds, categories, brands), or link it from another service; movements of money or goods and the plans behind them are always about. \
@@ -928,11 +891,6 @@ fn shaped(of: &str) -> serde_json::Value {
             "type": "object",
             "properties": {"gives": {"type": "boolean"}},
             "required": ["gives"],
-        }),
-        "name" => serde_json::json!({
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "outcome": {"type": "string"}, "audience": {"type": "string"}},
-            "required": ["name", "outcome", "audience"],
         }),
         _ => serde_json::json!({
             "type": "object",

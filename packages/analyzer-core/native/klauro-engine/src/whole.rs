@@ -96,6 +96,7 @@ pub fn compose(held: &mut Comprehension, parts: &Parts) {
         .filter(|service| !service.projects.is_empty())
         .map(|service| WholeExternal { id: service.id.clone(), name: service.name.clone(), kind: service.kind, used_by: service.projects.clone() })
         .collect();
+    drawn_from(held, &whole.flows);
     tie_records(held, &mut whole.entities);
     held.whole = Some(whole);
 }
@@ -173,6 +174,40 @@ fn connections_of(held: &Comprehension) -> Vec<Connection> {
         }
     }
     joined.into_values().collect()
+}
+
+fn drawn_from(held: &mut Comprehension, journeys: &[Flow]) {
+    let ties_of: HashMap<&str, Vec<String>> = held
+        .flows
+        .iter()
+        .map(|flow| (flow.id.as_str(), flow.capabilities.iter().filter(|tie| tie.role == "delivers").map(|tie| tie.capability.clone()).collect()))
+        .collect();
+    let members_of: HashMap<&str, Vec<&str>> = journeys
+        .iter()
+        .map(|journey| (journey.id.as_str(), journey.steps.iter().flat_map(|step| step.lands_in.iter().map(String::as_str)).collect()))
+        .collect();
+    let found: Vec<Vec<String>> = held
+        .capabilities
+        .iter()
+        .map(|capability| {
+            if capability.level != crate::capabilities::WHOLE {
+                return Vec::new();
+            }
+            let mut from: Vec<String> = capability
+                .delivered
+                .iter()
+                .filter(|delivered| delivered.role == "primary")
+                .flat_map(|delivered| members_of.get(delivered.flow.as_str()).into_iter().flatten())
+                .flat_map(|member| ties_of.get(member).into_iter().flatten().cloned())
+                .collect();
+            from.sort();
+            from.dedup();
+            from
+        })
+        .collect();
+    for (capability, from) in held.capabilities.iter_mut().zip(found) {
+        capability.drawn_from = from;
+    }
 }
 
 fn tie_records(held: &mut Comprehension, entities: &mut [WholeEntity]) {
@@ -333,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_capability_keeps_the_whole_systems_own_record_which_points_at_the_parts() {
+    fn a_whole_capability_links_down_to_the_part_capabilities_of_the_flows_its_journeys_cross() {
         let mut part = capability("capability:orders:take-orders", crate::capabilities::PART, &["create-order"], &[]);
         part.project = Some("orders".to_string());
         let whole = capability("capability:whole:buy-books", crate::capabilities::WHOLE, &["journey:checkout"], &["Order"]);
@@ -348,6 +383,13 @@ mod tests {
         let roles = HashMap::default();
         let summaries = HashMap::default();
         compose(&mut held, &Parts { names: &names, roles: &roles, summaries: &summaries, architecture: None, services: &[] });
+        assert_eq!(held.capabilities[1].drawn_from, ["capability:orders:take-orders"]);
+        let mut supported = capability("capability:whole:sign-in", crate::capabilities::WHOLE, &[], &[]);
+        supported.delivered.push(Delivery { flow: "journey:checkout".to_string(), role: "supporting", rationale: String::new(), unshipped: None });
+        held.capabilities.push(supported);
+        let journeys = held.whole.as_ref().unwrap().flows.clone();
+        drawn_from(&mut held, &journeys);
+        assert!(held.capabilities[2].drawn_from.is_empty(), "a capability is drawn only from the journeys that deliver it");
         assert_eq!(held.capabilities[1].keeps, ["entity:whole:Order"], "the whole system keeps its own record, which points at the part's");
         let whole = held.whole.as_ref().unwrap();
         assert_eq!(whole.entities[0].capabilities[0].capability, "capability:whole:buy-books");
