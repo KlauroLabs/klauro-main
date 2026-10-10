@@ -217,9 +217,9 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .filter(|(_, group)| journeys && group.first().is_some_and(|flow| weights.get(&flow.id).copied() == Some("supporting")))
         .map(|(at, _)| at + 1)
         .collect();
-    let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count, &supporting_only, journeys).is_none();
+    let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count).is_none();
     let answered = crate::memory::each_holding("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], holds, |missing| {
-        crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count, &supporting_only, journeys).map(|held| (key.clone(), held))).collect())
+        crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count).map(|held| (key.clone(), held))).collect())
     });
     let Some(answer) = answered.get(&key) else {
         return OfAPart {
@@ -232,6 +232,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         eprintln!("answered[{remembered_as}]: {answer}");
     }
     let purposes: Purposes = serde_json::from_value(answer.clone()).unwrap_or_default();
+    let purposes = if journeys { without_substrate(purposes, &supporting_only) } else { purposes };
     let capabilities = formed(purposes, part, &groups, &lines, surface_only);
     OfAPart {
         state: PartState {
@@ -241,6 +242,15 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         capabilities,
         pending: BTreeSet::new(),
     }
+}
+
+fn without_substrate(mut purposes: Purposes, supporting_only: &BTreeSet<usize>) -> Purposes {
+    purposes.purposes.retain(|purpose| {
+        let supporting = purpose.place.trim() == "supporting";
+        let built_on_support = !purpose.behaviours.is_empty() && purpose.behaviours.iter().all(|number| supporting_only.contains(number));
+        !supporting && !built_on_support
+    });
+    purposes
 }
 
 fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: &[String], surface_only: bool) -> Vec<Capability> {
@@ -450,6 +460,16 @@ mod tests {
         assert!(capabilities.is_empty());
     }
 
+
+    #[test]
+    fn supporting_work_is_absent_from_the_whole_system_and_the_rest_stands() {
+        let mut sign_in = purpose("Sign in", &[2], &[]);
+        sign_in.place = "supporting".to_string();
+        let built_on_support = purpose("Manage sessions", &[3], &[]);
+        let kept = purpose("Place orders", &[1], &[2]);
+        let left = without_substrate(Purposes { purposes: vec![sign_in, built_on_support, kept] }, &BTreeSet::from([3]));
+        assert_eq!(left.purposes.iter().map(|purpose| purpose.name.as_str()).collect::<Vec<_>>(), ["Place orders"]);
+    }
 
     #[test]
     fn a_part_that_holds_nothing_and_offers_nothing_has_no_capabilities() {
