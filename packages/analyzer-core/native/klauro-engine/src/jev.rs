@@ -73,6 +73,8 @@ pub struct Decision {
     pub noul: Option<f64>,
     #[serde(default)]
     pub confidence: Option<f64>,
+    #[serde(default)]
+    pub probabilities: Option<BTreeMap<String, f64>>,
 }
 
 impl Decision {

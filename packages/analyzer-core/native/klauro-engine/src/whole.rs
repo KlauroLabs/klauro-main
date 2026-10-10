@@ -293,6 +293,7 @@ mod tests {
             reads_through: Vec::new(),
             drawn_from: Vec::new(),
             low_weight: false,
+            value: None,
             evidence: String::new(),
         }
     }

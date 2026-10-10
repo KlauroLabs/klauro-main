@@ -212,6 +212,8 @@ pub struct Capability {
     pub drawn_from: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub low_weight: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<crate::value::Value>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -1342,6 +1344,8 @@ pub fn author(
                     let same = crate::capabilities::which_are_the_same(&found, &said);
                     crate::capabilities::merge_the_same(&mut found, same);
                     crate::author::mark(&format!("{label} merged"));
+                    crate::value::weigh(&mut found, &said);
+                    crate::author::mark(&format!("{label} weighed"));
                     if let (true, Some(named)) = (several, part.as_deref())
                         && !found.is_empty()
                     {
@@ -1436,6 +1440,10 @@ pub fn author(
                     },
                 );
                 crate::capabilities::merge_the_same(&mut whole, same);
+                crate::value::weigh(&mut whole, &said);
+                whole.retain(|capability| capability.place != Some("supporting"));
+                let mut tooling = tooling;
+                crate::value::weigh(&mut tooling, &said);
                 capabilities.extend(whole);
                 capabilities.extend(tooling);
                 capabilities.sort_by(|left, right| left.id.cmp(&right.id));
@@ -4583,6 +4591,7 @@ mod tests {
             reads_through: Vec::new(),
             drawn_from: Vec::new(),
             low_weight: false,
+            value: None,
             evidence: String::new(),
         }
     }

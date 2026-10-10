@@ -91,6 +91,7 @@ mod seams;
 mod journeys;
 mod whole;
 mod ties;
+mod value;
 mod sdk;
 mod shared;
 mod service_catalog;

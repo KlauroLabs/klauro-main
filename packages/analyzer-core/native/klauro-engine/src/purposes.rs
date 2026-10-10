@@ -19,8 +19,6 @@ pub struct Purpose {
     #[serde(default)]
     pub outcome: String,
     #[serde(default)]
-    pub place: String,
-    #[serde(default)]
     pub behaviours: Vec<usize>,
     #[serde(default)]
     pub supporting: Vec<usize>,
@@ -247,11 +245,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
 }
 
 fn without_substrate(mut purposes: Purposes, supporting_only: &BTreeSet<usize>) -> Purposes {
-    purposes.purposes.retain(|purpose| {
-        let supporting = purpose.place.trim() == "supporting";
-        let built_on_support = !purpose.behaviours.is_empty() && purpose.behaviours.iter().all(|number| supporting_only.contains(number));
-        !supporting && !built_on_support
-    });
+    purposes.purposes.retain(|purpose| purpose.behaviours.is_empty() || !purpose.behaviours.iter().all(|number| supporting_only.contains(number)));
     purposes
 }
 
@@ -273,7 +267,7 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             surfaces: Vec::new(),
             project: project.clone(),
             also_in: Vec::new(),
-            place: crate::author::PLACES.iter().copied().find(|place| *place == purpose.place.trim()),
+            place: None,
             name: Some(name),
             description: Some(purpose.outcome.trim().to_string()).filter(|outcome| !outcome.is_empty()),
             grounding: None,
@@ -291,6 +285,7 @@ fn formed(purposes: Purposes, part: Option<&str>, groups: &[Vec<&Flow>], lines: 
             reads_through: Vec::new(),
             drawn_from: Vec::new(),
             low_weight: false,
+            value: None,
             evidence: String::new(),
         };
         let mut primaries = 0usize;
@@ -386,7 +381,7 @@ mod tests {
     }
 
     fn purpose(name: &str, behaviours: &[usize], supporting: &[usize]) -> Purpose {
-        Purpose { name: name.to_string(), outcome: String::new(), place: "terminal".to_string(), behaviours: behaviours.to_vec(), supporting: supporting.to_vec() }
+        Purpose { name: name.to_string(), outcome: String::new(), behaviours: behaviours.to_vec(), supporting: supporting.to_vec() }
     }
 
 
@@ -464,12 +459,10 @@ mod tests {
 
 
     #[test]
-    fn supporting_work_is_absent_from_the_whole_system_and_the_rest_stands() {
-        let mut sign_in = purpose("Sign in", &[2], &[]);
-        sign_in.place = "supporting".to_string();
+    fn a_whole_capability_built_only_on_supporting_journeys_is_absent_and_the_rest_stands() {
         let built_on_support = purpose("Manage sessions", &[3], &[]);
         let kept = purpose("Place orders", &[1], &[2]);
-        let left = without_substrate(Purposes { purposes: vec![sign_in, built_on_support, kept] }, &BTreeSet::from([3]));
+        let left = without_substrate(Purposes { purposes: vec![built_on_support, kept] }, &BTreeSet::from([3]));
         assert_eq!(left.purposes.iter().map(|purpose| purpose.name.as_str()).collect::<Vec<_>>(), ["Place orders"]);
     }
 
