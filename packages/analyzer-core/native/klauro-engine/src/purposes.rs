@@ -218,7 +218,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .map(|(at, _)| at + 1)
         .collect();
     let answered = crate::memory::each("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], |missing| {
-        crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count, &supporting_only).map(|held| (key.clone(), held))).collect())
+        crate::author::asking(|| missing.iter().filter_map(|(key, prompt)| crate::author::purposes_of(prompt, count, &supporting_only, journeys).map(|held| (key.clone(), held))).collect())
     });
     let Some(answer) = answered.get(&key) else {
         return OfAPart {
