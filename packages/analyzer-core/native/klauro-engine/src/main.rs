@@ -9,6 +9,7 @@ mod arms;
 mod builtins;
 mod callbacks;
 mod capabilities;
+mod child_layers;
 mod ci;
 mod audit;
 mod author;

@@ -233,11 +233,11 @@ pub(crate) fn depended_on(ties: &[Held], share_of: &HashMap<&str, f64>) -> Optio
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::comprehend::{Capability, Delivery, Entity, Flow, Step};
 
-    fn flow(id: &str, part: &str, start: &str) -> Flow {
+    pub(crate) fn flow(id: &str, part: &str, start: &str) -> Flow {
         Flow {
             summary: String::new(),
             writes: Vec::new(),
@@ -276,7 +276,7 @@ mod tests {
         }
     }
 
-    fn capability(id: &str, part: &str, delivered: &[(&str, &'static str)], records: &[&str], touches: &[&str], offers: &[&str]) -> Capability {
+    pub(crate) fn capability(id: &str, part: &str, delivered: &[(&str, &'static str)], records: &[&str], touches: &[&str], offers: &[&str]) -> Capability {
         Capability {
             id: id.to_string(),
             audience: None,
@@ -310,7 +310,7 @@ mod tests {
         }
     }
 
-    fn entity(declared_as: &str, part: &str) -> Entity {
+    pub(crate) fn entity(declared_as: &str, part: &str) -> Entity {
         Entity {
             id: format!("entity:{part}:{declared_as}"),
             declared_as: declared_as.to_string(),

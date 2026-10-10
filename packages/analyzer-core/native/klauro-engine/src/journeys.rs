@@ -7,7 +7,7 @@ use crate::seams::Seam;
 use crate::steps::LogicalStep;
 
 static FEEDS_THE_PRODUCT: &[&str] = &["app", "website", "service", "app backend", "tool", "orchestrator"];
-static TOOLING: &[&str] = &["tooling", "test suite", "unused"];
+pub(crate) static TOOLING: &[&str] = &["tooling", "test suite", "unused"];
 
 pub struct Parts<'a> {
     pub names: &'a HashMap<String, String>,
@@ -125,25 +125,25 @@ fn journey_of(flows: &[Flow], chain: &[(usize, Option<&Seam>)], parts: &Parts) -
     journey
 }
 
-fn told(journey: &Flow, opening: &str, outcome_of: &HashMap<&str, &str>) -> String {
+fn told(journey: &Flow, opening: &str, flows: &HashMap<&str, &Flow>, children: &crate::child_layers::Children) -> String {
     let mut lines = Vec::new();
     if !opening.is_empty() {
         lines.push(format!("The system describes itself: {opening}"));
     }
     lines.push(format!("Reached through: {} {}", journey.kind, journey.surface.as_deref().unwrap_or(&journey.operation)));
     for step in &journey.steps {
-        let outcome = step.lands_in.first().and_then(|member| outcome_of.get(member.as_str())).map(|said| format!(" — {said}")).unwrap_or_default();
-        lines.push(format!("{}: {}{outcome}", step.id, step.label));
+        let layer = step.lands_in.first().and_then(|member| flows.get(member.as_str())).map(|flow| format!("\n    the part's flow here: {}", children.of_flow(flow))).unwrap_or_default();
+        lines.push(format!("{}: {}{layer}", step.id, step.label));
     }
     format!("{}\n\n{}", lines.join("\n"), crate::author::JOURNEY_ASKED)
 }
 
-pub fn named(journeys: &mut [Flow], flows: &[Flow], opening: &str) {
-    let outcome_of: HashMap<&str, &str> = flows.iter().filter_map(|flow| Some((flow.id.as_str(), flow.description.as_deref()?))).collect();
+pub fn named(journeys: &mut [Flow], flows: &[Flow], opening: &str, children: &crate::child_layers::Children) {
+    let by_id: HashMap<&str, &Flow> = flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
     let asking: Vec<(String, String)> = journeys
         .iter()
         .filter(|journey| journey.steps.len() > 1)
-        .map(|journey| (journey.id.clone(), told(journey, opening, &outcome_of)))
+        .map(|journey| (journey.id.clone(), told(journey, opening, &by_id, children)))
         .collect();
     let steps_of: HashMap<String, Vec<String>> = journeys.iter().map(|journey| (journey.id.clone(), journey.steps.iter().map(|step| step.id.clone()).collect())).collect();
     let holds = |id: &str, answer: &serde_json::Value| {
@@ -242,7 +242,7 @@ impl Weight {
     }
 }
 
-fn weight_of(capability: &crate::comprehend::Capability) -> Option<Weight> {
+pub(crate) fn weight_of(capability: &crate::comprehend::Capability) -> Option<Weight> {
     match (capability.supporting, capability.value.as_ref()) {
         (true, _) => Some(Weight::Supporting),
         (false, Some(value)) => Some(Weight::Valued(value.share)),
