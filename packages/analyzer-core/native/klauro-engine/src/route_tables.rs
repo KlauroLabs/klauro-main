@@ -6,6 +6,7 @@ use crate::model::RegistrationFact;
 static VERBS: &[&str] = &["delete", "get", "head", "options", "patch", "post", "put"];
 const MOUNT: &str = "sub";
 const NESTED_AT_MOST: usize = 32;
+const PREFIXES_AT_MOST: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RouteTable {
@@ -89,14 +90,41 @@ fn joined(base: &str, path: &str) -> String {
     }
 }
 
-fn prefixes(table: &str, mounted_by: &HashMap<&str, Vec<(&str, &str)>>, depth: usize) -> Vec<String> {
-    match mounted_by.get(table) {
-        Some(parents) if depth < NESTED_AT_MOST => parents
-            .iter()
-            .flat_map(|(parent, base)| prefixes(parent, mounted_by, depth + 1).into_iter().map(move |prefix| joined(&prefix, base)))
-            .collect(),
-        _ => vec![String::new()],
+fn prefixes<'a>(
+    table: &'a str,
+    mounted_by: &HashMap<&'a str, Vec<(&'a str, &'a str)>>,
+    known: &mut HashMap<&'a str, Vec<String>>,
+    resolving: &mut Vec<&'a str>,
+) -> Vec<String> {
+    if let Some(held) = known.get(table) {
+        return held.clone();
     }
+    let Some(parents) = mounted_by.get(table).filter(|_| resolving.len() < NESTED_AT_MOST) else {
+        return vec![String::new()];
+    };
+    resolving.push(table);
+    let mut found: Vec<String> = Vec::new();
+    for (parent, base) in parents {
+        if resolving.contains(parent) {
+            continue;
+        }
+        for prefix in prefixes(parent, mounted_by, known, resolving) {
+            let at = joined(&prefix, base);
+            if !found.contains(&at) {
+                found.push(at);
+            }
+        }
+    }
+    resolving.pop();
+    if found.len() > PREFIXES_AT_MOST {
+        eprintln!("  route table {table} is mounted under {} paths; {PREFIXES_AT_MOST} are kept", found.len());
+        found.truncate(PREFIXES_AT_MOST);
+    }
+    if found.is_empty() {
+        found.push(String::new());
+    }
+    known.insert(table, found.clone());
+    found
 }
 
 pub fn composed(tables: &[RouteTable]) -> Vec<RegistrationFact> {
@@ -106,9 +134,10 @@ pub fn composed(tables: &[RouteTable]) -> Vec<RegistrationFact> {
             mounted_by.entry(child.as_str()).or_default().push((table.table.as_str(), base.as_str()));
         }
     }
+    let mut known: HashMap<&str, Vec<String>> = HashMap::default();
     let mut registered = Vec::new();
     for table in tables {
-        for prefix in prefixes(&table.table, &mounted_by, 0) {
+        for prefix in prefixes(&table.table, &mounted_by, &mut known, &mut Vec::new()) {
             for (verb, path, handler) in &table.routes {
                 registered.push(RegistrationFact {
                     file: table.file,
@@ -141,6 +170,22 @@ mod tests {
         let keys = RouteTable { file: 1, line: 3, table: "KeyApi".into(), routes: vec![("GET".into(), "".into(), "list_keys".into()), ("GET".into(), "/{key}".into(), "get_key".into())], mounts: Vec::new() };
         let labels: Vec<String> = composed(&[root, keys]).into_iter().map(|held| held.label).collect();
         assert_eq!(labels, ["GET /health", "GET /keys", "GET /keys/{key}"]);
+    }
+
+    #[test]
+    fn tables_that_mount_each_other_in_a_ring_or_many_times_over_compose_in_bounded_work() {
+        let ring = vec![
+            RouteTable { file: 0, line: 1, table: "A".into(), routes: vec![("GET".into(), "/a".into(), "a".into())], mounts: vec![("/b".into(), "B".into())] },
+            RouteTable { file: 0, line: 2, table: "B".into(), routes: vec![("GET".into(), "/b".into(), "b".into())], mounts: vec![("/a".into(), "A".into())] },
+        ];
+        assert!(composed(&ring).len() <= 4);
+        let mut doubling: Vec<RouteTable> = (0..40)
+            .map(|at| RouteTable { file: 0, line: at, table: format!("T{at}"), routes: Vec::new(), mounts: vec![("/x".into(), format!("T{}", at + 1)), ("/y".into(), format!("T{}", at + 1))] })
+            .collect();
+        doubling.push(RouteTable { file: 0, line: 99, table: "T40".into(), routes: vec![("GET".into(), "".into(), "leaf".into())], mounts: Vec::new() });
+        let started = std::time::Instant::now();
+        let composed = composed(&doubling);
+        assert!(composed.len() <= PREFIXES_AT_MOST && started.elapsed() < std::time::Duration::from_secs(2), "{}", composed.len());
     }
 
     #[test]
