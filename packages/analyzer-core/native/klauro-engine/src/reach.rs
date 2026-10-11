@@ -149,6 +149,9 @@ pub fn asking(endpoint: &str, key: &str, request: &str, urgency: u64) -> Answer 
     };
     if leading {
         let answer = sent(endpoint, key, request, urgency);
+        if let Answer::Held(text) = &answer {
+            crate::spend::charge(endpoint, text);
+        }
         if let Ok(mut held) = flight.answer.lock() {
             *held = Some(answer.clone());
         }

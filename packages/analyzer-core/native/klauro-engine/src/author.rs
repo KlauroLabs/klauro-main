@@ -155,6 +155,7 @@ pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
         && std::env::var("KLAURO_AI_INTERPRETATION").map(|held| held != "false").unwrap_or(true)
         && (spoken_to().is_some() || addressed().is_some() || key().is_some())
+        && !crate::spend::exhausted()
 }
 
 fn addressed() -> Option<String> {
@@ -485,6 +486,18 @@ A behaviour marked not shipped (a build, release, benchmark or development tool)
 Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services. \
 Every capability lists at least one behaviour number it delivers, and every entry in behaviours and supporting is a listed number.";
 
+pub const CAPABILITIES_NAMED: &str = "Each numbered line is a group of things people can do with this part of a software system, found together in its code. \
+Name each group as one capability: a short phrase a product manager would use, starting with a verb followed by its object in at most six words, saying the outcome people get, in plain words, never code names, never a vendor, protocol or library. \
+Say that outcome in one sentence. Answer every line by its number.";
+
+pub fn capabilities_named(prompt: &str, groups: usize) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    let asked = format!("{prompt}\n\n{CAPABILITIES_NAMED}\n\nReturn JSON only: {{\"named\":[{{\"n\":1,\"name\":\"...\",\"outcome\":\"...\"}}]}}");
+    answered::<serde_json::Value>(&asked, 200 + 60 * groups as u32, &proposing(), "named", groups, DESCRIBING_ASK)
+}
+
 fn numbered_from_one_to(behaviours: usize) -> String {
     match behaviours {
         1 => "There is one numbered behaviour above, number 1: the capability lists it, so this part has exactly one capability.".to_string(),
@@ -645,12 +658,33 @@ pub(crate) fn what_is_wrong_with_behaviours(answer: &serde_json::Value, steps: &
     }
 }
 
-pub fn gives_on_its_own(said: &str, question: &str, gives: &str, only_enables: &str) -> Option<bool> {
+const JUDGED_PER_ASK: usize = 40;
+
+pub fn give_on_their_own(said: &str, listed: &[(String, String)], question: &str, gives: &str, only_enables: &str) -> Vec<Option<bool>> {
     if !asked() {
-        return None;
+        return vec![None; listed.len()];
     }
-    let asked = format!("{said}\n\n{question}\nAnswer true if {gives}, false if {only_enables}.\n\nReturn JSON only: {{\"gives\":true}}");
-    answered::<serde_json::Value>(&asked, 60, &proposing(), "gives", 1, DESCRIBING_ASK).and_then(|answer| answer["gives"].as_bool())
+    let chunks: Vec<&[(String, String)]> = listed.chunks(JUDGED_PER_ASK).collect();
+    let answered_chunks: Vec<Vec<Option<bool>>> = asking(|| {
+        chunks
+            .par_iter()
+            .map(|chunk| {
+                let numbered: Vec<String> = chunk.iter().enumerate().map(|(at, (name, outcome))| format!("{}. {name}: {outcome}", at + 1)).collect();
+                let asked = format!("{said}\n\nCapabilities:\n{}\n\nFor each numbered capability: {question}\nAnswer true if {gives}, false if {only_enables}. Answer every number.\n\nReturn JSON only: {{\"gave\":[{{\"n\":1,\"gives\":true}}]}}", numbered.join("\n"));
+                let answer = answered::<serde_json::Value>(&asked, 40 + 16 * chunk.len() as u32, &proposing(), "gave", chunk.len(), DESCRIBING_ASK);
+                let mut held = vec![None; chunk.len()];
+                for given in answer.as_ref().and_then(|answer| answer["gave"].as_array()).into_iter().flatten() {
+                    if let (Some(number), Some(gave)) = (given["n"].as_u64(), given["gives"].as_bool())
+                        && let Some(slot) = (number as usize).checked_sub(1).and_then(|at| held.get_mut(at))
+                    {
+                        *slot = Some(gave);
+                    }
+                }
+                held
+            })
+            .collect()
+    });
+    answered_chunks.into_iter().flatten().collect()
 }
 
 pub fn same_behaviours(prompt: &str) -> Option<serde_json::Value> {
@@ -906,6 +940,11 @@ fn shaped(of: &str) -> serde_json::Value {
             }, "required": ["name", "outcome", "behaviours"]}}},
             "required": ["purposes"],
         }),
+        "named" => serde_json::json!({
+            "type": "object",
+            "properties": {"named": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "name": text, "outcome": text}, "required": ["n", "name", "outcome"]}}},
+            "required": ["named"],
+        }),
         "kinds" => serde_json::json!({
             "type": "object",
             "properties": {"kinds": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "kind": {"type": "string", "enum": ["about", "bookkeeping"]}}, "required": ["n", "kind"]}}},
@@ -916,10 +955,10 @@ fn shaped(of: &str) -> serde_json::Value {
             "properties": {"together": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}},
             "required": ["together"],
         }),
-        "gives" => serde_json::json!({
+        "gave" => serde_json::json!({
             "type": "object",
-            "properties": {"gives": {"type": "boolean"}},
-            "required": ["gives"],
+            "properties": {"gave": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "gives": {"type": "boolean"}}, "required": ["n", "gives"]}}},
+            "required": ["gave"],
         }),
         _ => serde_json::json!({
             "type": "object",
@@ -961,6 +1000,7 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
         }),
     };
     if endpoint().contains("openrouter.ai") {
+        held["usage"] = serde_json::json!({"include": true});
         held["reasoning"] = match std::env::var("KLAURO_AUTHOR_REASONING").ok().filter(|effort| !effort.is_empty() && effort != "none") {
             Some(effort) => serde_json::json!({"effort": effort}),
             None => serde_json::json!({"enabled": false}),
@@ -1292,7 +1332,7 @@ mod shapes {
             .filter_map(|(at, found)| source[at + found.len()..].split('"').next())
             .filter(|key| !key.is_empty() && *key != "description")
             .collect();
-        assert!(asked.contains("purposes") && asked.contains("gives"), "{asked:?}");
+        assert!(asked.contains("purposes") && asked.contains("gave"), "{asked:?}");
         for key in asked {
             let shape = super::shaped(key);
             let required = shape["required"].as_array().cloned().unwrap_or_default();

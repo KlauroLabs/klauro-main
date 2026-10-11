@@ -190,6 +190,7 @@ fn reached_by(capability: &Capability) -> String {
 
 pub(crate) fn the_same_among(
     listed: &[(String, String)],
+    near: impl Fn(usize, usize) -> bool,
     decide: impl Fn(&[(usize, usize)]) -> BTreeMap<(usize, usize), f64>,
 ) -> Vec<Joined> {
     let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -204,7 +205,7 @@ pub(crate) fn the_same_among(
     let mut clusters: Vec<Vec<usize>> = by_name.into_values().chain(unnamed).collect();
     clusters.sort();
     let shown: Vec<usize> = clusters.iter().map(|members| members[0]).collect();
-    let pairs: Vec<(usize, usize)> = (0..shown.len()).flat_map(|first| (first + 1..shown.len()).map(move |second| (first, second))).map(|(first, second)| (shown[first], shown[second])).collect();
+    let pairs: Vec<(usize, usize)> = (0..shown.len()).flat_map(|first| (first + 1..shown.len()).map(move |second| (first, second))).map(|(first, second)| (shown[first], shown[second])).filter(|(first, second)| near(*first, *second)).collect();
     let same = if pairs.is_empty() { BTreeMap::new() } else { decide(&pairs) };
     let alike = |first: usize, second: usize| same.get(&(first.min(second), first.max(second))).copied().unwrap_or(0.0);
     let mut ranked: Vec<((usize, usize), f64)> = same.iter().map(|(pair, held)| (*pair, *held)).filter(|(_, held)| *held >= SAME_AT_LEAST).collect();
@@ -249,7 +250,16 @@ pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec
             )
         })
         .collect();
-    the_same_among(&listed, |pairs| crate::author::same_purposes(said, &listed, pairs))
+    let reached: Vec<BTreeSet<&str>> = capabilities
+        .iter()
+        .map(|capability| {
+            let records = capability.touches.iter().chain(capability.records.iter()).map(String::as_str);
+            let ways_in = capability.surfaces.iter().filter_map(|surface| surface.split_whitespace().last()).filter_map(|path| path.split('/').find(|part| !part.is_empty()));
+            records.chain(ways_in).collect()
+        })
+        .collect();
+    let near = |first: usize, second: usize| !reached[first].is_disjoint(&reached[second]);
+    the_same_among(&listed, near, |pairs| crate::author::same_purposes(said, &listed, pairs))
 }
 
 pub(crate) fn merge_the_same(capabilities: &mut Vec<Capability>, groups: Vec<Joined>) {
@@ -433,7 +443,7 @@ mod one_of_each_tests {
     #[test]
     fn the_same_normalized_name_is_merged_without_asking() {
         let names = vec!["Configure engine environment".to_string(), "Delete a post".to_string(), "configure Engine environments!".to_string()];
-        let groups = the_same_among(&listed(&names), |pairs| {
+        let groups = the_same_among(&listed(&names), |_, _| true, |pairs| {
             assert_eq!(pairs, [(0, 1)], "a name already merged is asked about once");
             BTreeMap::new()
         });
@@ -448,7 +458,7 @@ mod one_of_each_tests {
         names[5] = "Open external links".to_string();
         names[280] = "Open external URLs".to_string();
         let items = listed(&names);
-        let groups = the_same_among(&items, decided(&items, &[("Open external links", "Open external URLs", 0.9)]));
+        let groups = the_same_among(&items, |_, _| true, decided(&items, &[("Open external links", "Open external URLs", 0.9)]));
         assert_eq!(groups.len(), 1, "exactly the planted pair merges");
         assert_eq!(groups[0].members, vec![5, 280]);
     }
@@ -458,13 +468,24 @@ mod one_of_each_tests {
         let names = vec!["Trade cryptocurrency".to_string(), "Update transfer status".to_string(), "Manage deposits".to_string(), "Buy crypto".to_string()];
         let items = listed(&names);
         let same = [("Trade cryptocurrency", "Buy crypto", 0.9), ("Trade cryptocurrency", "Update transfer status", 0.6), ("Update transfer status", "Manage deposits", 0.7)];
-        let groups = the_same_among(&items, decided(&items, &same));
+        let groups = the_same_among(&items, |_, _| true, decided(&items, &same));
         assert_eq!(groups.iter().map(|group| group.members.clone()).collect::<Vec<_>>(), vec![vec![0, 3], vec![1, 2]], "a link through a third purpose never chains two unlike ones together");
+    }
+
+    #[test]
+    fn only_capabilities_that_share_a_record_or_a_way_in_are_asked_whether_they_are_the_same() {
+        let items: Vec<(String, String)> = ["Place orders", "Track parcels", "Cancel orders"].iter().map(|name| (name.to_string(), String::new())).collect();
+        let asked = std::cell::RefCell::new(Vec::new());
+        the_same_among(&items, |first, second| (first, second) != (0, 1) && (first, second) != (1, 2), |pairs| {
+            asked.borrow_mut().extend_from_slice(pairs);
+            BTreeMap::new()
+        });
+        assert_eq!(asked.into_inner(), [(0, 2)]);
     }
 
     #[test]
     fn names_that_are_not_the_same_stay_apart_when_nothing_is_said_the_same() {
         let names = vec!["Sign in".to_string(), "Sign out".to_string(), "Delete a post".to_string()];
-        assert!(the_same_among(&listed(&names), |_| BTreeMap::new()).is_empty());
+        assert!(the_same_among(&listed(&names), |_, _| true, |_| BTreeMap::new()).is_empty());
     }
 }

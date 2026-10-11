@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::comprehend::Capability;
@@ -40,10 +39,40 @@ fn choice(first: String, second: String) -> crate::jev::Question {
     crate::jev::Question { kind: "choice", instructions: CLOSER_ASKED.to_string(), criteria: BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]).into() }
 }
 
+const ALL_PAIRS_UP_TO: usize = 16;
+
+pub(crate) fn compared(count: usize) -> Vec<(usize, usize)> {
+    let mut held: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    if count <= ALL_PAIRS_UP_TO {
+        for first in 0..count {
+            for second in (0..count).filter(|second| *second != first) {
+                held.insert((first, second));
+            }
+        }
+        return held.into_iter().collect();
+    }
+    let mut step = 1;
+    while step < count {
+        for first in 0..count {
+            let second = (first + step) % count;
+            held.insert((first, second));
+            held.insert((second, first));
+        }
+        step *= 2;
+    }
+    held.into_iter().collect()
+}
+
 pub(crate) fn position_of(toward: &BTreeMap<(usize, usize), f64>, count: usize) -> Vec<f64> {
-    let net: Vec<f64> = (0..count)
-        .map(|at| (0..count).filter(|other| *other != at).map(|other| toward.get(&(other, at)).copied().unwrap_or(0.0) - toward.get(&(at, other)).copied().unwrap_or(0.0)).sum())
-        .collect();
+    let mut net = vec![0.0; count];
+    let mut seen = vec![0usize; count];
+    for ((earlier, later), held) in toward {
+        net[*later] += held;
+        net[*earlier] -= held;
+        seen[*later] += 1;
+        seen[*earlier] += 1;
+    }
+    let net: Vec<f64> = (0..count).map(|at| if seen[at] > 0 { net[at] * 2.0 / seen[at] as f64 } else { 0.0 }).collect();
     let lowest = net.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = net.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let spread = highest - lowest;
@@ -54,9 +83,15 @@ pub(crate) fn centrality_of(closer: &BTreeMap<(usize, usize), f64>, count: usize
     if count < 2 {
         return vec![1.0; count];
     }
-    (0..count)
-        .map(|at| (0..count).filter(|other| *other != at).map(|other| (closer.get(&(at, other)).copied().unwrap_or(0.0) + 1.0 - closer.get(&(other, at)).copied().unwrap_or(1.0)) / 2.0).sum::<f64>() / (count - 1) as f64)
-        .collect()
+    let mut won = vec![0.0; count];
+    let mut seen = vec![0usize; count];
+    for ((first, second), held) in closer {
+        won[*first] += held;
+        won[*second] += 1.0 - held;
+        seen[*first] += 1;
+        seen[*second] += 1;
+    }
+    (0..count).map(|at| if seen[at] > 0 { won[at] / seen[at] as f64 } else { 0.5 }).collect()
 }
 
 pub(crate) fn supporting(decided: f64, judged: bool) -> bool {
@@ -90,8 +125,9 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     for (at, (name, outcome)) in listed.iter().enumerate() {
         questions.insert(format!("own_{at}"), noul(own_value_question(name, outcome), GIVES.to_string(), ONLY_ENABLES.to_string()));
     }
-    for first in 0..count {
-        for second in (0..count).filter(|second| *second != first) {
+    let pairs = compared(count);
+    for (first, second) in pairs.iter().copied() {
+        {
             let (earlier, earlier_does) = &listed[first];
             let (later, later_does) = &listed[second];
             questions.insert(
@@ -111,7 +147,7 @@ Answer no when \"{later}\" only looks at, reports on, undoes or follows up what 
     let asked = questions.len();
     let (decided, judged) = rayon::join(
         || crate::jev::decide(&state, questions),
-        || listed.par_iter().map(|(name, outcome)| crate::author::gives_on_its_own(said, &own_value_question(name, outcome), GIVES, ONLY_ENABLES)).collect::<Vec<Option<bool>>>(),
+        || crate::author::give_on_their_own(said, &listed, &OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability"), GIVES, ONLY_ENABLES),
     );
     if decided.len() < asked || judged.iter().any(Option::is_none) {
         eprintln!("  value not weighed: {} of {asked} decisions and {} of {count} own-value answers came back", decided.len(), judged.iter().flatten().count());
@@ -119,11 +155,9 @@ Answer no when \"{later}\" only looks at, reports on, undoes or follows up what 
     }
     let pair = |prefix: &str, read: &dyn Fn(&crate::jev::Decision) -> f64| -> BTreeMap<(usize, usize), f64> {
         let mut held = BTreeMap::new();
-        for first in 0..count {
-            for second in (0..count).filter(|second| *second != first) {
-                if let Some(decision) = decided.get(&format!("{prefix}_{first}_{second}")) {
-                    held.insert((first, second), read(decision));
-                }
+        for (first, second) in pairs.iter().copied() {
+            if let Some(decision) = decided.get(&format!("{prefix}_{first}_{second}")) {
+                held.insert((first, second), read(decision));
             }
         }
         held
@@ -163,6 +197,23 @@ mod tests {
         let closer = pairs(&[((0, 1), 0.0), ((1, 0), 1.0), ((0, 2), 0.0), ((2, 0), 1.0), ((1, 2), 1.0), ((2, 1), 0.0)]);
         let held = centrality_of(&closer, 3);
         assert_eq!(held, vec![0.0, 1.0, 0.5]);
+    }
+
+    #[test]
+    fn a_long_list_is_compared_along_doubling_steps_so_questions_grow_as_n_log_n() {
+        assert_eq!(compared(3).len(), 6, "a short list compares every ordered pair");
+        let held = compared(600);
+        assert!(held.len() <= 2 * 600 * 10, "{} questions", held.len());
+        let mut reached = std::collections::BTreeSet::from([0usize]);
+        let mut frontier = vec![0usize];
+        while let Some(at) = frontier.pop() {
+            for (first, second) in &held {
+                if *first == at && reached.insert(*second) {
+                    frontier.push(*second);
+                }
+            }
+        }
+        assert_eq!(reached.len(), 600, "every capability is ranked against the rest");
     }
 
     #[test]

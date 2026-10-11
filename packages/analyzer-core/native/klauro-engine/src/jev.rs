@@ -113,6 +113,7 @@ pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
         && std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !key.is_empty())
         && !declined()
+        && !crate::spend::exhausted()
 }
 
 pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {

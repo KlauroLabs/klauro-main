@@ -67,7 +67,9 @@ mod names;
 mod namespaced;
 mod paths;
 mod reach;
+mod assembled;
 mod purposes;
+mod spend;
 mod records;
 mod rpc_clients;
 mod render_tree;
@@ -1692,6 +1694,7 @@ fn read_it() {
         named,
         reach::asked()
     );
+    eprintln!("{}", spend::said());
     if std::env::var("KLAURO_REPORT_ENTITIES").is_ok() {
         for entity in &comprehension.entities {
             eprintln!(

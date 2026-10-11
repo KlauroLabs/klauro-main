@@ -214,6 +214,9 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
     if !crate::author::asked() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: PENDING, reason: Some("the AI was not asked".to_string()) }, pending: BTreeSet::new() };
     }
+    if !journeys && !checking && !surface_only {
+        return upward(said, part, &offered, &groups, &lines);
+    }
     let heading = if journeys { "Flows of the whole system, each starting where a person or another system reaches it, with the steps it takes across the system and the weight of the work it carries: the system's capabilities are derived from these flows, as the outcomes the system as a whole is for, named for its customers, never naming a vendor, protocol or library" } else if checking { "What its tests check. Its capabilities are what those tests prove the system does, each named as verifying an outcome, and it has at least one" } else if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
     let key = remembered_as.to_string();
@@ -260,6 +263,72 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         },
         capabilities,
         pending: BTreeSet::new(),
+    }
+}
+
+const NAMED_PER_ASK: usize = 25;
+
+fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String]) -> OfAPart {
+    let built = crate::assembled::assembled(offered);
+    let name_of = |at: &usize| offered[*at].name.clone().unwrap_or_else(|| offered[*at].operation.clone());
+    let told: Vec<(String, String)> = built
+        .groups
+        .iter()
+        .map(|members| {
+            let mut names: Vec<String> = members.iter().map(name_of).collect();
+            names.sort();
+            let ids: Vec<&str> = members.iter().map(|at| offered[*at].id.as_str()).collect();
+            (crate::jev::named(&ids.join("\u{1}")), names.join("; "))
+        })
+        .collect();
+    let answered = crate::memory::each("capability named", &format!("{said}\u{1}{}", crate::author::CAPABILITIES_NAMED), &told, |missing| {
+        crate::author::asking(|| {
+            use rayon::prelude::*;
+            missing
+                .par_chunks(NAMED_PER_ASK)
+                .filter_map(|chunk| {
+                    let numbered: Vec<String> = chunk.iter().enumerate().map(|(at, (_, names))| format!("{}. {names}", at + 1)).collect();
+                    let answer = crate::author::capabilities_named(&format!("Part: {said}\nGroups:\n{}", numbered.join("\n")), chunk.len())?;
+                    let named: Vec<(String, serde_json::Value)> = answer["named"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|held| {
+                            let at = held["n"].as_u64()?.checked_sub(1)? as usize;
+                            let (id, _) = chunk.get(at)?;
+                            Some((id.clone(), serde_json::json!({"name": held["name"], "outcome": held["outcome"]})))
+                        })
+                        .collect();
+                    Some(named)
+                })
+                .flatten()
+                .collect()
+        })
+    });
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("    capabilities assembled from code facts: {} flows into {} groups, {} named", offered.len(), built.groups.len(), answered.len());
+    }
+    let purposes: Vec<Purpose> = built
+        .groups
+        .iter()
+        .zip(&told)
+        .filter_map(|(members, (id, _))| {
+            let held = answered.get(id)?;
+            Some(Purpose {
+                name: held["name"].as_str()?.to_string(),
+                outcome: held["outcome"].as_str().unwrap_or_default().to_string(),
+                behaviours: members.iter().map(|at| at + 1).collect(),
+                supporting: Vec::new(),
+            })
+        })
+        .collect();
+    let capabilities = formed(Purposes { purposes }, part, groups, lines, false);
+    OfAPart {
+        state: PartState {
+            capabilities: if capabilities.is_empty() { PENDING } else { crate::capabilities::SETTLED },
+            reason: capabilities.is_empty().then(|| "the AI gave no names for its capabilities".to_string()),
+        },
+        pending: if capabilities.is_empty() { offered.iter().map(|flow| flow.id.clone()).collect() } else { BTreeSet::new() },
+        capabilities,
     }
 }
 
