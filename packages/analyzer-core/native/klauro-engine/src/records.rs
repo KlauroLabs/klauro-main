@@ -7,7 +7,7 @@ const FIELDS_TOLD: usize = 8;
 const MEMBERS_TOLD: usize = 6;
 const KEEPERS_TOLD: usize = 3;
 const FLOWS_TOLD: usize = 3;
-const RECORDS_PER_ASK: usize = 8;
+const RECORDS_PER_ASK: usize = 24;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Use {

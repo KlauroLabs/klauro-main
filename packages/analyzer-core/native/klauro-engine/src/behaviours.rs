@@ -234,7 +234,7 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
             true => String::new(),
             false => format!(", branch {}", step.arms.join(" ")),
         };
-        let standing = known.standing_for(step).map(|said| format!(" — {said}")).unwrap_or_default();
+        let standing = known.standing_for(step).map(|said| format!(" — {}", said.strip_prefix(step.label.as_str()).map(str::trim_start).unwrap_or(&said))).unwrap_or_default();
         lines.push(format!("{}: {}{standing} ({}, {}{arms})", step.id, step.label, step.kind, step.when));
     }
     for into in &flow.leads_into {
@@ -267,7 +267,7 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
     Told { head, body: lines.join("\n"), rule }
 }
 
-const FLOWS_PER_ASK: usize = 20;
+const FLOWS_PER_ASK: usize = 32;
 
 fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>, pieces: &HashMap<String, Told>) -> std::collections::BTreeMap<String, Answer> {
     let mut by_head: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
