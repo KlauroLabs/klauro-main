@@ -581,6 +581,7 @@ pub struct Telling<'a> {
     pub roles: HashMap<String, &'static str>,
     pub checks: HashMap<String, Vec<(String, String)>>,
     pub services: &'a [crate::services::Service],
+    pub consumers: HashMap<String, Vec<String>>,
 }
 
 const SPOKEN_TO_BY: f64 = 0.15;
@@ -1389,7 +1390,7 @@ pub fn author(
                 capabilities.sort_by(|left, right| left.id.cmp(&right.id));
                 crate::author::mark("parts merged");
                 let mut journeys = match several {
-                    true => crate::journeys::of(&held.flows, &held.seams, &crate::journeys::Parts { names: &told.part_names, roles: &told.roles }),
+                    true => crate::journeys::of(&held.flows, &held.seams, &crate::journeys::Parts { names: &told.part_names, roles: &told.roles, consumers: &told.consumers }),
                     false => crate::journeys::Journeys { product: Vec::new(), tooling: Vec::new() },
                 };
                 let opening = opening_of(&spoken);

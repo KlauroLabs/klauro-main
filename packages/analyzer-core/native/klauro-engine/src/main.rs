@@ -1633,6 +1633,11 @@ fn read_it() {
         part_names: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.display_name.clone())).collect()).unwrap_or_default(),
         roles: index.partition.as_ref().map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.role)).collect()).unwrap_or_default(),
         services: &index.services,
+        consumers: index
+            .partition
+            .as_ref()
+            .map(|split| split.sub_projects.iter().map(|part| (part.id.clone(), part.consumed_by.iter().chain(part.imported_by.iter()).cloned().collect())).collect())
+            .unwrap_or_default(),
     };
     if let Some(split) = index.partition.as_ref() {
         let said_of_itself = comprehend::said_of_itself(&root, &index.nodes, &paths);

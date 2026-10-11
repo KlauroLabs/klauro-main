@@ -12,6 +12,7 @@ static TOOLING: &[&str] = &["tooling", "test suite", "unused"];
 pub struct Parts<'a> {
     pub names: &'a HashMap<String, String>,
     pub roles: &'a HashMap<String, &'static str>,
+    pub consumers: &'a HashMap<String, Vec<String>>,
 }
 
 pub struct Journeys {
@@ -29,8 +30,9 @@ fn tooling(flow: &Flow, parts: &Parts) -> bool {
 }
 
 fn starts(flow: &Flow, parts: &Parts) -> bool {
-    crate::entry_exit::USER_FACING.contains(&flow.kind)
-        && home(flow).and_then(|part| parts.roles.get(part)).is_some_and(|role| FEEDS_THE_PRODUCT.contains(role) || TOOLING.contains(role))
+    let feeds = |part: &str| parts.roles.get(part).is_some_and(|role| FEEDS_THE_PRODUCT.contains(role) || TOOLING.contains(role));
+    let served_by_a_program = |part: &str| parts.consumers.get(part).is_some_and(|consumers| consumers.iter().any(|consumer| parts.roles.get(consumer.as_str()).is_some_and(|role| FEEDS_THE_PRODUCT.contains(role))));
+    crate::entry_exit::USER_FACING.contains(&flow.kind) && home(flow).is_some_and(|part| feeds(part) || served_by_a_program(part))
 }
 
 pub fn of(flows: &[Flow], seams: &[Seam], parts: &Parts) -> Journeys {
@@ -367,11 +369,22 @@ mod tests {
     }
 
     #[test]
+    fn a_library_s_routes_start_journeys_when_a_program_of_the_product_serves_it() {
+        let flows = vec![flow("list-media", "http", "bus", &["Media"])];
+        let (names, roles) = parts();
+        let served = HashMap::from_iter([("bus".to_string(), vec!["orders".to_string()])]);
+        assert_eq!(of(&flows, &[], &Parts { names: &names, roles: &roles, consumers: &served }).product.len(), 1);
+        assert!(of(&flows, &[], &Parts { names: &names, roles: &roles, consumers: &HashMap::default() }).product.is_empty(), "a library nothing in the product runs starts no journey");
+        let only_tooling = HashMap::from_iter([("bus".to_string(), vec!["scripts".to_string()])]);
+        assert!(of(&flows, &[], &Parts { names: &names, roles: &roles, consumers: &only_tooling }).product.is_empty());
+    }
+
+    #[test]
     fn a_journey_starts_where_a_person_reaches_the_system_and_follows_every_hand_off() {
         let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"]), flow("take-payment", "message", "payments", &["Payment"])];
         let seams = vec![seam("checkout", "create-order"), seam("create-order", "take-payment")];
         let (names, roles) = parts();
-        let found = of(&flows, &seams, &Parts { names: &names, roles: &roles });
+        let found = of(&flows, &seams, &Parts { names: &names, roles: &roles, consumers: &HashMap::default() });
         assert_eq!(found.product.len(), 1, "the API the app calls is a step of the app's journey, not a journey of its own");
         let journey = &found.product[0];
         assert_eq!(journey.steps.iter().map(|step| step.label.as_str()).collect::<Vec<_>>(), ["Shop app: checkout", "Orders API: create-order (route POST /orders)", "Payments: take-payment (route POST /orders)"]);
@@ -383,7 +396,7 @@ mod tests {
     fn a_service_route_no_app_calls_is_its_own_journey_and_libraries_and_workers_never_start_one() {
         let flows = vec![flow("list-orders", "http", "orders", &[]), flow("publish", "export", "bus", &[]), flow("on-paid", "message", "payments", &[])];
         let (names, roles) = parts();
-        let found = of(&flows, &[], &Parts { names: &names, roles: &roles });
+        let found = of(&flows, &[], &Parts { names: &names, roles: &roles, consumers: &HashMap::default() });
         assert_eq!(found.product.iter().map(|journey| journey.id.as_str()).collect::<Vec<_>>(), ["journey:list-orders"]);
     }
 
@@ -392,7 +405,7 @@ mod tests {
         let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"]), flow("take-payment", "message", "payments", &["Payment"])];
         let seams = vec![seam("checkout", "create-order"), seam("create-order", "take-payment")];
         let (names, roles) = parts();
-        let journey = of(&flows, &seams, &Parts { names: &names, roles: &roles }).product.remove(0);
+        let journey = of(&flows, &seams, &Parts { names: &names, roles: &roles, consumers: &HashMap::default() }).product.remove(0);
         let said = vec![(vec!["s1".to_string()], "The customer checks out".to_string()), (vec!["s2".to_string(), "s3".to_string()], "The order is created and paid".to_string())];
         let steps = gathered(journey.steps, &said);
         assert_eq!(steps.len(), 2);
@@ -405,7 +418,7 @@ mod tests {
         let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"]), flow("dismiss", "ui", "app", &[]), flow("sign-in", "ui", "app", &[]), flow("verify-user", "http", "orders", &[])];
         let seams = vec![seam("checkout", "create-order"), seam("sign-in", "verify-user")];
         let (names, roles) = parts();
-        let found = of(&flows, &seams, &Parts { names: &names, roles: &roles });
+        let found = of(&flows, &seams, &Parts { names: &names, roles: &roles, consumers: &HashMap::default() });
         let held = |id: &str, flow: &str, share: Option<f64>| {
             let mut capability = capability(id, flow);
             capability.supporting = share.is_none();
@@ -423,7 +436,7 @@ mod tests {
     fn a_journey_is_told_by_its_own_steps_not_the_names_of_the_part_flows_it_crosses() {
         let flows = vec![flow("checkout", "ui", "app", &[]), flow("create-order", "http", "orders", &["Order"])];
         let (names, roles) = parts();
-        let mut found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles });
+        let mut found = of(&flows, &[seam("checkout", "create-order")], &Parts { names: &names, roles: &roles, consumers: &HashMap::default() });
         let journey = &mut found.product[0];
         journey.steps[0].description = Some("The shopper confirms the basket".to_string());
         journey.steps[1].description = Some("The order is recorded".to_string());
@@ -434,7 +447,7 @@ mod tests {
     fn tooling_journeys_are_kept_apart_and_marked() {
         let flows = vec![flow("deploy", "cli", "scripts", &[]), flow("checkout", "ui", "app", &[])];
         let (names, roles) = parts();
-        let found = of(&flows, &[], &Parts { names: &names, roles: &roles });
+        let found = of(&flows, &[], &Parts { names: &names, roles: &roles, consumers: &HashMap::default() });
         assert_eq!(found.product.len(), 1);
         assert_eq!(found.tooling.len(), 1);
         assert_eq!(found.tooling[0].unshipped.as_ref().map(|held| held.role), Some("tooling"));
