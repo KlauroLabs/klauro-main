@@ -188,7 +188,24 @@ impl<'a> Known<'a> {
 
 const STANDING_TOLD_AT_MOST: usize = 60;
 
+pub(crate) struct Told {
+    pub head: String,
+    pub body: String,
+    pub rule: String,
+}
+
 fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, landing: &HashMap<&str, String>, one: bool) -> String {
+    let pieces = told_in_pieces(flow, entry, facts, known, landing, one);
+    let asked = crate::author::BEHAVIOURS_ASKED
+        .replace("ONE_OR_SEVERAL", if one || !SPLITS.contains(&flow.kind) { crate::author::ONE_ONLY } else { crate::author::SEVERAL_ALLOWED })
+        .replace(
+            "NOTHING_HAPPENS",
+            if matches!(flow.kind, "event" | "export") { crate::author::MAY_BE_NOTHING } else { crate::author::ALWAYS_SOMETHING },
+        );
+    format!("{}\n{}\n\n{asked}", pieces.head, pieces.body)
+}
+
+fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, landing: &HashMap<&str, String>, one: bool) -> Told {
     let part = flow.project.as_deref().map(|held| facts.part_names.get(held).copied().unwrap_or(held)).unwrap_or_default();
     let mut lines = Vec::new();
     if !facts.said_of_itself.opening.is_empty() {
@@ -201,6 +218,8 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, l
     if let Some(summary) = flow.project.as_deref().and_then(|held| facts.part_summaries.get(held)).filter(|summary| !summary.is_empty()) {
         lines.push(format!("What the part is: {summary}"));
     }
+    let head = lines.join("\n");
+    let mut lines = Vec::new();
     lines.push(format!("Trigger: {}", trigger_of(flow, entry)));
     if matches!(flow.kind, "message" | "event") {
         lines.push("The trigger is a message received from elsewhere: its name says what already happened there. This behaviour is only what this part does in response.".to_string());
@@ -238,24 +257,70 @@ fn told(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known: &Known, l
     if !reached.is_empty() {
         lines.push(format!("Reaches, in order: {}", reached.iter().take(REACHED_TOLD).copied().collect::<Vec<_>>().join(", ")));
     }
-    let asked = crate::author::BEHAVIOURS_ASKED
-        .replace("ONE_OR_SEVERAL", if one || !SPLITS.contains(&flow.kind) { crate::author::ONE_ONLY } else { crate::author::SEVERAL_ALLOWED })
-        .replace(
-            "NOTHING_HAPPENS",
-            if matches!(flow.kind, "event" | "export") { crate::author::MAY_BE_NOTHING } else { crate::author::ALWAYS_SOMETHING },
-        );
-    format!("{}\n\n{asked}", lines.join("\n"))
+    let several = !one && SPLITS.contains(&flow.kind);
+    let nothing = matches!(flow.kind, "event" | "export");
+    let rule = format!(
+        "{}; {}",
+        if several { crate::author::SEVERAL_TOLD } else { crate::author::ONE_TOLD },
+        if nothing { crate::author::NOTHING_TOLD } else { crate::author::SOMETHING_TOLD }
+    );
+    Told { head, body: lines.join("\n"), rule }
 }
 
-fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>) -> std::collections::BTreeMap<String, Answer> {
-    crate::author::asking(|| {
-        items
+const FLOWS_PER_ASK: usize = 20;
+
+fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>, pieces: &HashMap<String, Told>) -> std::collections::BTreeMap<String, Answer> {
+    let mut by_head: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for (id, _) in items {
+        if let Some(told) = pieces.get(id) {
+            by_head.entry(told.head.as_str()).or_default().push(id.as_str());
+        }
+    }
+    let batches: Vec<(&str, Vec<&str>)> = by_head.into_iter().flat_map(|(head, ids)| ids.chunks(FLOWS_PER_ASK).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
+    let steps_for = |id: &str| -> Vec<&str> { steps_of.get(id).into_iter().flatten().map(String::as_str).collect() };
+    let mut held = batched(&batches, pieces, steps_of);
+    let unanswered: Vec<&str> = batches.iter().flat_map(|(_, ids)| ids.iter().copied()).filter(|id| !held.contains_key(*id)).collect();
+    let mut again: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for id in &unanswered {
+        again.entry(pieces[*id].head.as_str()).or_default().push(id);
+    }
+    let retried: Vec<(&str, Vec<&str>)> = again.into_iter().flat_map(|(head, ids)| ids.chunks(FLOWS_PER_ASK).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
+    held.extend(batched(&retried, pieces, steps_of));
+    let missing: Vec<&(String, String)> = items.iter().filter(|(id, _)| !held.contains_key(id)).collect();
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("    flows named {} in {} batched asks and {} asked again together, {} asked alone", held.len(), batches.len(), retried.len(), missing.len());
+    }
+    let alone: Vec<(String, Answer)> = crate::author::asking(|| {
+        missing
             .par_iter()
             .filter_map(|(id, prompt)| {
-                let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
+                let steps = steps_for(id);
                 let before = crate::memory::last::<serde_json::Value>(kind, crate::author::BEHAVIOURS_ASKED, id);
-                let held = crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps)?;
-                serde_json::from_value::<Answer>(held).ok().map(|answer| (id.clone(), answer))
+                let answer = crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps)?;
+                serde_json::from_value::<Answer>(answer).ok().map(|answer| (id.clone(), answer))
+            })
+            .collect()
+    });
+    held.extend(alone);
+    held
+}
+
+fn batched(batches: &[(&str, Vec<&str>)], pieces: &HashMap<String, Told>, steps_of: &HashMap<String, Vec<String>>) -> std::collections::BTreeMap<String, Answer> {
+    let steps_for = |id: &str| -> Vec<&str> { steps_of.get(id).into_iter().flatten().map(String::as_str).collect() };
+    crate::author::asking(|| {
+        batches
+            .par_iter()
+            .flat_map(|(head, ids)| {
+                let flows: Vec<(String, &str, &str, Vec<&str>)> = ids.iter().enumerate().map(|(at, id)| (format!("f{}", at + 1), pieces[*id].body.as_str(), pieces[*id].rule.as_str(), steps_for(id))).collect();
+                let answered = crate::author::behaviours_of_many(head, &flows);
+                ids.iter()
+                    .enumerate()
+                    .filter_map(|(at, id)| {
+                        let answer = answered.get(&format!("f{}", at + 1))?;
+                        crate::author::what_is_wrong_with_behaviours(answer, &steps_for(id)).is_none().then_some(())?;
+                        serde_json::from_value::<Answer>(answer.clone()).ok().map(|answer| (id.to_string(), answer))
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     })
@@ -482,12 +547,40 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         .iter()
         .map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, false)))
         .collect();
+    let pieces_of = |one: bool| -> HashMap<String, Told> {
+        kept.iter().map(|flow| (flow.id.clone(), told_in_pieces(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, one))).collect()
+    };
+    let several_pieces = pieces_of(false);
+    let one_pieces = pieces_of(true);
     let steps_of: HashMap<String, Vec<String>> = kept.iter().map(|flow| (flow.id.clone(), flow.steps.iter().map(|step| step.id.clone()).collect())).collect();
     let holds = |id: &str, answer: &Answer| {
         let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
         serde_json::to_value(answer).is_ok_and(|answer| crate::author::what_is_wrong_with_behaviours(&answer, &steps).is_none())
     };
-    let answers = crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of));
+    let mut labels: Vec<String> = kept.iter().flat_map(|flow| flow.steps.iter().map(|step| step.label.clone())).filter(|label| !label.is_empty()).collect();
+    labels.sort();
+    labels.dedup();
+    let label_items: Vec<(String, String)> = labels.iter().map(|label| (label.clone(), label.clone())).collect();
+    let (answers, sentences) = rayon::join(
+        || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of, &several_pieces)),
+        || crate::memory::each("step said", crate::author::STEP_SAID_ASKED, &label_items, |missing| {
+            crate::author::steps_said(&missing.iter().map(|(label, _)| label.clone()).collect::<Vec<_>>())
+        }),
+    );
+    let label_of: HashMap<(&str, &str), &str> = kept.iter().flat_map(|flow| flow.steps.iter().map(move |step| ((flow.id.as_str(), step.id.as_str()), step.label.as_str()))).collect();
+    let filled = |flow: &str, mut answer: Answer| -> Answer {
+        for behaviour in answer.behaviours.iter_mut() {
+            for said in behaviour.steps.iter_mut() {
+                if said.said.trim().is_empty() && said.ids.len() == 1
+                    && let Some(sentence) = label_of.get(&(flow, said.ids[0].as_str())).and_then(|label| sentences.get(*label))
+                {
+                    said.said = sentence.clone();
+                }
+            }
+        }
+        answer
+    };
+    let answers: std::collections::BTreeMap<String, Answer> = answers.into_iter().map(|(id, answer)| { let answer = filled(&id, answer); (id, answer) }).collect();
     let mut again: Vec<(String, String)> = Vec::new();
     for flow in &kept {
         let Some(answer) = answers.get(&flow.id) else { continue };
@@ -506,7 +599,8 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, true)));
         }
     }
-    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all("flow behaviour, one", items, &steps_of));
+    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all("flow behaviour, one", items, &steps_of, &one_pieces));
+    let single: std::collections::BTreeMap<String, Answer> = single.into_iter().map(|(id, answer)| { let answer = filled(&id, answer); (id, answer) }).collect();
     let mut settled: Vec<Flow> = Vec::new();
     for flow in kept {
         let mut behaviours: Vec<Behaviour> = match single.get(&flow.id) {

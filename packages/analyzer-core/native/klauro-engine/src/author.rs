@@ -440,6 +440,97 @@ For it give:\n\
 - steps: every listed step, in order. Each step you give lists in ids the step ids it covers, the s-numbers at the start of the lines above, and says in one sentence what happens there in plain words. Consecutive steps that together do one thing a person would recognise may be given as one step with several ids. Never invent, split or leave out a listed step.\n\
 Return exactly one behaviour. Always answer, judging from what is shown.";
 
+pub const ONE_TOLD: &str = "exactly one behaviour";
+pub const SEVERAL_TOLD: &str = "one or several behaviours";
+pub const SOMETHING_TOLD: &str = "something always happens";
+pub const NOTHING_TOLD: &str = "nothing may happen";
+
+pub const STEPS_ALREADY_SAID: &str = "Each listed step already has its own sentence, so give said only for a step that covers several ids, as the action they make together, and an empty said for a step with one id. When a flow is one behaviour and each listed step is its own step, give that behaviour's steps as an empty list. \
+Keep each outcome to one short sentence about what is different for the person or the system afterwards; never say that an answer or result is returned.";
+
+pub const STEP_SAID_ASKED: &str = "Each numbered line is one step a software system takes, as its code names it, sometimes with what that code is. \
+Write each as one short plain sentence saying the action, starting with a verb (\"Check the customer is signed in\", \"Keep the new order\", \"Send the answer back\"), never class, function, event, table or package names. Answer every number.";
+
+const SAID_PER_ASK: usize = 40;
+
+pub fn steps_said(labels: &[String]) -> BTreeMap<String, String> {
+    if !asked() {
+        return BTreeMap::new();
+    }
+    let chunks: Vec<&[String]> = labels.chunks(SAID_PER_ASK).collect();
+    let said: Vec<Vec<(String, String)>> = asking(|| {
+        chunks
+            .par_iter()
+            .map(|chunk| {
+                let numbered: Vec<String> = chunk.iter().enumerate().map(|(at, label)| format!("{}. {label}", at + 1)).collect();
+                let asked = format!("{STEP_SAID_ASKED}\n\n{}\n\nReturn JSON only: {{\"said\":[{{\"n\":1,\"said\":\"...\"}}]}}", numbered.join("\n"));
+                let answer = answered::<serde_json::Value>(&asked, 40 + 30 * chunk.len() as u32, &proposing(), "said", chunk.len(), DESCRIBING_ASK);
+                answer
+                    .as_ref()
+                    .and_then(|answer| answer["said"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|held| {
+                        let at = (held["n"].as_u64()? as usize).checked_sub(1)?;
+                        let sentence = held["said"].as_str()?.trim();
+                        let label = chunk.get(at)?;
+                        (!sentence.is_empty()).then(|| (label.clone(), sentence.to_string()))
+                    })
+                    .collect()
+            })
+            .collect()
+    });
+    said.into_iter().flatten().collect()
+}
+
+pub fn behaviours_asked_of_many() -> String {
+    let one_or_several = format!("Each flow says in brackets what it may give. {ONE_TOLD}: {ONE_ONLY} {SEVERAL_TOLD}: {SEVERAL_ALLOWED}");
+    let nothing = format!("{NOTHING_TOLD}: {MAY_BE_NOTHING} {SOMETHING_TOLD}: {ALWAYS_SOMETHING}");
+    format!(
+        "Below are several flows of one software system, each a trigger with the steps that follow it. Answer every flow on its own, by its label, exactly as if it were the only one shown; step ids belong to their own flow.\n{}\n{STEPS_ALREADY_SAID}",
+        BEHAVIOURS_ASKED.replace("ONE_OR_SEVERAL", &one_or_several).replace("NOTHING_HAPPENS", &nothing)
+    )
+}
+
+const FLOWS_ROOM_EACH: u32 = 220;
+pub const CACHED_UP_TO_HERE: &str = "\u{2}";
+
+pub fn behaviours_of_many(head: &str, flows: &[(String, &str, &str, Vec<&str>)]) -> BTreeMap<String, serde_json::Value> {
+    if !asked() || flows.is_empty() {
+        return BTreeMap::new();
+    }
+    let listed: Vec<String> = flows
+        .iter()
+        .map(|(label, body, rule, steps)| {
+            let none = if steps.is_empty() { "\nNo steps are listed for this trigger, so every behaviour's steps list is empty." } else { "" };
+            format!("Flow {label} ({rule}):\n{body}{none}")
+        })
+        .collect();
+    let room: u32 = flows.iter().map(|(_, _, _, steps)| FLOWS_ROOM_EACH + BEHAVIOURS_ROOM_PER_STEP * steps.len() as u32).sum();
+    let asked = format!(
+        "{}{CACHED_UP_TO_HERE}\n\n{head}\n\n{}\n\nReturn JSON only, one entry per flow: {{\"flows\":[{{\"flow\":\"f1\",\"behaviours\":[{{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[]}}]}},{{\"flow\":\"f2\",\"behaviours\":[{{\"name\":\"...\",\"outcome\":\"...\",\"steps\":[{{\"ids\":[\"s1\"],\"said\":\"\"}},{{\"ids\":[\"s2\",\"s3\"],\"said\":\"...\"}}]}}]}}]}}",
+        behaviours_asked_of_many(),
+        listed.join("\n\n")
+    );
+    let Some(answer) = answered::<serde_json::Value>(&asked, room, &proposing(), "flows", 1, DESCRIBING_ASK) else { return BTreeMap::new() };
+    answer["flows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|held| {
+            let label = held["flow"].as_str()?;
+            let steps = &flows.iter().find(|(named, ..)| named == label)?.3;
+            let mut behaviours = held["behaviours"].as_array()?.clone();
+            if let [only] = behaviours.as_mut_slice()
+                && only["steps"].as_array().is_none_or(|said| said.is_empty())
+            {
+                only["steps"] = serde_json::Value::Array(steps.iter().map(|id| serde_json::json!({"ids": [id], "said": ""})).collect());
+            }
+            Some((label.to_string(), serde_json::json!({"behaviours": behaviours})))
+        })
+        .collect()
+}
+
 pub const SEVERAL_ALLOWED: &str = "Most triggers are exactly one behaviour. Give several only when the trigger leads to clearly different outcomes on different paths (for example: a command that either creates or updates, or a handler that confirms or rejects).";
 
 pub const ONE_ONLY: &str = "This trigger is exactly one behaviour: return one, named for what the trigger achieves when it succeeds; refusals and failures along the way are part of it.";
@@ -451,7 +542,7 @@ pub const ALWAYS_SOMETHING: &str = "Something a person recognises always happens
 pub const SAME_BEHAVIOUR_ASKED: &str = "These are behaviours found in one part of a software system, each with the trigger that starts it. \
 Group together only the ones a person could not tell apart: the same action on the same thing with the same result, offered through more than one trigger (for example two versions of the same API, or the same sign-out offered by a menu and by a link). \
 Keep apart: a list and a single item, a page and another page, different events, an action done by a person and the same change made by the system, and any two that act on different things. \
-When in doubt keep them apart. Every number appears in exactly one group.";
+When in doubt keep them apart. List only groups of two or more numbers; a behaviour that matches no other is left out, and when none match the list is empty.";
 
 pub const DESCRIBED_BEFORE: &str = "When this was last read it was described as below. Keep the same names and outcomes where they still follow the rules above and the steps above still show that behaviour:";
 
@@ -691,8 +782,8 @@ pub fn same_behaviours(prompt: &str) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
-    let asked = format!("{prompt}\n\n{SAME_BEHAVIOUR_ASKED}\n\nReturn JSON only: {{\"together\":[[1,4],[2],[3]]}}");
-    answered::<serde_json::Value>(&asked, 600, &proposing(), "together", 1, DESCRIBING_ASK)
+    let asked = format!("{prompt}\n\n{SAME_BEHAVIOUR_ASKED}\n\nReturn JSON only: {{\"together\":[[1,4]]}}");
+    answered::<serde_json::Value>(&asked, 600, &proposing(), "together", 0, DESCRIBING_ASK)
 }
 
 pub fn describe_architecture(facts: &str, name: &str) -> Option<String> {
@@ -931,6 +1022,31 @@ fn shaped(of: &str) -> serde_json::Value {
             }}},
             "required": ["behaviours"],
         }),
+        "said" => serde_json::json!({
+            "type": "object",
+            "properties": {"said": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "said": text}, "required": ["n", "said"]}}},
+            "required": ["said"],
+        }),
+        "flows" => {
+            let behaviour = serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": text,
+                    "outcome": text,
+                    "steps": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"ids": {"type": "array", "items": text}, "said": text},
+                        "required": ["ids", "said"],
+                    }},
+                },
+                "required": ["name", "outcome", "steps"],
+            });
+            serde_json::json!({
+                "type": "object",
+                "properties": {"flows": {"type": "array", "items": {"type": "object", "properties": {"flow": text, "behaviours": {"type": "array", "items": behaviour}}, "required": ["flow", "behaviours"]}}},
+                "required": ["flows"],
+            })
+        }
         "purposes" => serde_json::json!({
             "type": "object",
             "properties": {"purposes": {"type": "array", "items": {"type": "object", "properties": {
@@ -980,17 +1096,24 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
             terse.as_str()
         }
     };
+    let content = match prompt.split_once(CACHED_UP_TO_HERE) {
+        Some((kept, rest)) if endpoint().contains("openrouter.ai") => serde_json::json!([
+            {"type": "text", "text": kept, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": rest},
+        ]),
+        _ => serde_json::Value::String(prompt.replace(CACHED_UP_TO_HERE, "")),
+    };
     let mut held = match speaks_of_chat() {
         true => serde_json::json!({
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "stream": false,
             "format": shape,
             "options": {"temperature": 0, "num_predict": most},
         }),
         false => serde_json::json!({
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": of, "strict": true, "schema": shape},
