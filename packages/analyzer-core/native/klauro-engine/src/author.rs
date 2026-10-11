@@ -941,7 +941,7 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
             terse.as_str()
         }
     };
-    let held = match speaks_of_chat() {
+    let mut held = match speaks_of_chat() {
         true => serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -960,6 +960,12 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
             "temperature": 0,
         }),
     };
+    if endpoint().contains("openrouter.ai") {
+        held["reasoning"] = match std::env::var("KLAURO_AUTHOR_REASONING").ok().filter(|effort| !effort.is_empty() && effort != "none") {
+            Some(effort) => serde_json::json!({"effort": effort}),
+            None => serde_json::json!({"enabled": false}),
+        };
+    }
     serde_json::to_string(&held).ok()
 }
 
