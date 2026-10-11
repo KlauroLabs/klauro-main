@@ -874,6 +874,17 @@ impl<'a> Extractor<'a> {
             .map(|child| self.text(*child).trim().to_string())
     }
 
+    fn closed(&self, node: Node) -> bool {
+        let mut cursor = node.walk();
+        let closed = node.children(&mut cursor).any(|child| match child.kind() {
+            "modifiers" | "modifier" | "access_modifier" | "visibility_modifier" | "member_modifiers" => {
+                self.text(child).split_whitespace().any(|word| matches!(word, "private" | "internal" | "protected"))
+            }
+            held => matches!(held, "private" | "internal" | "protected"),
+        });
+        closed
+    }
+
     fn published(&self, node: Node) -> Modifiers {
         let mut cursor = node.walk();
         let open = node.children(&mut cursor).any(|child| match child.kind() {
@@ -884,6 +895,7 @@ impl<'a> Extractor<'a> {
             }
             held => held == "public" || held == "open",
         });
+        let open = open || (crate::language::public_unless_marked(self.spec.id) && !self.closed(node));
         let mut cursor = node.walk();
         let is_static = node.children(&mut cursor).any(|child| match child.kind() {
             "modifiers" | "modifier" | "access_modifier" | "accessibility_modifier" | "member_modifiers" | "storage_class_specifier" => {

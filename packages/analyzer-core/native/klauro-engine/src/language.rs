@@ -78,6 +78,10 @@ pub fn taken_apart_kinds(id: &str) -> &'static [&'static str] {
     }
 }
 
+pub fn public_unless_marked(id: &str) -> bool {
+    matches!(id, "kotlin" | "scala" | "groovy")
+}
+
 pub fn role_keywords(id: &str) -> &'static [&'static str] {
     match id {
         "elixir" => &["behaviour"],

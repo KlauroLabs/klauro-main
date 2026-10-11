@@ -485,13 +485,20 @@ A behaviour marked not shipped (a build, release, benchmark or development tool)
 Every part has at least one capability: when a part only offers types and methods for other code to use, its capabilities are what that code lets its callers achieve, such as keeping records in a database or passing messages between services. \
 Every capability lists at least one behaviour number it delivers, and every entry in behaviours and supporting is a listed number.";
 
+fn numbered_from_one_to(behaviours: usize) -> String {
+    match behaviours {
+        1 => "There is one numbered behaviour above, number 1: the capability lists it, so this part has exactly one capability.".to_string(),
+        many => format!("The behaviours above are numbered 1 to {many}: every number you give is one of these, and every capability lists at least one of them."),
+    }
+}
+
 pub fn purposes_of(prompt: &str, behaviours: usize) -> Option<serde_json::Value> {
     if !asked() {
         return None;
     }
     let mut correction = String::new();
     for _ in 0..PURPOSES_ASKED_AT_MOST {
-        let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n\n{correction}Return JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}");
+        let asked = format!("{prompt}\n\n{CAPABILITIES_ASKED}\n{}\n\n{correction}Return JSON only: {{\"purposes\":[{{\"name\":\"...\",\"outcome\":\"...\",\"behaviours\":[1,2],\"supporting\":[3]}}]}}", numbered_from_one_to(behaviours));
         let Some(answer) = answered::<serde_json::Value>(&asked, 600 + 30 * behaviours as u32, &proposing(), "purposes", 1, DESCRIBING_ASK) else { continue };
         match what_is_wrong_with_purposes(&answer, behaviours) {
             None => return Some(answer),

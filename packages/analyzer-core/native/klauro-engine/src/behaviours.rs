@@ -33,9 +33,13 @@ pub struct Facts<'a> {
 
 static HOSTING: &str = include_str!("../data/hosting_calls.tsv");
 
+pub(crate) fn hosts(callee: &str) -> bool {
+    HOSTING.lines().any(|named| named == callee)
+}
+
 fn hosted_in<'a>(facts: &Facts<'a>, project_of: &HashMap<&'a str, Option<&'a str>>) -> HashMap<String, &'a str> {
     let mut held: HashMap<String, &str> = HashMap::default();
-    for call in facts.calls.iter().filter(|call| HOSTING.lines().any(|named| named == call.callee)) {
+    for call in facts.calls.iter().filter(|call| hosts(&call.callee)) {
         let Some(part) = call.caller.as_deref().and_then(|caller| project_of.get(caller).copied().flatten()) else { continue };
         for argument in &call.type_arguments {
             for named in argument.split(['<', '>', ',', ' ']).filter(|named| !named.is_empty()) {
