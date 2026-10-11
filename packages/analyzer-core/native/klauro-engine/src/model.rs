@@ -495,6 +495,8 @@ pub struct FileFacts {
     pub bundler_builds: Vec<BundlerBuild>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub messages: Vec<MessageFact>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub route_tables: Vec<crate::route_tables::RouteTable>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

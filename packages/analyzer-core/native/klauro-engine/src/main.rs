@@ -74,6 +74,7 @@ mod render_tree;
 mod published;
 mod requests;
 mod resolve;
+mod route_tables;
 mod roles;
 mod rules;
 mod route;
@@ -603,6 +604,7 @@ fn read_it() {
     let mut parse_errors = 0;
     let mut extracted_files = rustc_hash::FxHashSet::default();
     let report_errors = std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok();
+    let mut route_tables: Vec<route_tables::RouteTable> = Vec::new();
     for file in facts {
         if report_errors && file.parse_errors > 0 {
             eprintln!("parse errors {} in {}", file.parse_errors, index.files[file.nodes[0].file as usize].path);
@@ -618,6 +620,7 @@ fn read_it() {
         index.type_references.extend(file.type_references);
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
+        route_tables.extend(file.route_tables);
         index.kept.extend(file.kept);
         index.forwards.extend(file.forwards);
         index.bundler_builds.extend(file.bundler_builds);
@@ -628,6 +631,7 @@ fn read_it() {
         declared_models.extend(file.models);
         parse_errors += file.parse_errors;
     }
+    index.registrations.extend(route_tables::composed(&route_tables));
 
     let spelled_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     declared_tables.extend(tables::created_by_calls(&index.calls, &index.nodes, &index.locals, &spelled_paths));

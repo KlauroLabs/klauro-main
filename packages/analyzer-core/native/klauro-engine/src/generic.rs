@@ -1305,6 +1305,23 @@ impl<'a> Extractor<'a> {
         found
     }
 
+    fn route_table_of(&mut self, node: Node, name: &str) {
+        let mut preceding = node.prev_named_sibling();
+        while let Some(written) = preceding.filter(|found| self.spec.declares.decorator_kinds.contains(&found.kind()) || found.kind().contains("comment")) {
+            let (routes, mounts) = crate::route_tables::read(self.text(written));
+            if !routes.is_empty() || !mounts.is_empty() {
+                self.facts.route_tables.push(crate::route_tables::RouteTable {
+                    file: self.file,
+                    line: written.start_position().row as u32 + 1,
+                    table: name.to_string(),
+                    routes,
+                    mounts,
+                });
+            }
+            preceding = written.prev_named_sibling();
+        }
+    }
+
     fn decorator(&self, node: Node) -> Decorator {
         let text = self.text(node);
         let name = text
@@ -1479,6 +1496,9 @@ impl<'a> Extractor<'a> {
         };
         let id = self.id("type", &name, node);
         let owner = scope.owner.clone();
+        if self.spec.id == "rust" {
+            self.route_table_of(node, &name);
+        }
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
             name,
