@@ -104,22 +104,23 @@ fn prefixes<'a>(
     };
     resolving.push(table);
     let mut found: Vec<String> = Vec::new();
-    for (parent, base) in parents {
+    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    'gathering: for (parent, base) in parents {
         if resolving.contains(parent) {
             continue;
         }
         for prefix in prefixes(parent, mounted_by, known, resolving) {
             let at = joined(&prefix, base);
-            if !found.contains(&at) {
+            if seen.insert(at.clone()) {
                 found.push(at);
+            }
+            if found.len() == PREFIXES_AT_MOST {
+                eprintln!("  route table {table} is mounted under more than {PREFIXES_AT_MOST} paths; the first {PREFIXES_AT_MOST} are kept");
+                break 'gathering;
             }
         }
     }
     resolving.pop();
-    if found.len() > PREFIXES_AT_MOST {
-        eprintln!("  route table {table} is mounted under {} paths; {PREFIXES_AT_MOST} are kept", found.len());
-        found.truncate(PREFIXES_AT_MOST);
-    }
     if found.is_empty() {
         found.push(String::new());
     }
@@ -185,6 +186,17 @@ mod tests {
         doubling.push(RouteTable { file: 0, line: 99, table: "T40".into(), routes: vec![("GET".into(), "".into(), "leaf".into())], mounts: Vec::new() });
         let started = std::time::Instant::now();
         let composed = composed(&doubling);
+        assert!(composed.len() <= PREFIXES_AT_MOST && started.elapsed() < std::time::Duration::from_secs(2), "{}", composed.len());
+    }
+
+    #[test]
+    fn a_table_mounted_by_very_many_tables_composes_in_bounded_work() {
+        let mut tables: Vec<RouteTable> = (0..20_000)
+            .map(|at| RouteTable { file: 0, line: at, table: format!("P{at}"), routes: Vec::new(), mounts: vec![(format!("/p{at}"), "Leaf".into())] })
+            .collect();
+        tables.push(RouteTable { file: 0, line: 0, table: "Leaf".into(), routes: vec![("GET".into(), "".into(), "leaf".into())], mounts: Vec::new() });
+        let started = std::time::Instant::now();
+        let composed = composed(&tables);
         assert!(composed.len() <= PREFIXES_AT_MOST && started.elapsed() < std::time::Duration::from_secs(2), "{}", composed.len());
     }
 
