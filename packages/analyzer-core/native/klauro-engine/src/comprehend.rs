@@ -2062,6 +2062,7 @@ pub fn derive(
         let mut reaching: Vec<String> = Vec::new();
         let mut hops = 0u32;
         let mut hops_by_name = 0u32;
+        let mut guessed: HashSet<u32> = HashSet::default();
         let mut head = 0;
         while head < queue.len() {
             let (current, depth) = queue[head];
@@ -2069,6 +2070,7 @@ pub fn derive(
             let unit = nodes[current as usize].id.as_str();
             if let Some(other) = handlers.get(unit)
                 && *other != entry.id
+                && !guessed.contains(&current)
                 && nodes[current as usize].project != nodes[start as usize].project
             {
                 if !matches!(entry.kind, "export" | "test") {
@@ -2097,6 +2099,7 @@ pub fn derive(
             }
             if let Some(other) = handlers.get(unit)
                 && *other != entry.id
+                && !guessed.contains(&current)
                 && !matches!(entry.kind, "export" | "test")
             {
                 into.push((*other).to_string());
@@ -2145,10 +2148,12 @@ pub fn derive(
                 if seen.insert(*target) {
                     queue.push((*target, depth + 1));
                     hops += 1;
-                    if by_name.contains(&(current, *target))
-                        && !by_structure.contains(&(current, *target))
-                    {
+                    let named_only = by_name.contains(&(current, *target)) && !by_structure.contains(&(current, *target));
+                    if named_only {
                         hops_by_name += 1;
+                    }
+                    if named_only || guessed.contains(&current) {
+                        guessed.insert(*target);
                     }
                 }
             }

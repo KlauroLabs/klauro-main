@@ -214,9 +214,6 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
     if !crate::author::asked() {
         return OfAPart { capabilities: Vec::new(), state: PartState { capabilities: PENDING, reason: Some("the AI was not asked".to_string()) }, pending: BTreeSet::new() };
     }
-    if !journeys && !checking && !surface_only {
-        return upward(said, part, &offered, &groups, &lines);
-    }
     let heading = if journeys { "Flows of the whole system, each starting where a person or another system reaches it, with the steps it takes across the system and the weight of the work it carries: the system's capabilities are derived from these flows, as the outcomes the system as a whole is for, named for its customers, never naming a vendor, protocol or library" } else if checking { "What its tests check. Its capabilities are what those tests prove the system does, each named as verifying an outcome, and it has at least one" } else if surface_only { "What it offers other code. Its work runs inside the flows of the parts that call it, so its capabilities are what it lets those callers achieve, and it has at least one" } else { "Behaviours" };
     let prompt = format!("Part: {said}\n{heading}:\n{}", lines.join("\n"));
     let key = remembered_as.to_string();
@@ -227,6 +224,9 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .filter(|(_, group)| journeys && group.first().is_some_and(|flow| weights.get(&flow.id).copied() == Some(crate::journeys::Weight::Supporting)))
         .map(|(at, _)| at + 1)
         .collect();
+    if !checking && !surface_only {
+        return upward(said, part, &offered, &groups, &lines, journeys.then_some(&supporting_only));
+    }
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count).is_none();
     let answered = crate::memory::each_holding("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], holds, |missing| {
         crate::author::asking(|| {
@@ -268,7 +268,7 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
 
 const NAMED_PER_ASK: usize = 25;
 
-fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String]) -> OfAPart {
+fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String], supporting_only: Option<&BTreeSet<usize>>) -> OfAPart {
     let built = crate::assembled::assembled(offered);
     let name_of = |at: &usize| offered[*at].name.clone().unwrap_or_else(|| offered[*at].operation.clone());
     let told: Vec<(String, String)> = built
@@ -321,7 +321,11 @@ fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow
             })
         })
         .collect();
-    let capabilities = formed(Purposes { purposes }, part, groups, lines, false);
+    let purposes = match supporting_only {
+        Some(supporting) => without_substrate(Purposes { purposes }, supporting),
+        None => Purposes { purposes },
+    };
+    let capabilities = formed(purposes, part, groups, lines, false);
     OfAPart {
         state: PartState {
             capabilities: if capabilities.is_empty() { PENDING } else { crate::capabilities::SETTLED },
