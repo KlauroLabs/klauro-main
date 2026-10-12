@@ -244,8 +244,27 @@ pub(crate) struct Assembled {
 }
 
 pub(crate) fn assembled(flows: &[&Flow]) -> Assembled {
-    let evidence: Vec<BTreeMap<String, f64>> = flows.iter().map(|flow| evidence_of(flow)).collect();
-    let belongs = modules(flows.len(), &linked(&similarities(&evidence)));
+    assembled_from(&flows.iter().map(|flow| evidence_of(flow)).collect::<Vec<_>>())
+}
+
+pub(crate) fn assembled_groups(groups: &[Vec<&Flow>]) -> Assembled {
+    let evidence: Vec<BTreeMap<String, f64>> = groups
+        .iter()
+        .map(|group| {
+            let mut held: BTreeMap<String, f64> = BTreeMap::new();
+            for flow in group {
+                for (fact, times) in evidence_of(flow) {
+                    *held.entry(fact).or_default() += times;
+                }
+            }
+            held
+        })
+        .collect();
+    assembled_from(&evidence)
+}
+
+fn assembled_from(evidence: &[BTreeMap<String, f64>]) -> Assembled {
+    let belongs = modules(evidence.len(), &linked(&similarities(evidence)));
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (at, held) in belongs.iter().enumerate() {
         groups.entry(*held).or_default().push(at);

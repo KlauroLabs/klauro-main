@@ -586,7 +586,7 @@ pub fn capabilities_named(prompt: &str, groups: usize) -> Option<serde_json::Val
         return None;
     }
     let asked = format!("{prompt}\n\n{CAPABILITIES_NAMED}\n\nReturn JSON only: {{\"named\":[{{\"n\":1,\"name\":\"...\",\"outcome\":\"...\"}}]}}");
-    answered::<serde_json::Value>(&asked, 200 + 60 * groups as u32, &proposing(), "named", groups, DESCRIBING_ASK)
+    answered::<serde_json::Value>(&asked, 400 + 120 * groups as u32, &proposing(), "named", groups, DESCRIBING_ASK)
 }
 
 fn numbered_from_one_to(behaviours: usize) -> String {

@@ -614,12 +614,17 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         }
         if behaviours.is_empty() {
             match answers.contains_key(&flow.id) && matches!(flow.kind, "event" | "export") {
-                true => held.set_aside.push(SetAside {
-                    entry_point: flow.entry_point.clone(),
-                    project: flow.project.clone(),
-                    trigger: trigger_of(&flow, entry_of.get(flow.entry_point.as_str()).copied()),
-                    reason: "nothing a person would recognise happens",
-                }),
+                true => {
+                    held.set_aside.push(SetAside {
+                        entry_point: flow.entry_point.clone(),
+                        project: flow.project.clone(),
+                        trigger: trigger_of(&flow, entry_of.get(flow.entry_point.as_str()).copied()),
+                        reason: "nothing a person would recognise happens",
+                    });
+                    if flow.project.is_some() {
+                        held.offered.push(flow);
+                    }
+                }
                 false => settled.push(flow),
             }
             continue;
