@@ -109,9 +109,23 @@ fn declined() -> bool {
     DECLINED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+fn deciders() -> Vec<String> {
+    match std::env::var("KLAURO_DECIDERS").ok().filter(|held| !held.trim().is_empty()) {
+        Some(held) => held.split(',').map(|endpoint| endpoint.trim().to_string()).filter(|endpoint| !endpoint.is_empty()).collect(),
+        None => vec![ENDPOINT.to_string()],
+    }
+}
+
+fn key_for(endpoint: &str) -> Option<String> {
+    match endpoint.contains("typesafe.ai") {
+        true => std::env::var("TYPESAFE_API_KEY").ok().filter(|key| !key.is_empty()),
+        false => Some(String::new()),
+    }
+}
+
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
-        && std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !key.is_empty())
+        && deciders().iter().any(|endpoint| key_for(endpoint).is_some())
         && !declined()
         && !crate::spend::exhausted()
 }
@@ -215,22 +229,32 @@ fn ask(request: &str, urgency: u64) -> Reply {
     if declined() {
         return Reply::Declined;
     }
-    let Ok(key) = std::env::var("TYPESAFE_API_KEY") else { return Reply::Refused };
-    let started = std::time::Instant::now();
-    let text = match crate::reach::asking(ENDPOINT, &key, request, urgency) {
-        crate::reach::Answer::Held(text) => text,
-        crate::reach::Answer::Refused => return Reply::Refused,
-        crate::reach::Answer::Unauthorized => {
-            if !DECLINED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("  jev not asked: its backend does not accept TYPESAFE_API_KEY");
+    let reachable: Vec<(String, String)> = deciders().into_iter().filter_map(|endpoint| key_for(&endpoint).map(|key| (endpoint, key))).collect();
+    let mut outcome = Reply::Refused;
+    let mut text = None;
+    for (endpoint, key) in &reachable {
+        let started = std::time::Instant::now();
+        match crate::reach::asking(endpoint, key, request, urgency) {
+            crate::reach::Answer::Held(held) => {
+                if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
+                    eprintln!("decided at {endpoint} in {:>6}ms in {:>6} out {:>6}", started.elapsed().as_millis(), request.len(), held.len());
+                }
+                text = Some(held);
+                break;
             }
-            return Reply::Declined;
+            crate::reach::Answer::Refused => {}
+            crate::reach::Answer::Unauthorized => {
+                if reachable.len() == 1 && !DECLINED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("  jev not asked: its backend does not accept TYPESAFE_API_KEY");
+                }
+                if reachable.len() == 1 {
+                    return Reply::Declined;
+                }
+            }
+            crate::reach::Answer::Missed => outcome = Reply::Missed,
         }
-        crate::reach::Answer::Missed => return Reply::Missed,
-    };
-    if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
-        eprintln!("jev took {:>6}ms in {:>6} out {:>6}", started.elapsed().as_millis(), request.len(), text.len());
     }
+    let Some(text) = text else { return outcome };
     let Ok(held) = serde_json::from_str::<Answered>(&text) else { return Reply::Missed };
     remember(request, &text);
     Reply::Answered(held)
