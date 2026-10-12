@@ -116,8 +116,16 @@ fn deciders() -> Vec<String> {
     }
 }
 
+fn host_of(endpoint: &str) -> Option<&str> {
+    let rest = endpoint.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    Some(host.split(':').next().unwrap_or(host))
+}
+
 fn key_for(endpoint: &str) -> Option<String> {
-    match endpoint.contains("typesafe.ai") {
+    let owned = host_of(endpoint).is_some_and(|host| host.eq_ignore_ascii_case("api.typesafe.ai"));
+    match owned {
         true => std::env::var("TYPESAFE_API_KEY").ok().filter(|key| !key.is_empty()),
         false => Some(String::new()),
     }
@@ -291,4 +299,22 @@ pub fn remembered(request: &str) -> Option<String> {
 pub fn remember(request: &str, answered: &str) {
     let Some(folder) = kept() else { return };
     let _ = std::fs::write(folder.join(named(request)), format!("{request}\u{0}{answered}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_decision_key_goes_only_to_the_decision_service_over_https() {
+        assert_eq!(host_of("https://api.typesafe.ai/v1/systemone"), Some("api.typesafe.ai"));
+        assert_eq!(host_of("https://api.typesafe.ai:443/v1/systemone"), Some("api.typesafe.ai"));
+        assert_eq!(host_of("https://api.typesafe.ai.example.com/v1"), Some("api.typesafe.ai.example.com"));
+        assert_eq!(host_of("https://example.com/typesafe.ai"), Some("example.com"));
+        assert_eq!(host_of("https://api.typesafe.ai@example.com/v1"), Some("example.com"));
+        assert_eq!(host_of("http://api.typesafe.ai/v1"), None);
+        for elsewhere in ["https://api.typesafe.ai.example.com/v1", "https://example.com/typesafe.ai", "https://api.typesafe.ai@example.com/v1", "http://api.typesafe.ai/v1", "https://macbook-ai.example.ts.net/decide"] {
+            assert_eq!(key_for(elsewhere), Some(String::new()), "{elsewhere} never receives the key");
+        }
+    }
 }
