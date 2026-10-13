@@ -1,11 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { Box, Button, Paper, Stack, TextField, Typography, Alert } from '@mui/material';
+import { Box, Button, Paper, Stack, TextField, Typography, Alert, CircularProgress } from '@mui/material';
 import { useAuth } from '@/shared/auth/AuthProvider';
-import { approveDeviceCode, denyDeviceCode } from '@/shared/api/index';
+import { approveDeviceCode, denyDeviceCode, getDeviceCodeStatus } from '@/shared/api/index';
 import { Logo } from '@/shared/components/Logo';
 
 type Outcome = 'idle' | 'approved' | 'denied';
+
+const KNOWN_CLIENTS: Record<string, string> = {
+  'agent-desktop': 'Agent Desktop',
+};
+
+function clientLabel(clientId: string): string {
+  return KNOWN_CLIENTS[clientId] || clientId;
+}
 
 export function DevicePage() {
   const { token, user, loading } = useAuth();
@@ -13,12 +21,40 @@ export function DevicePage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const [userCode, setUserCode] = useState(searchParams.get('code') || '');
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [lookupError, setLookupError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>('idle');
 
+  useEffect(() => {
+    const code = userCode.trim();
+    setClientId(null);
+    setLookupError('');
+    if (code.length < 8) return;
+    let cancelled = false;
+    setChecking(true);
+    const handle = setTimeout(() => {
+      getDeviceCodeStatus(code)
+        .then((result) => {
+          if (!cancelled) setClientId(result.client_id);
+        })
+        .catch(() => {
+          if (!cancelled) setLookupError('That code is unknown or has expired. Check it and try again.');
+        })
+        .finally(() => {
+          if (!cancelled) setChecking(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [userCode]);
+
   async function approve() {
-    if (!token || !userCode.trim()) return;
+    if (!token || !userCode.trim() || !clientId) return;
     setError('');
     setBusy(true);
     try {
@@ -75,7 +111,7 @@ export function DevicePage() {
               Sign in to a device
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {user ? `Signed in as ${user.email}.` : ''} Confirm the code shown on the other device before approving it.
+              {user ? `Signed in as ${user.email}.` : ''} Only approve this if you just started signing in on another device yourself.
             </Typography>
           </Stack>
 
@@ -92,9 +128,23 @@ export function DevicePage() {
                 autoFocus
                 fullWidth
               />
+
+              {checking && (
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" color="text.secondary">Looking up that code…</Typography>
+                </Stack>
+              )}
+              {!checking && clientId && (
+                <Alert severity="warning">
+                  <strong>{clientLabel(clientId)}</strong> wants to sign in to your Klauro account. Only approve this if you recognize it as something you just did yourself.
+                </Alert>
+              )}
+              {!checking && lookupError && <Alert severity="error">{lookupError}</Alert>}
               {error && <Alert severity="error">{error}</Alert>}
+
               <Stack direction="row" spacing={1}>
-                <Button variant="contained" size="large" disabled={busy || !userCode.trim()} onClick={() => void approve()} fullWidth>
+                <Button variant="contained" size="large" disabled={busy || !clientId} onClick={() => void approve()} fullWidth>
                   Approve
                 </Button>
                 <Button variant="outlined" size="large" disabled={busy || !userCode.trim()} onClick={() => void deny()} fullWidth>

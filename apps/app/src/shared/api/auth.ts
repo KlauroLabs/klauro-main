@@ -25,6 +25,10 @@ export function registerAccount(input: { email: string; name?: string; password:
   });
 }
 
+export function getDeviceCodeStatus(userCode: string): Promise<{ client_id: string }> {
+  return apiRequest(`/api/auth/device/status?code=${encodeURIComponent(userCode)}`, '');
+}
+
 export function approveDeviceCode(userCode: string, token: string): Promise<{ status: string; email: string }> {
   return apiRequest('/api/auth/device/approve', token, {
     method: 'POST',

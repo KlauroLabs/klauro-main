@@ -66,6 +66,7 @@ test('the full device-code flow: issue, pending, approve, token, one-time use', 
       body: JSON.stringify({ device_code: issued.device_code, client_id: 'agent-desktop' }),
     });
     assert.equal(tokenResponse.status, 200);
+    assert.equal(tokenResponse.headers.get('cache-control'), 'no-store');
     const approved = await tokenResponse.json() as { access_token: string; email: string; server_url: string };
     assert.equal(approved.email, 'device-flow@example.com');
     assert.equal(approved.server_url, baseUrl);
@@ -149,6 +150,48 @@ test('approving an unknown or already-used code returns 404', async () => {
       body: JSON.stringify({ user_code: 'ZZZZ-ZZZZ' }),
     });
     assert.equal(response.status, 404);
+  });
+});
+
+test('the status preview reveals which client is asking, before any approval decision', async () => {
+  await withServer(async (baseUrl) => {
+    const codeResponse = await fetch(`${baseUrl}/api/auth/device/code`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_id: 'agent-desktop' }),
+    });
+    const issued = await codeResponse.json() as { user_code: string };
+
+    const statusResponse = await fetch(`${baseUrl}/api/auth/device/status?code=${encodeURIComponent(issued.user_code)}`);
+    assert.equal(statusResponse.status, 200);
+    const status = await statusResponse.json() as { client_id: string };
+    assert.equal(status.client_id, 'agent-desktop');
+  });
+});
+
+test('the status preview 404s for an unknown code, without needing authentication to check', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/auth/device/status?code=ZZZZ-ZZZZ`);
+    assert.equal(response.status, 404);
+  });
+});
+
+test('the status preview 404s once the code has already been approved', async () => {
+  await withServer(async (baseUrl) => {
+    const { token } = await registerUser(baseUrl, 'device-status-approved@example.com');
+    const codeResponse = await fetch(`${baseUrl}/api/auth/device/code`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_id: 'agent-desktop' }),
+    });
+    const issued = await codeResponse.json() as { user_code: string };
+    await fetch(`${baseUrl}/api/auth/device/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ user_code: issued.user_code }),
+    });
+    const statusResponse = await fetch(`${baseUrl}/api/auth/device/status?code=${encodeURIComponent(issued.user_code)}`);
+    assert.equal(statusResponse.status, 404);
   });
 });
 

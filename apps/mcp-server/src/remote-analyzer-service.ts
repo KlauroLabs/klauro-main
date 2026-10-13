@@ -359,7 +359,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const body = await readJsonBody<{ device_code?: string; client_id?: string }>(request, maxBodyBytes);
         const outcome = deviceAuth.poll(String(body.device_code || ''), String(body.client_id || 'unknown'));
         if (outcome.kind === 'approved') {
-          writeJson(response, 200, {
+          writeJsonNoStore(response, 200, {
             access_token: outcome.token,
             account_id: outcome.user.id,
             email: outcome.user.email,
@@ -371,6 +371,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         if (outcome.kind === 'slow_down') { writeJson(response, 400, { error: 'slow_down' }); return; }
         if (outcome.kind === 'denied') { writeJson(response, 400, { error: 'access_denied' }); return; }
         writeJson(response, 400, { error: 'expired_token' });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/api/auth/device/status') {
+        const ip = request.socket.remoteAddress || 'unknown';
+        if (!withinRateLimit(authBuckets, `authip:${ip}`, authRateLimitPerMinute * 4)) {
+          writeJson(response, 429, { status: 'error', error: 'Too many requests. Try again shortly.' });
+          return;
+        }
+        const userCode = new URL(request.url || '', 'http://localhost').searchParams.get('code') || '';
+        const record = deviceAuth.findByUserCode(userCode);
+        if (!record || record.status !== 'pending') {
+          writeJson(response, 404, { status: 'error', error: 'That code is unknown or has expired.' });
+          return;
+        }
+        writeJson(response, 200, { client_id: record.clientId });
         return;
       }
 
@@ -4012,6 +4028,11 @@ async function readJsonBody<T>(request: http.IncomingMessage, maxBodyBytes: numb
 
 function writeJson(response: http.ServerResponse, statusCode: number, value: unknown): void {
   response.writeHead(statusCode, corsHeaders({ 'content-type': 'application/json' }));
+  response.end(JSON.stringify(value));
+}
+
+function writeJsonNoStore(response: http.ServerResponse, statusCode: number, value: unknown): void {
+  response.writeHead(statusCode, corsHeaders({ 'content-type': 'application/json', 'cache-control': 'no-store', pragma: 'no-cache' }));
   response.end(JSON.stringify(value));
 }
 
