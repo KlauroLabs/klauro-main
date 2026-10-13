@@ -139,6 +139,16 @@ pub fn asked() -> bool {
         && !crate::spend::decisions_exhausted()
 }
 
+const BRIEF_AT_MOST: usize = 280;
+
+pub fn brief(said: &str) -> String {
+    let line = said.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    match line.char_indices().nth(BRIEF_AT_MOST) {
+        Some((at, _)) => line[..at].rsplit_once(' ').map(|(kept, _)| kept).unwrap_or(&line[..at]).to_string(),
+        None => line.to_string(),
+    }
+}
+
 pub fn able() -> bool {
     asked() || crate::author::asked()
 }
