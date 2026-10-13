@@ -54,14 +54,21 @@ export interface ConceptIndex {
 
 
   byEntryPoint: Map<string, FlowConcept>;
+  byFile: Map<string, string[]>;
   flows: FlowConcept[];
+}
+
+export interface FunctionSource {
+  id: string;
+  source?: { file?: string };
 }
 
 
 
-export function buildConceptIndex(flows: FlowConcept[]): ConceptIndex {
+export function buildConceptIndex(flows: FlowConcept[], nodes: FunctionSource[] = []): ConceptIndex {
   const byFunctionId = new Map<string, StepIndexEntry[]>();
   const byEntryPoint = new Map<string, FlowConcept>();
+  const byFile = new Map<string, string[]>();
 
   for (const flow of flows) {
     byEntryPoint.set(flow.entry_point, flow);
@@ -74,7 +81,30 @@ export function buildConceptIndex(flows: FlowConcept[]): ConceptIndex {
     }
   }
 
-  return { byFunctionId, byEntryPoint, flows };
+  for (const node of nodes) {
+    const file = node.source?.file;
+    if (!file || !byFunctionId.has(node.id)) continue;
+    const held = byFile.get(normalizedPath(file)) ?? [];
+    held.push(node.id);
+    byFile.set(normalizedPath(file), held);
+  }
+
+  return { byFunctionId, byEntryPoint, byFile, flows };
+}
+
+function normalizedPath(file: string): string {
+  return file.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function functionsInPath(claimed: string, index: ConceptIndex): string[] {
+  const wanted = normalizedPath(claimed).replace(/\/$/, '');
+  const found: string[] = [];
+  for (const [file, functionIds] of index.byFile) {
+    if (file === wanted || file.endsWith(`/${wanted}`) || wanted.endsWith(`/${file}`) || file.startsWith(`${wanted}/`)) {
+      found.push(...functionIds);
+    }
+  }
+  return found;
 }
 
 
@@ -108,21 +138,26 @@ export function deriveConceptualCoordinates(
 ): ConceptualCoordinate[] {
   const found = new Map<string, ConceptualCoordinate>();
 
-  const tokens = [...claim.scope.symbols, ...claim.scope.paths];
-  for (const token of tokens) {
-    for (const [functionId, entries] of index.byFunctionId) {
-      if (!tokenMatchesFunction(token, functionId)) continue;
-      for (const { flow, step } of entries) {
-        const key = `${flow.flow_id}::${step.step_id}`;
-        if (found.has(key)) continue;
-        found.set(key, {
-          flow_id: flow.flow_id,
-          step_id: step.step_id,
-          capability_id: flow.capability_id,
-          entities: flow.entities.length ? flow.entities : undefined,
-          source: 'derived',
-        });
-      }
+  const matched = new Set<string>();
+  for (const token of [...claim.scope.symbols, ...claim.scope.paths]) {
+    for (const functionId of index.byFunctionId.keys()) {
+      if (tokenMatchesFunction(token, functionId)) matched.add(functionId);
+    }
+  }
+  for (const path of claim.scope.paths) {
+    for (const functionId of functionsInPath(path, index)) matched.add(functionId);
+  }
+  for (const functionId of matched) {
+    for (const { flow, step } of index.byFunctionId.get(functionId) ?? []) {
+      const key = `${flow.flow_id}::${step.step_id}`;
+      if (found.has(key)) continue;
+      found.set(key, {
+        flow_id: flow.flow_id,
+        step_id: step.step_id,
+        capability_id: flow.capability_id ?? flow.capability_relationships?.find(relationship => relationship.role === 'primary')?.capability_id,
+        entities: flow.entities.length ? flow.entities : undefined,
+        source: 'derived',
+      });
     }
   }
 

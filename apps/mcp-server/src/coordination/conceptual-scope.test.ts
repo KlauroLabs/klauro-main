@@ -300,3 +300,35 @@ test('deriveConceptualCoordinates returns [] when no flows exist at all (empty i
   const coords = deriveConceptualCoordinates({ scope: { paths: ['x.ts'], symbols: ['fn'] } }, index);
   assert.deepEqual(coords, []);
 });
+
+test('a claimed file maps to the flow steps whose functions live in it, with the capability the flow primarily serves', () => {
+  const flow = {
+    flow_id: 'flow:create-contact',
+    entry_point: 'POST /contacts',
+    entities: ['Contact'],
+    capability_relationships: [
+      { capability_id: 'cap:keep-contacts', role: 'primary' },
+      { capability_id: 'cap:audit', role: 'supporting' },
+    ],
+    steps: [
+      { step_id: 'flow:create-contact:store', functions: [{ function_id: 'u:ContactService.store' }] },
+      { step_id: 'flow:create-contact:reply', functions: [{ function_id: 'u:ContactController.reply' }] },
+    ],
+  } as unknown as Parameters<typeof buildConceptIndex>[0][number];
+  const index = buildConceptIndex([flow], [
+    { id: 'u:ContactService.store', source: { file: 'app/Services/ContactService.php' } },
+    { id: 'u:ContactController.reply', source: { file: 'app/Http/ContactController.php' } },
+    { id: 'u:Unrelated.run', source: { file: 'app/Services/ContactService.php' } },
+  ]);
+
+  const byFile = deriveConceptualCoordinates({ scope: { paths: ['app/Services/ContactService.php'], symbols: [] } }, index);
+  assert.deepEqual(byFile.map(coordinate => [coordinate.capability_id, coordinate.flow_id, coordinate.step_id]), [
+    ['cap:keep-contacts', 'flow:create-contact', 'flow:create-contact:store'],
+  ]);
+
+  const byFolder = deriveConceptualCoordinates({ scope: { paths: ['app/Http/'], symbols: [] } }, index);
+  assert.deepEqual(byFolder.map(coordinate => coordinate.step_id), ['flow:create-contact:reply']);
+
+  const elsewhere = deriveConceptualCoordinates({ scope: { paths: ['README.md'], symbols: [] } }, index);
+  assert.equal(elsewhere.length, 0);
+});

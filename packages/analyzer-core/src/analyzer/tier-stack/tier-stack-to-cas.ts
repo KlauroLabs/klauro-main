@@ -440,7 +440,16 @@ function effectsOf(held: FlowEffect[] | undefined): Pick<FlowConcept, 'effects' 
 function flowsOf(index: TierStackIndex): CASOutput['flows'] {
   const serving = servingByFlow(index);
   const effects = effectsByFlow(index);
-  return (index.comprehension?.flows ?? []).map(flow => ({
+  return (index.comprehension?.flows ?? []).map(flow => flowOf(flow, serving.get(flow.id) ?? [], effects));
+}
+
+function flowOf(
+  flow: TierStackFlow,
+  relationships: CapabilityFlowRelationship[],
+  effects: ReturnType<typeof effectsByFlow>,
+): CASOutput['flows'][number] {
+  const primary = relationships.find(relationship => relationship.role === 'primary');
+  return {
     flow_id: flow.id,
     name: flow.name ?? flow.operation,
     intent: flow.operation,
@@ -455,9 +464,10 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
     contract: contractOf(flow),
     steps: stepsOf(flow),
     step_graph: stepGraphOf(flow),
-    capability_relationships: serving.get(flow.id) ?? [],
+    ...(primary ? { capability_id: primary.capability_id } : {}),
+    capability_relationships: relationships,
     ...effectsOf(effects.get(flow.id)),
-  }));
+  };
 }
 
 function whatTheSystemDelivers(index: TierStackIndex) {
