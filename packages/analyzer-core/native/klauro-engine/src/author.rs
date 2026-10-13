@@ -144,7 +144,33 @@ fn spoken_to() -> Option<String> {
     std::env::var("KLAURO_AUTHOR_CLI").ok().filter(|held| !held.is_empty())
 }
 
+static FALLING_BACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const FALLBACK_MODEL: &str = "claude-haiku-5.5";
+
+fn fallback() -> Option<String> {
+    std::env::var("KLAURO_AUTHOR_FALLBACK_ENDPOINT").ok().filter(|held| !held.is_empty())
+}
+
+fn falling_back() -> bool {
+    FALLING_BACK.load(Ordering::Relaxed) && fallback().is_some()
+}
+
+fn fallback_model() -> String {
+    std::env::var("KLAURO_AUTHOR_FALLBACK_MODEL").ok().filter(|held| !held.is_empty()).unwrap_or_else(|| FALLBACK_MODEL.to_string())
+}
+
+fn fall_back() -> bool {
+    if fallback().is_none() || FALLING_BACK.swap(true, Ordering::Relaxed) {
+        return fallback().is_some() && FALLING_BACK.load(Ordering::Relaxed);
+    }
+    eprintln!("  writer refused the request; the rest of this run is written by the fallback writer");
+    true
+}
+
 fn key() -> Option<String> {
+    if falling_back() {
+        return None;
+    }
     ["KLAURO_AUTHOR_KEY", "DEEPINFRA_API_KEY"]
         .into_iter()
         .find_map(|named| std::env::var(named).ok())
@@ -159,6 +185,9 @@ pub fn asked() -> bool {
 }
 
 fn addressed() -> Option<String> {
+    if falling_back() {
+        return fallback();
+    }
     std::env::var("KLAURO_AUTHOR_ENDPOINT").ok().filter(|held| !held.is_empty())
 }
 
@@ -1231,7 +1260,9 @@ fn answered<T: serde::de::DeserializeOwned>(
     };
     let mut held = None;
     'asking: for model in models {
-        let request = match &spoken_to {
+        let fallen = fallback_model();
+        let mut model: &str = if falling_back() { fallen.as_str() } else { model.as_str() };
+        let mut request = match &spoken_to {
             Some(command) => format!("{command}\n{prompt}"),
             None => bodied(prompt, most, model, of)?,
         };
@@ -1266,7 +1297,18 @@ fn answered<T: serde::de::DeserializeOwned>(
                     std::thread::sleep(std::time::Duration::from_millis(500 << rejected.min(4)));
                     rejected += 1;
                 }
-                crate::reach::Answer::Refused | crate::reach::Answer::Unauthorized => break,
+                crate::reach::Answer::Refused | crate::reach::Answer::Unauthorized => {
+                    if spoken_to.is_some() || model == fallen.as_str() || !fall_back() {
+                        break;
+                    }
+                    model = fallen.as_str();
+                    request = bodied(prompt, most, model, of)?;
+                    if let Some(remembered) = crate::jev::remembered(&request)
+                        && let Some(value) = read(&remembered)
+                    {
+                        return Some(value);
+                    }
+                }
                 crate::reach::Answer::Missed => {
                     let pause = crate::reach::pause_after(missed);
                     std::thread::sleep(pause);
