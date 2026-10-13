@@ -15,7 +15,10 @@ import { AuthProvider } from '@/shared/auth/AuthProvider';
  * and these hooks fall back to the raw route param exactly as before —
  * this only satisfies the context requirement, it changes no test behavior.
  */
-export function renderWithProviders(ui: ReactElement, { route = '/', path = '/' }: { route?: string; path?: string } = {}) {
+export function renderWithProviders(
+  ui: ReactElement,
+  { route = '/', path = '/' }: { route?: string | { pathname: string; search?: string; state?: unknown }; path?: string } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>

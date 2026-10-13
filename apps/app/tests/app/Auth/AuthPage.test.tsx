@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { render } from '@testing-library/react';
+import { MemoryRouter, Routes, Route, useSearchParams } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AuthProvider } from '@/shared/auth/AuthProvider';
 import { renderWithProviders } from '../../utils/renderWithProviders';
 import { AuthPage } from '@/app/Auth/AuthPage';
 import * as authHooks from '@/shared/auth/AuthProvider';
@@ -67,5 +71,33 @@ describe('AuthPage', () => {
     fireEvent.click(submitButton());
 
     expect(await screen.findByText('Invalid credentials')).toBeInTheDocument();
+  });
+
+  it('redirects back to the page that bounced here, search string included', async () => {
+    const signInWithPassword = vi.fn().mockResolvedValue(undefined);
+    mockAuth({ signInWithPassword });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function DeviceStub() {
+      const [params] = useSearchParams();
+      return <div>device page code={params.get('code')}</div>;
+    }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <MemoryRouter initialEntries={[{ pathname: '/auth', state: { from: { pathname: '/device', search: '?code=ABCD-1234' } } }]}>
+            <Routes>
+              <Route path="/auth" element={<AuthPage />} />
+              <Route path="/device" element={<DeviceStub />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText(/Email/i), { target: { value: 'claudia@example.com' } });
+    fireEvent.change(screen.getByLabelText(/Password/i), { target: { value: 'hunter22222' } });
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText('device page code=ABCD-1234')).toBeInTheDocument();
   });
 });

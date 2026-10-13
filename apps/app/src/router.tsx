@@ -5,6 +5,7 @@ import { RequireAuth } from '@/shared/auth/RequireAuth';
 import { LoadingState } from '@/shared/layout/LoadingState';
 import { Stub } from '@/app/Stub';
 import { AuthPage } from '@/app/Auth/AuthPage';
+import { DevicePage } from '@/app/Device/DevicePage';
 
 function lazyPage(area: string, loader: () => Promise<{ [key: string]: ComponentType }>, exportName: string) {
   return lazy(() =>
@@ -49,6 +50,7 @@ function AuthenticatedLayout() {
 
 export const router = createBrowserRouter([
   { path: '/auth', element: <AuthPage /> },
+  { path: '/device', element: <DevicePage /> },
   {
     path: '/',
     element: <AuthenticatedLayout />,

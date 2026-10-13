@@ -33,7 +33,8 @@ export function AuthPage() {
           workspace_name: String(form.get('workspace_name') || '') || undefined,
         });
       }
-      const redirectTo = (location.state as { from?: Location })?.from?.pathname ?? '/';
+      const from = (location.state as { from?: Location })?.from;
+      const redirectTo = from ? `${from.pathname}${from.search || ''}` : '/';
       navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -16,6 +16,7 @@ import { flowEdgesByCapability, flowTotalsByCapability } from './capability-flow
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
+import { DeviceAuthStore } from './device-auth';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { resolveWorkspaceMemberResponse } from './workspace-member-route';
 import { workspaceContractsHttpResponse } from './workspace-contracts';
@@ -193,6 +194,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
   void reapStaleAttemptRecordsOnStartup(dataDir);
   const accounts = new AccountStore(dataDir);
+  const deviceAuth = new DeviceAuthStore();
 
   const workspaceAnalyses = new AccountWorkspaceAnalysisScheduler(dataDir, accounts);
   const notifyProjectAnalysisLandedForAnalysisId = async (analysisId: string | undefined): Promise<void> => {
@@ -326,6 +328,52 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', user_id: result.userId, email: result.email });
         return;
       }
+
+      if (request.method === 'POST' && route === '/api/auth/device/code') {
+        const ip = request.socket.remoteAddress || 'unknown';
+        if (!withinRateLimit(authBuckets, `authip:${ip}`, authRateLimitPerMinute)) {
+          await appendAuditLog(dataDir, { event: 'auth_ip_rate_limited', route, client: anonymizeClient(ip) });
+          writeJson(response, 429, { status: 'error', error: 'Too many authentication attempts from this source. Try again shortly.' });
+          return;
+        }
+        const body = await readJsonBody<{ client_id?: string }>(request, maxBodyBytes);
+        const issued = deviceAuth.issue(String(body.client_id || 'unknown'));
+        const appUrl = (process.env.KLAURO_APP_URL || 'https://app.klauro.com').replace(/\/+$/, '');
+        writeJson(response, 200, {
+          device_code: issued.device_code,
+          user_code: issued.user_code,
+          verification_uri: `${appUrl}/device`,
+          verification_uri_complete: `${appUrl}/device?code=${encodeURIComponent(issued.user_code)}`,
+          expires_in: issued.expires_in,
+          interval: issued.interval,
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/api/auth/device/token') {
+        const ip = request.socket.remoteAddress || 'unknown';
+        if (!withinRateLimit(authBuckets, `authip:${ip}`, authRateLimitPerMinute * 4)) {
+          writeJson(response, 429, { error: 'slow_down' });
+          return;
+        }
+        const body = await readJsonBody<{ device_code?: string; client_id?: string }>(request, maxBodyBytes);
+        const outcome = deviceAuth.poll(String(body.device_code || ''), String(body.client_id || 'unknown'));
+        if (outcome.kind === 'approved') {
+          writeJson(response, 200, {
+            access_token: outcome.token,
+            account_id: outcome.user.id,
+            email: outcome.user.email,
+            server_url: publicBaseUrl(request),
+          });
+          return;
+        }
+        if (outcome.kind === 'pending') { writeJson(response, 400, { error: 'authorization_pending' }); return; }
+        if (outcome.kind === 'slow_down') { writeJson(response, 400, { error: 'slow_down' }); return; }
+        if (outcome.kind === 'denied') { writeJson(response, 400, { error: 'access_denied' }); return; }
+        writeJson(response, 400, { error: 'expired_token' });
+        return;
+      }
+
       if (request.method === 'POST' && route.startsWith('/api/telemetry/runtime-events/')) {
         const rawProjectId = route.slice('/api/telemetry/runtime-events/'.length);
         const projectId = decodeURIComponent(rawProjectId);
@@ -374,7 +422,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         if (request.method === 'POST' && route === AUTHOR_RELAY_ROUTE) return relayAuthorAsk(request, response, apiAuthorization.userId);
-        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses, deviceAuth);
         if (accountResult.stream) {
           response.writeHead(accountResult.statusCode, accountResult.stream.headers);
           const stream = createReadStream(accountResult.stream.filePath);
@@ -2277,6 +2325,7 @@ async function handleAccountApi(
   sharedToken = false,
   dataDir?: string,
   workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
+  deviceAuth?: DeviceAuthStore,
 ): Promise<{
   statusCode: number;
   body: unknown;
@@ -2326,6 +2375,22 @@ async function handleAccountApi(
       newPassword: body.new_password,
     });
     return { statusCode: 200, body: result };
+  }
+
+  if (request.method === 'POST' && (route === '/api/auth/device/approve' || route === '/api/auth/device/deny')) {
+    if (sharedToken) throw new AccountHttpError(400, 'Device approval is not available for shared-token requests');
+    if (!deviceAuth) throw new AccountHttpError(500, 'Device sign-in is unavailable');
+    const body = await readJsonBody<{ user_code: string }>(request, maxBodyBytes);
+    if (!body.user_code) throw new AccountHttpError(400, 'user_code is required');
+    if (route === '/api/auth/device/deny') {
+      const denied = deviceAuth.deny(body.user_code);
+      if (!denied) throw new AccountHttpError(404, 'That code is unknown or already used.');
+      return { statusCode: 200, body: { status: 'denied' } };
+    }
+    const session = await accounts.mintDeviceSession(userId);
+    const approved = deviceAuth.approve(body.user_code, session.token, session.user);
+    if (!approved) throw new AccountHttpError(404, 'That code is unknown, expired, or already used.');
+    return { statusCode: 200, body: { status: 'approved', email: session.user.email } };
   }
 
   if (request.method === 'GET' && route === '/api/account/activity') {

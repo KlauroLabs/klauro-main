@@ -200,6 +200,19 @@ export class AccountStore {
     return result;
   }
 
+  async mintDeviceSession(userId: string): Promise<AccountSessionResult> {
+    const result = await this.mutate(db => {
+      const user = db.users.find(candidate => candidate.id === userId);
+      if (!user) throw httpError(404, 'Account not found');
+      const session = createSession(user.id);
+      db.sessions = pruneSessions(db.sessions);
+      db.sessions.push(session.record);
+      return { token: session.token, user: publicUser(user) };
+    });
+    await this.appendAudit({ event: 'auth_device_session_minted', user_id: userId });
+    return result;
+  }
+
   async authenticate(token: string | undefined): Promise<PublicAccountUser | null> {
     if (!token) return null;
     const db = await this.load();
