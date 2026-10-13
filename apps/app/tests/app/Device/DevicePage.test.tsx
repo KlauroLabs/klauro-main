@@ -30,7 +30,7 @@ describe('DevicePage', () => {
 
   it('keeps Approve disabled until the code is looked up and the asking client is shown', async () => {
     mockAuth();
-    vi.spyOn(api, 'getDeviceCodeStatus').mockResolvedValue({ client_id: 'agent-desktop' });
+    vi.spyOn(api, 'getDeviceCodeStatus').mockResolvedValue({ client_id: 'agent-desktop', client_name: 'Agent Desktop', requested_at: new Date().toISOString() });
     renderWithProviders(<DevicePage />, { route: { pathname: '/device', search: '?code=ABCD-1234' }, path: '/device' });
 
     const approveButton = screen.getByRole('button', { name: 'Approve' });
@@ -51,7 +51,7 @@ describe('DevicePage', () => {
 
   it('calls approveDeviceCode only after a successful preview', async () => {
     mockAuth();
-    vi.spyOn(api, 'getDeviceCodeStatus').mockResolvedValue({ client_id: 'agent-desktop' });
+    vi.spyOn(api, 'getDeviceCodeStatus').mockResolvedValue({ client_id: 'agent-desktop', client_name: 'Agent Desktop', requested_at: new Date().toISOString() });
     const approveDeviceCode = vi.spyOn(api, 'approveDeviceCode').mockResolvedValue({ status: 'approved', email: 'me@example.com' });
     renderWithProviders(<DevicePage />, { route: { pathname: '/device', search: '?code=ABCD-1234' }, path: '/device' });
 

@@ -164,8 +164,22 @@ test('the status preview reveals which client is asking, before any approval dec
 
     const statusResponse = await fetch(`${baseUrl}/api/auth/device/status?code=${encodeURIComponent(issued.user_code)}`);
     assert.equal(statusResponse.status, 200);
-    const status = await statusResponse.json() as { client_id: string };
+    const status = await statusResponse.json() as { client_id: string; client_name: string; requested_at: string };
     assert.equal(status.client_id, 'agent-desktop');
+    assert.equal(status.client_name, 'Agent Desktop');
+    assert.ok(!Number.isNaN(Date.parse(status.requested_at)));
+  });
+});
+
+test('a device code can never be issued for a client that was not registered', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/auth/device/code`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_id: 'Agent Desktop Security Update (click to approve)' }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json() as { error: string }).error, 'unknown_client');
   });
 });
 

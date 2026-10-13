@@ -16,7 +16,7 @@ import { flowEdgesByCapability, flowTotalsByCapability } from './capability-flow
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
-import { DeviceAuthStore } from './device-auth';
+import { DeviceAuthStore, REGISTERED_CLIENTS } from './device-auth';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { resolveWorkspaceMemberResponse } from './workspace-member-route';
 import { workspaceContractsHttpResponse } from './workspace-contracts';
@@ -337,7 +337,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const body = await readJsonBody<{ client_id?: string }>(request, maxBodyBytes);
-        const issued = deviceAuth.issue(String(body.client_id || 'unknown'));
+        const result = deviceAuth.issue(String(body.client_id || ''));
+        if (!result.ok) {
+          writeJson(response, 400, { error: result.error });
+          return;
+        }
+        const issued = result.issued;
         const appUrl = (process.env.KLAURO_APP_URL || 'https://app.klauro.com').replace(/\/+$/, '');
         writeJson(response, 200, {
           device_code: issued.device_code,
@@ -386,7 +391,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 404, { status: 'error', error: 'That code is unknown or has expired.' });
           return;
         }
-        writeJson(response, 200, { client_id: record.clientId });
+        writeJson(response, 200, {
+          client_id: record.clientId,
+          client_name: REGISTERED_CLIENTS[record.clientId],
+          requested_at: new Date(record.issuedAt).toISOString(),
+        });
         return;
       }
 

@@ -5,11 +5,16 @@ const DEVICE_CODE_TTL_MS = 1000 * 60 * 15;
 const POLL_INTERVAL_SEC = 5;
 const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
+export const REGISTERED_CLIENTS: Record<string, string> = {
+  'agent-desktop': 'Agent Desktop',
+};
+
 export interface DeviceAuthorization {
   status: 'pending' | 'approved' | 'denied';
   clientId: string;
   deviceCode: string;
   userCode: string;
+  issuedAt: number;
   expiresAt: number;
   lastPolledAt: number;
   approvedToken?: string;
@@ -31,6 +36,8 @@ export type DevicePollOutcome =
   | { kind: 'denied' }
   | { kind: 'not_found' };
 
+export type DeviceCodeOrRejection = { ok: true; issued: DeviceCodeIssued } | { ok: false; error: 'unknown_client' };
+
 function randomUserCode(): string {
   const bytes = crypto.randomBytes(8);
   let out = '';
@@ -42,22 +49,27 @@ export class DeviceAuthStore {
   private readonly byDeviceCode = new Map<string, DeviceAuthorization>();
   private readonly byUserCode = new Map<string, string>();
 
-  issue(clientId: string): DeviceCodeIssued {
+  issue(clientId: string): DeviceCodeOrRejection {
+    if (!Object.prototype.hasOwnProperty.call(REGISTERED_CLIENTS, clientId)) {
+      return { ok: false, error: 'unknown_client' };
+    }
     this.sweep();
     const deviceCode = crypto.randomBytes(32).toString('hex');
     let userCode = randomUserCode();
     while (this.byUserCode.has(userCode)) userCode = randomUserCode();
+    const now = Date.now();
     const record: DeviceAuthorization = {
       status: 'pending',
       clientId,
       deviceCode,
       userCode,
-      expiresAt: Date.now() + DEVICE_CODE_TTL_MS,
+      issuedAt: now,
+      expiresAt: now + DEVICE_CODE_TTL_MS,
       lastPolledAt: 0,
     };
     this.byDeviceCode.set(deviceCode, record);
     this.byUserCode.set(userCode, deviceCode);
-    return { device_code: deviceCode, user_code: userCode, expires_in: DEVICE_CODE_TTL_MS / 1000, interval: POLL_INTERVAL_SEC };
+    return { ok: true, issued: { device_code: deviceCode, user_code: userCode, expires_in: DEVICE_CODE_TTL_MS / 1000, interval: POLL_INTERVAL_SEC } };
   }
 
   findByUserCode(userCode: string): DeviceAuthorization | undefined {

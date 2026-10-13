@@ -25,7 +25,7 @@ export function registerAccount(input: { email: string; name?: string; password:
   });
 }
 
-export function getDeviceCodeStatus(userCode: string): Promise<{ client_id: string }> {
+export function getDeviceCodeStatus(userCode: string): Promise<{ client_id: string; client_name: string; requested_at: string }> {
   return apiRequest(`/api/auth/device/status?code=${encodeURIComponent(userCode)}`, '');
 }
 

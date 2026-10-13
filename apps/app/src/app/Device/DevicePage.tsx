@@ -7,12 +7,9 @@ import { Logo } from '@/shared/components/Logo';
 
 type Outcome = 'idle' | 'approved' | 'denied';
 
-const KNOWN_CLIENTS: Record<string, string> = {
-  'agent-desktop': 'Agent Desktop',
-};
-
-function clientLabel(clientId: string): string {
-  return KNOWN_CLIENTS[clientId] || clientId;
+interface Preview {
+  clientName: string;
+  requestedAt: Date;
 }
 
 export function DevicePage() {
@@ -21,7 +18,7 @@ export function DevicePage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const [userCode, setUserCode] = useState(searchParams.get('code') || '');
-  const [clientId, setClientId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [checking, setChecking] = useState(false);
   const [lookupError, setLookupError] = useState('');
   const [error, setError] = useState('');
@@ -30,7 +27,7 @@ export function DevicePage() {
 
   useEffect(() => {
     const code = userCode.trim();
-    setClientId(null);
+    setPreview(null);
     setLookupError('');
     if (code.length < 8) return;
     let cancelled = false;
@@ -38,7 +35,7 @@ export function DevicePage() {
     const handle = setTimeout(() => {
       getDeviceCodeStatus(code)
         .then((result) => {
-          if (!cancelled) setClientId(result.client_id);
+          if (!cancelled) setPreview({ clientName: result.client_name, requestedAt: new Date(result.requested_at) });
         })
         .catch(() => {
           if (!cancelled) setLookupError('That code is unknown or has expired. Check it and try again.');
@@ -54,7 +51,7 @@ export function DevicePage() {
   }, [userCode]);
 
   async function approve() {
-    if (!token || !userCode.trim() || !clientId) return;
+    if (!token || !userCode.trim() || !preview) return;
     setError('');
     setBusy(true);
     try {
@@ -135,16 +132,16 @@ export function DevicePage() {
                   <Typography variant="body2" color="text.secondary">Looking up that code…</Typography>
                 </Stack>
               )}
-              {!checking && clientId && (
+              {!checking && preview && (
                 <Alert severity="warning">
-                  <strong>{clientLabel(clientId)}</strong> wants to sign in to your Klauro account. Only approve this if you recognize it as something you just did yourself.
+                  <strong>{preview.clientName}</strong> wants to sign in to your Klauro account — requested at {preview.requestedAt.toLocaleTimeString()}. Only approve this if you recognize it as something you just did yourself.
                 </Alert>
               )}
               {!checking && lookupError && <Alert severity="error">{lookupError}</Alert>}
               {error && <Alert severity="error">{error}</Alert>}
 
               <Stack direction="row" spacing={1}>
-                <Button variant="contained" size="large" disabled={busy || !clientId} onClick={() => void approve()} fullWidth>
+                <Button variant="contained" size="large" disabled={busy || !preview} onClick={() => void approve()} fullWidth>
                   Approve
                 </Button>
                 <Button variant="outlined" size="large" disabled={busy || !userCode.trim()} onClick={() => void deny()} fullWidth>
