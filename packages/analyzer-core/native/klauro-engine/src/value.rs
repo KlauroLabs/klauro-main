@@ -115,8 +115,8 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     if count == 0 || !crate::author::asked() {
         return;
     }
-    if !crate::jev::asked() {
-        eprintln!("  value not weighed: the decision model is not configured");
+    if !crate::jev::able() {
+        eprintln!("  value not weighed: neither the decision model nor the writer is configured");
         return;
     }
     let listed: Vec<(String, String)> = capabilities.iter().map(told).collect();
@@ -146,7 +146,7 @@ Answer no when \"{later}\" only looks at, reports on, undoes or follows up what 
     }
     let asked = questions.len();
     let (decided, judged) = rayon::join(
-        || crate::jev::decide(&state, questions),
+        || crate::jev::decide_or_write(&state, questions),
         || crate::author::give_on_their_own(said, &listed, &OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability"), GIVES, ONLY_ENABLES),
     );
     if decided.len() < asked || judged.iter().any(Option::is_none) {

@@ -138,6 +138,17 @@ pub fn asked() -> bool {
         && !crate::spend::exhausted()
 }
 
+pub fn able() -> bool {
+    asked() || crate::author::asked()
+}
+
+pub fn decide_or_write(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {
+    match asked() {
+        true => decide(state, questions),
+        false => crate::author::decided_by_writer(state, questions),
+    }
+}
+
 pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {
     decide_at(state, questions, crate::author::JOINING)
 }

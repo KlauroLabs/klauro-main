@@ -377,6 +377,58 @@ when the product's description would list them as separate purposes, even when t
 person, and when they end in different outcomes or serve different audiences. Being related, or belonging to the same area of the \
 product, is not being the same.";
 
+pub const DECIDED_BY_WRITER: &str = "Answer each numbered question on its own, from what it says and from what is said above. For a question answered true or false, answer true or false. For a question with named options, answer the name of one option exactly. Answer every number.";
+
+const DECIDED_PER_ASK: usize = 40;
+
+pub fn decided_by_writer(state: &str, questions: BTreeMap<String, crate::jev::Question>) -> BTreeMap<String, crate::jev::Decision> {
+    if !asked() || questions.is_empty() {
+        return BTreeMap::new();
+    }
+    let asking_of: Vec<(String, crate::jev::Question)> = questions.into_iter().collect();
+    let chunks: Vec<&[(String, crate::jev::Question)]> = asking_of.chunks(DECIDED_PER_ASK).collect();
+    let decided: Vec<Vec<(String, crate::jev::Decision)>> = asking(|| {
+        chunks
+            .par_iter()
+            .map(|chunk| {
+                let lines: Vec<String> = chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (_, question))| {
+                        let options = match &question.criteria {
+                            crate::jev::Criteria::Named(held) => held.iter().map(|(key, meaning)| format!("{key} = {meaning}")).collect::<Vec<_>>().join("; "),
+                            crate::jev::Criteria::Ranked(held) => held.join("; "),
+                        };
+                        format!("{}. {}\n   options: {options}", at + 1, question.instructions)
+                    })
+                    .collect();
+                let asked = format!("{DECIDED_BY_WRITER}{CACHED_UP_TO_HERE}\n\n{state}\n\nQuestions:\n{}\n\nReturn JSON only: {{\"decided\":[{{\"n\":1,\"answer\":\"...\"}}]}}", lines.join("\n"));
+                let answer = answered::<serde_json::Value>(&asked, 60 + 16 * chunk.len() as u32, &proposing(), "decided", chunk.len(), DESCRIBING_ASK);
+                answer
+                    .as_ref()
+                    .and_then(|answer| answer["decided"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|held| {
+                        let at = (held["n"].as_u64()? as usize).checked_sub(1)?;
+                        let (key, question) = chunk.get(at)?;
+                        let said = held["answer"].as_str()?.trim().to_string();
+                        let options: Vec<String> = match &question.criteria {
+                            crate::jev::Criteria::Named(held) => held.keys().cloned().collect(),
+                            crate::jev::Criteria::Ranked(held) => held.clone(),
+                        };
+                        let chosen = options.iter().find(|option| option.eq_ignore_ascii_case(&said))?.clone();
+                        let probabilities: BTreeMap<String, f64> = options.iter().map(|option| (option.clone(), if *option == chosen { 1.0 } else { 0.0 })).collect();
+                        let noul = (question.kind == "noul").then(|| if chosen == "true" { 1.0 } else { 0.0 });
+                        Some((key.clone(), crate::jev::Decision { choice: Some(chosen), score: None, noul, confidence: Some(1.0), probabilities: Some(probabilities) }))
+                    })
+                    .collect()
+            })
+            .collect()
+    });
+    decided.into_iter().flatten().collect()
+}
+
 pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
     let state = format!("A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n{PURPOSE}");
     let questions: BTreeMap<String, crate::jev::Question> = pairs
@@ -393,7 +445,7 @@ pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(us
             )
         })
         .collect();
-    let decided = crate::jev::decide(&state, questions);
+    let decided = crate::jev::decide_or_write(&state, questions);
     pairs.iter().filter_map(|(first, second)| Some(((*first, *second), decided.get(&format!("same_{first}_{second}"))?.noul?))).collect()
 }
 
@@ -1021,6 +1073,11 @@ fn shaped(of: &str) -> serde_json::Value {
                 "required": ["name", "outcome", "steps"],
             }}},
             "required": ["behaviours"],
+        }),
+        "decided" => serde_json::json!({
+            "type": "object",
+            "properties": {"decided": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "answer": text}, "required": ["n", "answer"]}}},
+            "required": ["decided"],
         }),
         "said" => serde_json::json!({
             "type": "object",
