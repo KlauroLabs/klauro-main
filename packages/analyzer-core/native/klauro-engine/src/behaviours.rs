@@ -513,10 +513,11 @@ fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
         })
     });
     for (key, joined) in waiting {
-        let together: Vec<Vec<usize>> = answered
+        let answer: Vec<Vec<usize>> = answered
             .get(&key)
             .and_then(|held| serde_json::from_value::<Vec<Vec<usize>>>(held["together"].clone()).ok())
             .unwrap_or_default();
+        let together = settled_together(&joined, answer);
         let mut taken: HashSet<usize> = HashSet::default();
         let mut slots: Vec<Option<Flow>> = joined.into_iter().map(Some).collect();
         for group in together {
@@ -534,6 +535,57 @@ fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
         out.extend(slots.into_iter().flatten());
     }
     out
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct KeptTogether {
+    ids: Vec<String>,
+    groups: Vec<Vec<String>>,
+}
+
+const KEPT_TOGETHER: &str = "same behaviours kept";
+
+fn settled_together(joined: &[Flow], answer: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
+    let ids: Vec<&str> = joined.iter().map(|flow| flow.id.as_str()).collect();
+    let class = joined.first().map(|flow| format!("{:?}\u{1}{:?}", flow.project, merge_class(flow))).unwrap_or_default();
+    let answered: Vec<Vec<&str>> = answer
+        .iter()
+        .map(|group| group.iter().filter_map(|at| at.checked_sub(1).and_then(|at| ids.get(at).copied())).collect())
+        .collect();
+    let groups = match crate::memory::recalled::<KeptTogether>(KEPT_TOGETHER, &class) {
+        Some(before) => kept_together(&ids, &before, &answered),
+        None => answered.into_iter().map(|group| group.into_iter().map(str::to_string).collect()).collect(),
+    };
+    crate::memory::keep(KEPT_TOGETHER, &class, &KeptTogether { ids: ids.iter().map(|id| id.to_string()).collect(), groups: groups.clone() });
+    let at: HashMap<&str, usize> = ids.iter().enumerate().map(|(index, id)| (*id, index + 1)).collect();
+    groups.iter().map(|group| group.iter().filter_map(|id| at.get(id.as_str()).copied()).collect()).collect()
+}
+
+fn kept_together(ids: &[&str], before: &KeptTogether, answered: &[Vec<&str>]) -> Vec<Vec<String>> {
+    let present: HashSet<&str> = ids.iter().copied().collect();
+    let known: HashSet<&str> = before.ids.iter().map(String::as_str).filter(|id| present.contains(id)).collect();
+    let mut groups: Vec<Vec<String>> = before
+        .groups
+        .iter()
+        .map(|group| group.iter().filter(|id| present.contains(id.as_str())).cloned().collect::<Vec<_>>())
+        .filter(|group| group.len() > 1)
+        .collect();
+    for group in answered {
+        let fresh: Vec<String> = group.iter().filter(|id| !known.contains(*id)).map(|id| id.to_string()).collect();
+        if fresh.is_empty() {
+            continue;
+        }
+        let joins = group.iter().find(|id| known.contains(*id));
+        match joins {
+            Some(old) => match groups.iter_mut().find(|held| held.iter().any(|id| id == old)) {
+                Some(held) => held.extend(fresh),
+                None => groups.push(std::iter::once(old.to_string()).chain(fresh).collect()),
+            },
+            None if fresh.len() > 1 => groups.push(fresh),
+            None => {}
+        }
+    }
+    groups
 }
 
 pub fn settle(held: &mut Comprehension, facts: &Facts) {
@@ -752,6 +804,35 @@ fn hosting<'a>(held: &mut Comprehension, facts: &Facts<'a>, project_of: &HashMap
 
 #[cfg(test)]
 mod tests {
+
+    fn kept(ids: &[&str], groups: &[&[&str]]) -> KeptTogether {
+        KeptTogether { ids: ids.iter().map(|id| id.to_string()).collect(), groups: groups.iter().map(|group| group.iter().map(|id| id.to_string()).collect()).collect() }
+    }
+
+    #[test]
+    fn flows_already_compared_keep_their_merges_whatever_a_fresh_answer_says() {
+        let before = kept(&["month", "today", "day"], &[]);
+        let fresh = vec![vec!["today", "month"]];
+        assert!(kept_together(&["month", "today", "day", "gifts"], &before, &fresh).is_empty());
+        let before = kept(&["month", "today", "day"], &[&["today", "month"]]);
+        assert_eq!(kept_together(&["month", "today", "day", "gifts"], &before, &[]), vec![vec!["today".to_string(), "month".to_string()]]);
+    }
+
+    #[test]
+    fn a_new_flow_joins_the_group_of_the_known_flow_it_is_answered_with() {
+        let before = kept(&["list", "browse", "show"], &[&["list", "browse"]]);
+        let fresh = vec![vec!["browse", "index"], vec!["gift", "gifts"]];
+        let groups = kept_together(&["list", "browse", "show", "index", "gift", "gifts"], &before, &fresh);
+        assert_eq!(groups, vec![vec!["list".to_string(), "browse".to_string(), "index".to_string()], vec!["gift".to_string(), "gifts".to_string()]]);
+    }
+
+    #[test]
+    fn a_flow_that_is_gone_leaves_its_group() {
+        let before = kept(&["a", "b", "c"], &[&["a", "b", "c"]]);
+        assert_eq!(kept_together(&["a", "c"], &before, &[]), vec![vec!["a".to_string(), "c".to_string()]]);
+        assert!(kept_together(&["a"], &before, &[]).is_empty());
+    }
+
     use super::*;
 
     fn step(id: &str, kind: &'static str, arms: &[&str]) -> crate::steps::LogicalStep {
