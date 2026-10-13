@@ -289,6 +289,9 @@ fn waited_long_enough(items: &[(String, String)]) -> bool {
 }
 
 fn waits_for_more(missing: usize, all: usize, together_from: usize) -> bool {
+    if missing > 0 && crate::reach::remembered_only() {
+        return true;
+    }
     std::env::var("KLAURO_NAME_EVERY_FLOW").is_err() && missing > 0 && missing < together_from && missing * 10 < all
 }
 
@@ -596,7 +599,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let waiting = std::sync::atomic::AtomicBool::new(false);
     let (answers, sentences) = rayon::join(
         || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| {
-            if waits_for_more(items.len(), first.len(), NAMED_TOGETHER_FROM) && !waited_long_enough(items) {
+            if waits_for_more(items.len(), first.len(), NAMED_TOGETHER_FROM) && (crate::reach::remembered_only() || !waited_long_enough(items)) {
                 waiting.store(true, std::sync::atomic::Ordering::Relaxed);
                 return std::collections::BTreeMap::new();
             }

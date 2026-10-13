@@ -15,6 +15,10 @@ pub fn asked() -> usize {
     ASKED.load(Ordering::Relaxed)
 }
 
+pub fn remembered_only() -> bool {
+    std::env::var("KLAURO_REMEMBERED_ONLY").map(|held| held != "0" && !held.is_empty()).unwrap_or(false)
+}
+
 struct Occupancy {
     now: usize,
     peak: usize,

@@ -306,7 +306,7 @@ fn ask(request: &str, urgency: u64) -> Reply {
     {
         return Reply::Answered(answered);
     }
-    if declined() {
+    if declined() || crate::reach::remembered_only() {
         return Reply::Declined;
     }
     let reachable: Vec<(String, String)> = deciders().into_iter().filter_map(|endpoint| key_for(&endpoint).map(|key| (endpoint, key))).collect();

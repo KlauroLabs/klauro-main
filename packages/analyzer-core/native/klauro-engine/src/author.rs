@@ -173,7 +173,7 @@ static CHECKED: std::sync::Once = std::sync::Once::new();
 
 pub fn check_writer() {
     CHECKED.call_once(|| {
-        if fallback().is_none() || spoken_to().is_some() || !asked() {
+        if fallback().is_none() || spoken_to().is_some() || !asked() || crate::reach::remembered_only() {
             return;
         }
         let to = writer(false);
@@ -1303,6 +1303,9 @@ fn answered<T: serde::de::DeserializeOwned>(
             && let Some(value) = read(&remembered, &to)
         {
             return Some(value);
+        }
+        if crate::reach::remembered_only() {
+            return None;
         }
         let mut rejected = 0usize;
         let mut missed = 0u32;
