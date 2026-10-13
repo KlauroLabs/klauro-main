@@ -7,6 +7,7 @@ const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export const REGISTERED_CLIENTS: Record<string, string> = {
   'agent-desktop': 'Agent Desktop',
+  'klauro-cli': 'Klauro CLI',
 };
 
 export interface DeviceAuthorization {

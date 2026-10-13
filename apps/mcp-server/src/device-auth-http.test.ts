@@ -226,3 +226,47 @@ test('polling with the wrong client_id never reveals the code is valid', async (
     assert.equal((await response.json() as { error: string }).error, 'expired_token');
   });
 });
+
+test('the CLI signs in by device code once a signed-in user sees it is the Klauro CLI and approves it', async () => {
+  const { signInWithDevice, deviceRequest, decideDevice } = await import('./device-cli');
+  await withServer(async (baseUrl) => {
+    const { token } = await registerUser(baseUrl, 'device-cli@example.com');
+    const told: string[] = [];
+    let approved = false;
+    const signed = await signInWithDevice({
+      serverUrl: baseUrl,
+      tell: (line) => told.push(line),
+      wait: async () => {
+        if (approved) return;
+        const code = /approve code (\S+)/.exec(told[0] ?? '')?.[1];
+        assert.ok(code);
+        const asking = await deviceRequest(baseUrl, code);
+        assert.equal(asking.client_name, 'Klauro CLI');
+        const decided = await decideDevice(baseUrl, token, code, 'approve');
+        assert.equal(decided.status, 'approved');
+        approved = true;
+      },
+    });
+    assert.equal(signed.email, 'device-cli@example.com');
+    const me = await fetch(`${baseUrl}/api/me`, { headers: { authorization: `Bearer ${signed.token}` } });
+    assert.equal(me.status, 200);
+  });
+});
+
+test('a denied device code ends the CLI sign-in with a clear refusal', async () => {
+  const { signInWithDevice, decideDevice } = await import('./device-cli');
+  await withServer(async (baseUrl) => {
+    const { token } = await registerUser(baseUrl, 'device-deny@example.com');
+    const told: string[] = [];
+    let denied = false;
+    await assert.rejects(signInWithDevice({
+      serverUrl: baseUrl,
+      tell: (line) => told.push(line),
+      wait: async () => {
+        if (denied) return;
+        await decideDevice(baseUrl, token, /approve code (\S+)/.exec(told[0])![1], 'deny');
+        denied = true;
+      },
+    }), /denied/);
+  });
+});

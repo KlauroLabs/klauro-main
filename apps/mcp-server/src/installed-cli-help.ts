@@ -83,8 +83,15 @@ const COMMAND_HELP: CommandHelp[] = [
   {
     names: ['login'],
     lines: [
-      '  login [--email EMAIL] [--password-stdin | --register]',
-      '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
+      '  login [--email EMAIL] [--password-stdin | --register | --device]',
+      '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts; --device signs in by approving a short code in the browser or from another signed-in machine',
+    ],
+  },
+  {
+    names: ['device'],
+    lines: [
+      '  device approve|deny CODE [--yes]',
+      '                               Shows which app a sign-in code belongs to, then approves it (--yes) or denies it for your account',
     ],
   },
   {

@@ -12,6 +12,7 @@ import { isUnboundHostedProjectId, loadKlauroConfig, writeDefaultKlauroConfig, w
 import { formatBuildIdentity, getBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
 import { usageText } from './installed-cli-help';
+import { decideDevice, deviceRequest, signInWithDevice } from './device-cli';
 import { renderStatusReport } from './status-report';
 import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
@@ -121,7 +122,8 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   'auth-status': new Set(['--server-url', '--json']),
   whoami: new Set(['--server-url', '--json']),
   logout: new Set(['--server-url', '--json']),
-  login: new Set(['--server-url', '--email', '--password', '--password-stdin', '--register', '--json']),
+  login: new Set(['--server-url', '--email', '--password', '--password-stdin', '--register', '--device', '--json']),
+  device: new Set(['--server-url', '--yes', '--json']),
   accounts: new Set(['--server-url', '--use', '--json']),
   'reset-password': new Set(['--server-url', '--token', '--token-stdin', '--new-password', '--new-password-stdin', '--json']),
   'change-password': new Set(['--server-url', '--current-password', '--current-password-stdin', '--new-password', '--new-password-stdin', '--json']),
@@ -173,6 +175,18 @@ function validateFlags(command: string, argv: string[]): void {
 
 
 
+
+function positionalArgs(argv: string[]): string[] {
+  const found: string[] = [];
+  for (let i = 3; i < argv.length; i += 1) {
+    if (argv[i].startsWith('-')) {
+      if (FLAGS_WITH_VALUES.has(argv[i])) i += 1;
+      continue;
+    }
+    found.push(argv[i]);
+  }
+  return found;
+}
 
 function resolvePositionalArg(argv: string[]): string | undefined {
   for (let i = 3; i < argv.length; i += 1) {
@@ -485,6 +499,11 @@ async function main() {
     if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
       throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
     }
+    if (process.argv.includes('--device')) {
+      const signed = await signInWithDevice({ serverUrl, tell: (line) => process.stderr.write(`${line}\n`) });
+      const saved = saveStoredConnectorSession({ serverUrl, token: signed.token, email: signed.email });
+      return output(json ? { status: 'signed-in', ...saved } : `Signed in as ${signed.email} to ${serverUrl}. Session saved to ${saved.file}.`, json);
+    }
     const email = value('--email') || await promptLine('Email: ');
 
 
@@ -523,6 +542,22 @@ async function main() {
 
 
 
+  if (command === 'device') {
+    const serverUrl = normalizeServerUrl(value('--server-url'));
+    const [decision, userCode] = positionalArgs(process.argv);
+    if ((decision !== 'approve' && decision !== 'deny') || !userCode) throw new Error('Usage: klauro device approve|deny CODE [--yes]');
+    const token = connectorToken(undefined, serverUrl);
+    if (!token) throw new Error('device approve/deny needs a signed-in session on this machine — run `klauro login` first.');
+    const asking = await deviceRequest(serverUrl, userCode);
+    const app = asking.client_name || `an unregistered app (${asking.client_id})`;
+    if (decision === 'approve' && !process.argv.includes('--yes')) {
+      return output(json
+        ? { status: 'confirm', user_code: userCode, client_id: asking.client_id, client_name: asking.client_name ?? null, requested_at: asking.requested_at }
+        : `Code ${userCode} is ${app} asking to sign in to your account (requested ${asking.requested_at}).\nIf you started this sign-in, run: klauro device approve ${userCode} --yes`, json);
+    }
+    const decided = await decideDevice(serverUrl, token, userCode, decision);
+    return output(json ? { ...decided, user_code: userCode, client_name: asking.client_name ?? null } : decision === 'approve' ? `Approved ${app} for ${decided.email || 'your account'}.` : `Denied the sign-in request from ${app}.`, json);
+  }
   if (command === 'reset-password') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
