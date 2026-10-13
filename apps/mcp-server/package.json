@@ -37,6 +37,7 @@
     "setup": "node scripts/install.mjs",
     "pack:tarball": "npm run build && node -e \"require('fs').mkdirSync('./.pack',{recursive:true})\" && npm pack ./.customer-package --pack-destination ./.pack && node scripts/write-release-manifest.mjs",
     "fabric-remote-e2e": "tsx scripts/fab-remote-e2e.ts",
+    "fabric-fleet-proof": "tsx scripts/fab-fleet-proof.ts",
     "discover-real-repos": "tsx src/repo-discovery.ts",
     "perf:budget": "tsx scripts/perf-budget.ts",
     "perf:budget:fixtures": "tsx scripts/generate-perf-fixtures.ts",
