@@ -69,6 +69,7 @@ export interface FlowTouch {
   id: string;
   name?: string;
   criticality?: string;
+  step_ids?: string[];
 }
 
 export interface CapabilityTouch {
@@ -215,28 +216,30 @@ function toSymbolChange(
 }
 
 function flowsTouchedBy(cas: CASOutput | null, changedNodeIds: Set<string>): FlowTouch[] {
-  if (!cas?.call_chains) return [];
   const touched: FlowTouch[] = [];
-  for (const chain of cas.call_chains) {
-    const hits = chain.call_path.some((step) => changedNodeIds.has(step.node_id));
-    if (!hits) continue;
-    touched.push({
-      id: chain.id,
-      name: chain.business_context?.business_process || chain.business_context?.feature_area || chain.entry_point?.method_name,
-      criticality: chain.criticality,
-    });
+  for (const flow of cas?.flows ?? []) {
+    const steps = flow.steps.filter((step) => step.functions.some((fn) => changedNodeIds.has(fn.function_id)));
+    if (!steps.length) continue;
+    touched.push({ id: flow.flow_id, name: flow.name, step_ids: steps.map((step) => step.step_id) });
   }
   return touched;
 }
 
-function capabilitiesTouchedBy(cas: CASOutput | null, changedEntryPointIds: Set<string>): CapabilityTouch[] {
-  if (!cas?.capabilities) return [];
-  const touched: CapabilityTouch[] = [];
-  for (const cap of cas.capabilities) {
-    const hits = (cap.operations || []).some((op) => changedEntryPointIds.has(op.entry_point_id));
-    if (hits) touched.push({ id: cap.id, name: cap.name });
+function capabilitiesTouchedBy(cas: CASOutput | null, changedEntryPointIds: Set<string>, flows: FlowTouch[] = []): CapabilityTouch[] {
+  const touched = new Map<string, CapabilityTouch>();
+  const names = new Map((cas?.capabilities ?? []).map((cap) => [cap.id, cap.name]));
+  for (const cap of cas?.capabilities ?? []) {
+    if ((cap.operations || []).some((op) => changedEntryPointIds.has(op.entry_point_id))) touched.set(cap.id, { id: cap.id, name: cap.name });
   }
-  return touched;
+  const flowIds = new Set(flows.map((flow) => flow.id));
+  for (const flow of cas?.flows ?? []) {
+    if (!flowIds.has(flow.flow_id)) continue;
+    for (const relationship of flow.capability_relationships ?? []) {
+      const name = names.get(relationship.capability_id);
+      if (name && !touched.has(relationship.capability_id)) touched.set(relationship.capability_id, { id: relationship.capability_id, name });
+    }
+  }
+  return [...touched.values()];
 }
 
 
@@ -294,6 +297,7 @@ export async function getInFlightSemanticDelta(
 
   const changedNodeIds = new Set(symbols.map((s) => s.symbol_id));
   const changedEntryPointIds = new Set(entryPoints.map((e) => e.id));
+  const touchedFlows = flowsTouchedBy(inflightCas, changedNodeIds);
 
   return {
     workspace: workspacePath,
@@ -303,8 +307,8 @@ export async function getInFlightSemanticDelta(
     inflight_present: true,
     symbols,
     entry_points: entryPoints,
-    flows_touched: flowsTouchedBy(inflightCas, changedNodeIds),
-    capabilities_touched: capabilitiesTouchedBy(inflightCas, changedEntryPointIds),
+    flows_touched: touchedFlows,
+    capabilities_touched: capabilitiesTouchedBy(inflightCas, changedEntryPointIds, touchedFlows),
     changes,
   };
 }
@@ -429,9 +433,7 @@ async function deltaFromParticipantSnapshot(
   const touchedEntryPointIds = new Set((cas?.entry_points ?? [])
     .filter((entryPoint) => changedNodeIds.has(entryPoint.source_node) || changedNodeIds.has(entryPoint.handler?.node_id ?? ''))
     .map((entryPoint) => entryPoint.id));
-  const touchedCapabilities = (cas?.capabilities ?? [])
-    .filter((capability) => capability.operations.some((operation) => touchedEntryPointIds.has(operation.entry_point_id)))
-    .map((capability) => ({ id: capability.id, name: capability.name }));
+  const touchedCapabilities = capabilitiesTouchedBy(cas, touchedEntryPointIds, touchedFlows);
   const entryPoints = (cas?.entry_points ?? [])
     .filter((entryPoint) => touchedEntryPointIds.has(entryPoint.id))
     .map((entryPoint) => ({ id: entryPoint.id, name: entryPoint.name, kind: 'touched' as const }));

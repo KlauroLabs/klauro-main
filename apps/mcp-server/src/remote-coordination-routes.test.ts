@@ -671,3 +671,65 @@ test('advisory claim route carries produces/consumes additively onto the server 
     boot.restoreEnv();
   }
 });
+
+test('claims naming only files are placed on the analysed flows and steps, so agents in one capability see each other', async () => {
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const workspace = 'ws-derived-concepts';
+  try {
+    const { saveAnalysis } = await import('./storage');
+    await saveAnalysis(workspace, {
+      cas_version: '1.11.0',
+      analysis_id: 'derived-concepts-1',
+      analysis_timestamp: new Date().toISOString(),
+      base_commit: 'abc1234',
+      system: { id: 'contacts', name: 'Contacts', type: 'service', root_path: '/contacts' },
+      nodes: [
+        { id: 'u:store', name: 'store', type: 'function', source: { file: 'app/Services/ContactService.php', line: 1 } },
+        { id: 'u:reply', name: 'reply', type: 'function', source: { file: 'app/Http/ContactController.php', line: 1 } },
+        { id: 'u:archive', name: 'archive', type: 'function', source: { file: 'app/Services/ArchiveService.php', line: 1 } },
+      ],
+      edges: [],
+      entry_points: [],
+      analyzer_contributions: [],
+      capabilities: [{ id: 'cap:keep-contacts', name: 'Keep track of contacts', operations: [], related_entities: [] }],
+      flows: [
+        {
+          flow_id: 'flow:create', name: 'Add a contact', entry_point: 'POST /contacts', entities: ['Contact'],
+          capability_id: 'cap:keep-contacts',
+          capability_relationships: [{ capability_id: 'cap:keep-contacts', role: 'primary' }],
+          steps: [
+            { step_id: 'flow:create:store', functions: [{ function_id: 'u:store' }] },
+            { step_id: 'flow:create:reply', functions: [{ function_id: 'u:reply' }] },
+          ],
+        },
+        {
+          flow_id: 'flow:archive', name: 'Archive a contact', entry_point: 'DELETE /contacts/{id}', entities: [],
+          capability_id: 'cap:keep-contacts',
+          capability_relationships: [{ capability_id: 'cap:keep-contacts', role: 'primary' }],
+          steps: [{ step_id: 'flow:archive:archive', functions: [{ function_id: 'u:archive' }] }],
+        },
+      ],
+    } as unknown as import('../../../packages/analyzer-core/src/types/cas.types').CASOutput);
+
+    await remoteClaim(config, { workspace, agentId: 'agent-A', intent: 'validate new contacts', paths: ['app/Services/ContactService.php'] });
+    const second = await remoteClaim(config, { workspace, agentId: 'agent-B', intent: 'soft-delete contacts', paths: ['app/Services/ArchiveService.php'] }) as any;
+
+    assert.equal(second.conflicts.length, 0);
+    assert.equal(second.attribution_source, 'derived');
+    assert.equal(second.analysis_ref?.analysis_id, 'derived-concepts-1');
+    assert.equal(second.analysis_ref?.commit, 'abc1234');
+    assert.deepEqual(second.concepts?.map((concept: any) => concept.step_id), ['flow:archive:archive']);
+    assert.equal(second.conceptual_awareness?.length, 1);
+    assert.equal(second.conceptual_awareness?.[0].agent_id, 'agent-A');
+    assert.equal(second.conceptual_awareness?.[0].verdict, 'awareness');
+    assert.equal(second.conceptual_awareness?.[0].shared_capability_id, 'cap:keep-contacts');
+
+    const sameStep = await remoteClaim(config, { workspace, agentId: 'agent-C', intent: 'rename fields', paths: ['app/Services/ContactService.php'] }) as any;
+    assert.equal(sameStep.conceptual_awareness?.[0].agent_id, 'agent-A');
+    assert.equal(sameStep.conceptual_awareness?.[0].shared_step_id, 'flow:create:store');
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});

@@ -186,6 +186,7 @@ export interface ConceptualScopeComparison {
   reason: string;
   shared_flow_id?: string;
   shared_step_id?: string;
+  shared_capability_id?: string;
   shared_entities?: string[];
 }
 
@@ -239,7 +240,15 @@ export function compareConceptualCoordinates(
     };
   }
 
-  return { verdict: 'unrelated', reason: 'No shared flow, step, or entity — no conceptual relationship detected.' };
+  if (a?.capability_id && b?.capability_id && a.capability_id === b.capability_id) {
+    return {
+      verdict: 'awareness',
+      reason: `Both agents are working toward the same capability ("${a.capability_id}") through different flows — safe to proceed in parallel, but worth knowing about each other.`,
+      shared_capability_id: a.capability_id,
+    };
+  }
+
+  return { verdict: 'unrelated', reason: 'No shared flow, step, entity, or capability — no conceptual relationship detected.' };
 }
 
 function intersectEntities(a?: string[], b?: string[]): string[] {

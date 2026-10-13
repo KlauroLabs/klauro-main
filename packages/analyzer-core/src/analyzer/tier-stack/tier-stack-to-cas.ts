@@ -447,7 +447,7 @@ function flowOf(
   flow: TierStackFlow,
   relationships: CapabilityFlowRelationship[],
   effects: ReturnType<typeof effectsByFlow>,
-): CASOutput['flows'][number] {
+): NonNullable<CASOutput['flows']>[number] {
   const primary = relationships.find(relationship => relationship.role === 'primary');
   return {
     flow_id: flow.id,

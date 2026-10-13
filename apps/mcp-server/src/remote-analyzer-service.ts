@@ -23,9 +23,9 @@ import { resolveWorkspaceMemberResponse } from './workspace-member-route';
 import { workspaceContractsHttpResponse } from './workspace-contracts';
 import { getClaimStreams, heartbeatClaimStream, publishClaimStream, releaseClaimStream, type AgentKind, type ConceptualCoordinate, type DeclaredContract } from './coordination';
 import { appendClaim, checkEditLock, describeCursorGap, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
-import { deriveActiveClaims } from './coordination/presence';
+import { reportConceptualChangesHttp, otherAgentConceptualStatesHttp, conceptualConflictCasForWorkspaceHttp, partitionCasForPathHttp, describeGrantHolders, canAccessCoordinationWorkspace } from './coordination/remote-coordination-http';
 import { appendSecurityAudit, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges } from './coordination/security';
-import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import {
   appendParticipantInFlightSnapshot,
@@ -33,8 +33,8 @@ import {
   type InFlightAttributionSource,
   type ParticipantInFlightSnapshot,
 } from './coordination/participant-in-flight-store';
-import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
-import { compareConceptualCoordinates } from './coordination/conceptual-scope';
+import { partitionTasks, type PartitionTask } from './coordination/partitioner';
+import { claimedConcepts, conceptualNeighbours, extendedConcepts } from './coordination/engine-concepts';
 import { getMergelessMetrics } from './coordination/mergeless-metrics';
 import { recordVisibleFabricOperation, type FabricDeliveryMetadata } from './coordination/fabric-delivery-metrics';
 import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from './coordination/intent-merge';
@@ -1189,24 +1189,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const workspace = body.workspace;
           const claimPaths = body.paths || [];
           const conflicts = claimPaths.length ? await checkEditLock(workspace, claimPaths, body.agent_id) : [];
-          const conceptualAwareness = body.concept
-            ? (await getActiveClaims(workspace))
-                .filter((claim) => claim.agent_id !== body.agent_id && claim.scope.concept)
-                .map((claim) => ({ claim, comparison: compareConceptualCoordinates(body.concept, claim.scope.concept) }))
-                .filter(({ comparison }) => comparison.verdict !== 'unrelated')
-                .map(({ claim, comparison }) => ({
-                  agent_id: claim.agent_id,
-                  intent: claim.intent,
-                  ...comparison,
-                }))
-            : [];
+          const analysisKey = await coordinationAnalysisKey(accounts, dataDir, workspace);
+          const claimed = await claimedConcepts(analysisKey, { paths: claimPaths, symbols: body.symbols }, body.concept);
+          const conceptualAwareness = await conceptualNeighbours(analysisKey, body.agent_id, claimed.concepts, await getActiveClaims(workspace));
           const now = new Date().toISOString();
           const entry = await appendClaim(workspace, {
             claim_id: body.claim_id || `${workspace}:${body.agent_id}`,
             workspace_id: workspace,
             agent_id: body.agent_id,
             agent_kind: body.agent_kind || 'other',
-            scope: { repo: workspace, paths: claimPaths, symbols: body.symbols || [], capability: body.capability, concept: body.concept },
+            scope: { repo: workspace, paths: claimPaths, symbols: body.symbols || [], capability: body.capability, concept: claimed.concept },
             intent: body.intent,
 
             status: body.status === 'released' ? 'released' : 'active',
@@ -1241,6 +1233,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             server_time: now,
             conflicts,
             conceptual_awareness: conceptualAwareness,
+            concepts: claimed.concepts,
+            attribution_source: claimed.attribution_source,
+            analysis_ref: claimed.analysis_ref,
             warning: conflicts.length
               ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts.map((c) => c.agent_id).join(', ')}). Your claim still succeeded — coordinate before writing.`
               : undefined,
@@ -1248,11 +1243,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
 
+        const analysisKey = await coordinationAnalysisKey(accounts, dataDir, body.workspace);
+        const granting = await claimedConcepts(analysisKey, { paths: body.paths, symbols: body.symbols }, body.concept);
         const result = await publishClaimStream({
           workspace_id: body.workspace,
           agent_id: body.agent_id,
           agent_kind: body.agent_kind || 'other',
-          scope: { repo: body.workspace, paths: body.paths || [], symbols: body.symbols || [], capability: body.capability },
+          scope: { repo: body.workspace, paths: body.paths || [], symbols: body.symbols || [], capability: body.capability, concept: granting.concept },
           intent: body.intent,
           ttl_ms: body.ttl_ms,
         });
@@ -1272,6 +1269,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           redirect_hint: result.redirect_hint,
           base_commit: body.base_commit,
           branch: body.branch,
+          conceptual_awareness: await conceptualNeighbours(analysisKey, body.agent_id, granting.concepts, await getActiveClaims(body.workspace)),
+          concepts: granting.concepts,
+          attribution_source: granting.attribution_source,
+          analysis_ref: granting.analysis_ref,
         });
         return;
       }
@@ -1429,6 +1430,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           consumes: outcome.claim.consumes ?? [],
           concept: outcome.claim.scope.concept,
           conflicts: outcome.conflicts,
+          ...(await extendedConcepts(await coordinationAnalysisKey(accounts, dataDir, body.workspace), outcome.claim, await getActiveClaims(body.workspace))),
           server_time: new Date().toISOString(),
         });
         return;
@@ -2024,151 +2026,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   return http.createServer(instrumentHttpHandler(requestHandler)).once('close', () => workspaceAnalyses.close());
 }
 
-const CONCEPTUAL_CLAIM_TTL_MS_HTTP = 30 * 60 * 1000;
-
-interface ConceptualMarkerHttp {
-  __conceptual__: { intent: string; changes: SymbolChange[]; reported_at: string };
-}
-
-function conceptualClaimIdHttp(workspaceId: string, agentId: string): string {
-  return `conceptual:${workspaceId}:${agentId}`;
-}
-
-function decodeConceptualMarkerHttp(intent: string): ConceptualMarkerHttp['__conceptual__'] | undefined {
-  try {
-    const parsed = JSON.parse(intent);
-    if (parsed && typeof parsed === 'object' && parsed.__conceptual__) {
-      return parsed.__conceptual__ as ConceptualMarkerHttp['__conceptual__'];
-    }
-  } catch {
-
-  }
-  return undefined;
-}
-
-async function reportConceptualChangesHttp(
-  workspace: string,
-  agentId: string,
-  agentKind: AgentKind,
-  intent: string,
-  changes: SymbolChange[]
-): Promise<void> {
-  const now = new Date().toISOString();
-  await appendClaim(workspace, {
-    claim_id: conceptualClaimIdHttp(workspace, agentId),
-    workspace_id: workspace,
-    agent_id: agentId,
-    agent_kind: agentKind,
-    scope: { repo: workspace, paths: [], symbols: changes.map((c) => c.symbol_id) },
-    intent: JSON.stringify({ __conceptual__: { intent, changes, reported_at: now } } satisfies ConceptualMarkerHttp),
-    status: 'active',
-    created_at: now,
-    ttl_ms: CONCEPTUAL_CLAIM_TTL_MS_HTTP,
-    heartbeat_at: now,
-  });
-}
-
-async function otherAgentConceptualStatesHttp(workspace: string, excludeAgentId: string): Promise<AgentInFlightState[]> {
-  const [log, snapshots] = await Promise.all([
-    readClaimLog(workspace),
-    readParticipantInFlightSnapshots(workspace, { attributableOnly: true }),
-  ]);
-  const active = deriveActiveClaims(log, Date.now()).filter((c) => c.workspace_id === workspace);
-  const states = new Map<string, AgentInFlightState>();
-  for (const claim of active) {
-    if (claim.agent_id === excludeAgentId) continue;
-    const marker = decodeConceptualMarkerHttp(claim.intent);
-    if (!marker) continue;
-    states.set(claim.agent_id, { agent_id: claim.agent_id, intent: marker.intent, changes: marker.changes });
-  }
-  for (const snapshot of snapshots) {
-    if (snapshot.agent_id === excludeAgentId || !snapshot.changes?.length) continue;
-    const existing = states.get(snapshot.agent_id);
-    states.set(snapshot.agent_id, {
-      agent_id: snapshot.agent_id,
-      intent: existing?.intent ?? '',
-      changes: snapshot.changes,
-    });
-  }
-  return [...states.values()];
-}
-
-async function conceptualConflictCasForWorkspaceHttp(workspace: string): Promise<ConflictCas> {
-  try {
-    const cas = await getAnalysis(workspace);
-    return {
-      nodes: (cas.nodes || []).map((n: any) => ({ id: n.id, name: n.name })),
-      edges: (cas.edges || [])
-        .filter((e: any) => e.type === 'calls')
-        .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
-    };
-  } catch {
-    return { nodes: [], edges: [] };
-  }
-}
-
-async function partitionCasForPathHttp(path: string): Promise<PartitionCas> {
-  try {
-    const cas = await getAnalysis(path);
-    const files = new Set<string>();
-    for (const n of (cas.nodes || []) as any[]) {
-      const f = n?.source?.file;
-      if (typeof f === 'string' && f.length > 0) files.add(f);
-    }
-    return {
-      nodes: (cas.nodes || []).map((n: any) => ({ id: n.id, name: n.name })),
-      edges: (cas.edges || [])
-        .filter((e: any) => e.type === 'calls')
-        .map((e: any) => ({ source: e.source, target: e.target, type: e.type })),
-      files: [...files],
-    };
-  } catch {
-    return { nodes: [], edges: [] };
-  }
-}
-
-interface GrantHolderContext {
-  agent_id: string;
-  intent: string;
-  granted_at: string;
-  lease_expires_at: string;
-  lease_status: 'active' | 'near_expiry' | 'expired';
-}
-
-async function describeGrantHolders(
-  workspace: string,
-  agentIds: string[]
-): Promise<Record<string, GrantHolderContext>> {
-  if (agentIds.length === 0) return {};
-  const wanted = new Set(agentIds);
-  const active = await getActiveClaims(workspace);
-  const out: Record<string, GrantHolderContext> = {};
-  const nowMs = Date.now();
-  for (const claim of active) {
-    if (!wanted.has(claim.agent_id) || out[claim.agent_id]) continue;
-    let markerIntent: string | undefined;
-    try {
-      const parsed = JSON.parse(claim.intent);
-      if (parsed && typeof parsed === 'object' && parsed.__grant__?.kind === 'granted') {
-        markerIntent = parsed.__grant__.intent;
-      }
-    } catch {
-
-    }
-    if (markerIntent === undefined) continue;
-    const leaseMs = Date.parse(claim.heartbeat_at) + claim.ttl_ms;
-    const remainingMs = leaseMs - nowMs;
-    out[claim.agent_id] = {
-      agent_id: claim.agent_id,
-      intent: markerIntent,
-      granted_at: claim.created_at,
-      lease_expires_at: new Date(leaseMs).toISOString(),
-      lease_status: remainingMs <= 0 ? 'expired' : remainingMs < 30_000 ? 'near_expiry' : 'active',
-    };
-  }
-  return out;
-}
-
 function accountSaltFor(clientId: string | undefined): string | undefined {
   return clientId && clientId.startsWith('user:') ? clientId : undefined;
 }
@@ -2222,23 +2079,10 @@ async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.In
   return { authorized: false, reason: token ? 'not_recognized' : 'no_token' };
 }
 
-async function canAccessCoordinationWorkspace(
-  accounts: AccountStore,
-  clientId: string,
-  workspace: string,
-): Promise<boolean> {
-  if (clientId === 'shared-token') return true;
-  if (!clientId.startsWith('user:')) return false;
-  const userId = clientId.slice('user:'.length);
-  if (workspace.startsWith('prj_')) {
-    try {
-      return Boolean(await accounts.getProjectForUser(userId, workspace));
-    } catch {
-      return false;
-    }
-  }
-  const workspaces = await accounts.listWorkspaces(userId);
-  return workspaces.some(candidate => candidate.id === workspace);
+async function coordinationAnalysisKey(accounts: AccountStore, dataDir: string, workspace: string): Promise<string> {
+  if (!workspace.startsWith('prj_')) return workspace;
+  const project = await accounts.getProjectById(workspace).catch(() => null);
+  return project ? workspacePath(dataDir, project.analysis_id || project.id) : workspace;
 }
 
 async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean; reason?: AuthRejectReason }> {
