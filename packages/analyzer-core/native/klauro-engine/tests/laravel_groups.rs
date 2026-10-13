@@ -62,3 +62,16 @@ fn an_api_resource_restricted_by_only_serves_just_those_actions() {
     assert!(!found.iter().any(|(_, path, _)| path.starts_with("/items") && path != "/items" && path != "/items/{item}"), "{found:?}");
     assert!(!serves(&found, "POST", "/items", "store"), "{found:?}");
 }
+
+#[test]
+fn a_route_naming_its_controller_by_full_namespace_is_served_by_that_controller() {
+    let index = common::read("laravel_groups");
+    let entry = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "/gift-ideas" && entry["method"] == "POST")
+        .unwrap_or_else(|| panic!("no POST /gift-ideas entry"));
+    let handler = entry["handler"].as_str().unwrap_or_default();
+    assert!(handler.contains("Domains/Gifts/Web/Controllers/GiftIdeaController.php") && handler.ends_with(":store"), "{handler}");
+}

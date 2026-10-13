@@ -3061,6 +3061,7 @@ pub fn derive(
             }
             _ if registration
                 .handler
+                .trim_start_matches('\\')
                 .chars()
                 .next()
                 .is_some_and(|held| held.is_ascii_uppercase()) =>
@@ -3077,7 +3078,13 @@ pub fn derive(
         }
     }
     let owner_type = |file: u32, owner: &str, action: Option<&str>| -> Option<&IndexNode> {
-        let written = owner;
+        let written = owner.trim_start_matches('\\');
+        if let Some((_, short)) = written.rsplit_once('\\') {
+            return nodes
+                .iter()
+                .filter(|node| node.kind.is_type() && names::leaf(&node.name) == short)
+                .find(|node| crate::namespaced::names_the_file(written, &files[node.file as usize]));
+        }
         let owner = names::leaf(owner);
         let named = || nodes.iter().filter(|node| node.kind.is_type() && names::leaf(&node.name) == owner);
         let acts = |node: &&IndexNode| {

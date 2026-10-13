@@ -523,7 +523,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn referenced_names(&self, node: Node, depth: u8) -> Vec<String> {
-        if self.spec.names.leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") {
+        if self.spec.names.leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") || node.kind() == "qualified_name" {
             return vec![self.text(node).to_string()];
         }
         if node.kind().contains("string") {

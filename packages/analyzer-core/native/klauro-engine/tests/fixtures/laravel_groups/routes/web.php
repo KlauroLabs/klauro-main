@@ -17,4 +17,5 @@ Route::middleware(['auth'])->group(function () {
     });
     Route::apiResource('items', VaultController::class)->only(['index', 'show']);
     Route::resource('photos', VaultController::class);
+    Route::post('gift-ideas', [\App\Domains\Gifts\Web\Controllers\GiftIdeaController::class, 'store']);
 });
