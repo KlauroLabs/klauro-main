@@ -1,6 +1,7 @@
 use crate::author::Grounding;
 
 pub const AI_UNANSWERED: &str = "ai-unanswered";
+pub const NAMED_LATER: &str = "named-in-the-next-batch";
 
 const NAME_RESOLVED_HOP: f64 = 0.35;
 const OPEN_END_PENALTY: f64 = 2.0;

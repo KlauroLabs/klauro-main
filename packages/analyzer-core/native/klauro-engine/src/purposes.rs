@@ -225,10 +225,10 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
         .map(|(at, _)| at + 1)
         .collect();
     if !checking && !surface_only {
-        return upward(said, part, &offered, &groups, &lines, journeys.then_some(&supporting_only), false);
+        return upward(said, part, remembered_as, &offered, &groups, &lines, journeys.then_some(&supporting_only), false);
     }
     if surface_only && !checking {
-        return upward(said, part, &offered, &groups, &lines, None, true);
+        return upward(said, part, remembered_as, &offered, &groups, &lines, None, true);
     }
     let holds = |_: &str, answer: &serde_json::Value| crate::author::what_is_wrong_with_purposes(answer, count).is_none();
     let answered = crate::memory::each_holding("part capabilities", crate::author::CAPABILITIES_ASKED, &[(key.clone(), prompt)], holds, |missing| {
@@ -271,7 +271,42 @@ pub(crate) fn of_a_part(asked: &Asked) -> OfAPart {
 
 const NAMED_PER_ASK: usize = 25;
 
-fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String], supporting_only: Option<&BTreeSet<usize>>, surface_only: bool) -> OfAPart {
+const KEPT_WHEN_SHARED: f64 = 0.5;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct NamedGroup {
+    members: Vec<String>,
+    named: serde_json::Value,
+}
+
+fn kept_names(previous: &[NamedGroup], current: &[(String, Vec<String>)]) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut candidates: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for (now, (_, members)) in current.iter().enumerate() {
+        let held: BTreeSet<&str> = members.iter().map(String::as_str).collect();
+        for (before, group) in previous.iter().enumerate() {
+            let was: BTreeSet<&str> = group.members.iter().map(String::as_str).collect();
+            let shared = held.intersection(&was).count();
+            let union = held.union(&was).count();
+            if union > 0 && shared as f64 / union as f64 >= KEPT_WHEN_SHARED {
+                candidates.push((shared, union, now, before));
+            }
+        }
+    }
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)).then(left.2.cmp(&right.2)).then(left.3.cmp(&right.3)));
+    let mut taken_now: BTreeSet<usize> = BTreeSet::new();
+    let mut taken_before: BTreeSet<usize> = BTreeSet::new();
+    let mut kept = std::collections::BTreeMap::new();
+    for (_, _, now, before) in candidates {
+        if !taken_now.contains(&now) && !taken_before.contains(&before) {
+            taken_now.insert(now);
+            taken_before.insert(before);
+            kept.insert(current[now].0.clone(), previous[before].named.clone());
+        }
+    }
+    kept
+}
+
+fn upward(said: &str, part: Option<&str>, remembered_as: &str, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String], supporting_only: Option<&BTreeSet<usize>>, surface_only: bool) -> OfAPart {
     let built = match surface_only {
         true => crate::assembled::assembled_groups(groups),
         false => crate::assembled::assembled(offered),
@@ -280,16 +315,18 @@ fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow
         true => lines[*at].split_once(". ").map(|(_, said)| said.to_string()).unwrap_or_else(|| lines[*at].clone()),
         false => offered[*at].name.clone().unwrap_or_else(|| offered[*at].operation.clone()),
     };
+    let member_ids: Vec<Vec<String>> = built.groups.iter().map(|members| members.iter().flat_map(|at| groups[*at].iter().map(|flow| flow.id.clone())).collect()).collect();
     let told: Vec<(String, String)> = built
         .groups
         .iter()
-        .map(|members| {
+        .zip(&member_ids)
+        .map(|(members, ids)| {
             let mut names: Vec<String> = members.iter().map(name_of).collect();
             names.sort();
-            let ids: Vec<&str> = members.iter().flat_map(|at| groups[*at].iter().map(|flow| flow.id.as_str())).collect();
             (crate::jev::named(&ids.join("\u{1}")), names.join("; "))
         })
         .collect();
+    let previous: Vec<NamedGroup> = crate::memory::recalled("capability groups", remembered_as).unwrap_or_default();
     let name_in = |chunk: &[(String, String)]| -> Option<Vec<(String, serde_json::Value)>> {
         let numbered: Vec<String> = chunk.iter().enumerate().map(|(at, (_, names))| format!("{}. {names}", at + 1)).collect();
         let answer = crate::author::capabilities_named(&format!("Part: {said}\nGroups:\n{}", numbered.join("\n")), chunk.len())?;
@@ -308,12 +345,19 @@ fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow
     let answered = crate::memory::each("capability named", &format!("{}\u{1}{}", part.unwrap_or("whole"), crate::author::CAPABILITIES_NAMED), &told, |missing| {
         crate::author::asking(|| {
             use rayon::prelude::*;
-            let mut named: std::collections::BTreeMap<String, serde_json::Value> = missing.par_chunks(NAMED_PER_ASK).filter_map(name_in).flatten().collect();
+            let current: Vec<(String, Vec<String>)> = missing.iter().filter_map(|(id, _)| told.iter().position(|(held, _)| held == id).map(|at| (id.clone(), member_ids[at].clone()))).collect();
+            let mut named: std::collections::BTreeMap<String, serde_json::Value> = kept_names(&previous, &current);
+            let asking: Vec<(String, String)> = missing.iter().filter(|(id, _)| !named.contains_key(id)).cloned().collect();
+            named.extend(asking.par_chunks(NAMED_PER_ASK).filter_map(name_in).flatten().collect::<Vec<_>>());
             let left: Vec<&(String, String)> = missing.iter().filter(|(id, _)| !named.contains_key(id)).collect();
             named.extend(left.par_iter().filter_map(|item| name_in(std::slice::from_ref(*item))).flatten().collect::<Vec<_>>());
             named
         })
     });
+    if crate::author::asked() {
+        let remembered: Vec<NamedGroup> = told.iter().zip(&member_ids).filter_map(|((id, _), members)| Some(NamedGroup { members: members.clone(), named: answered.get(id)?.clone() })).collect();
+        crate::memory::keep("capability groups", remembered_as, &remembered);
+    }
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!("    capabilities assembled from code facts: {} flows into {} groups, {} named", offered.len(), built.groups.len(), answered.len());
     }
@@ -601,6 +645,22 @@ mod tests {
         assert!(told.ends_with("- Place orders: Shoppers buy.\n- Browse products: Shoppers look."), "{told}");
         assert!(told_before(&serde_json::json!({"purposes": []})).is_none());
         assert_eq!(crate::author::with_before("Asked", None), "Asked");
+    }
+
+    #[test]
+    fn a_group_that_keeps_most_of_its_members_keeps_its_name_and_a_new_group_is_asked_for() {
+        let named = |name: &str| serde_json::json!({"name": name, "outcome": ""});
+        let previous = vec![
+            NamedGroup { members: vec!["flow:a".into(), "flow:b".into(), "flow:c".into()], named: named("Manage vaults") },
+            NamedGroup { members: vec!["flow:x".into(), "flow:y".into()], named: named("Track tasks") },
+        ];
+        let current = vec![
+            ("g1".to_string(), vec!["flow:a".to_string(), "flow:b".to_string(), "flow:c".to_string(), "flow:new".to_string()]),
+            ("g2".to_string(), vec!["flow:p".to_string(), "flow:q".to_string()]),
+        ];
+        let kept = kept_names(&previous, &current);
+        assert_eq!(kept.get("g1"), Some(&named("Manage vaults")));
+        assert!(!kept.contains_key("g2"), "a group with no earlier counterpart is named afresh");
     }
 
     #[test]

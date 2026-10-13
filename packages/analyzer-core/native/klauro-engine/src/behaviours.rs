@@ -268,6 +268,12 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
 }
 
 const FLOWS_PER_ASK: usize = 32;
+const NAMED_TOGETHER_FROM: usize = 20;
+const SAID_TOGETHER_FROM: usize = 40;
+
+fn waits_for_more(missing: usize, all: usize, together_from: usize) -> bool {
+    std::env::var("KLAURO_NAME_EVERY_FLOW").is_err() && missing > 0 && missing < together_from && missing * 10 < all
+}
 
 fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>, pieces: &HashMap<String, Told>, prompts: &HashMap<String, String>) -> std::collections::BTreeMap<String, Answer> {
     let mut by_head: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
@@ -444,10 +450,14 @@ fn joined(flows: Vec<Flow>) -> Vec<Flow> {
 
 fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
     let mut by_part: std::collections::BTreeMap<(Option<String>, MergeClass), Vec<Flow>> = std::collections::BTreeMap::new();
+    let mut out = Vec::new();
     for flow in flows {
+        if flow.name.is_none() {
+            out.push(flow);
+            continue;
+        }
         by_part.entry((flow.project.clone(), merge_class(&flow))).or_default().push(flow);
     }
-    let mut out = Vec::new();
     let mut asked: Vec<(String, String)> = Vec::new();
     let mut waiting: Vec<(String, Vec<Flow>)> = Vec::new();
     for ((project, (kind, ..)), joined) in by_part {
@@ -565,12 +575,23 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     labels.sort();
     labels.dedup();
     let label_items: Vec<(String, String)> = labels.iter().map(|label| (label.clone(), label.clone())).collect();
+    let waiting = std::sync::atomic::AtomicBool::new(false);
     let (answers, sentences) = rayon::join(
-        || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of, &several_pieces, &several_prompts)),
+        || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| {
+            if waits_for_more(items.len(), first.len(), NAMED_TOGETHER_FROM) {
+                waiting.store(true, std::sync::atomic::Ordering::Relaxed);
+                return std::collections::BTreeMap::new();
+            }
+            asked_all("flow behaviours", items, &steps_of, &several_pieces, &several_prompts)
+        }),
         || crate::memory::each("step said", crate::author::STEP_SAID_ASKED, &label_items, |missing| {
+            if waits_for_more(missing.len(), label_items.len(), SAID_TOGETHER_FROM) {
+                return std::collections::BTreeMap::new();
+            }
             crate::author::steps_said(&missing.iter().map(|(label, _)| label.clone()).collect::<Vec<_>>())
         }),
     );
+    let waiting = waiting.into_inner();
     let label_of: HashMap<(&str, &str), &str> = kept.iter().flat_map(|flow| flow.steps.iter().map(move |step| ((flow.id.as_str(), step.id.as_str()), step.label.as_str()))).collect();
     let filled = |flow: &str, mut answer: Answer| -> Answer {
         for behaviour in answer.behaviours.iter_mut() {
@@ -663,6 +684,11 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
                     .collect();
             }
             settled.push(shaped);
+        }
+    }
+    if waiting {
+        for flow in settled.iter_mut().filter(|flow| flow.name.is_none() && flow.kind != "test") {
+            flow.unsettled = Some(crate::confidence::NAMED_LATER);
         }
     }
     let mut flows = merged(settled, facts);
