@@ -417,13 +417,17 @@ export function enginePath(): string {
   return found;
 }
 
-export async function readTierStack(projectPath: string, options: { enrich?: boolean } = {}): Promise<TierStackIndex> {
+export async function readTierStack(projectPath: string, options: { enrich?: boolean; rememberedOnly?: boolean } = {}): Promise<TierStackIndex> {
   let stdout: Buffer;
   try {
     ({ stdout } = await run(enginePath(), [projectPath], {
       maxBuffer: buffer.constants.MAX_LENGTH,
       encoding: 'buffer',
-      env: options.enrich === false ? { ...process.env, KLAURO_ENRICH: '0' } : process.env,
+      env: {
+        ...process.env,
+        ...(options.enrich === false ? { KLAURO_ENRICH: '0' } : {}),
+        ...(options.rememberedOnly ? { KLAURO_REMEMBERED_ONLY: '1' } : {}),
+      },
     }));
   } catch (error) {
     const stderr = (error as { stderr?: Buffer }).stderr;

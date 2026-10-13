@@ -10,7 +10,7 @@ export { tierStackToCas, TIER_STACK_ANALYZER } from './tier-stack-to-cas';
 export async function analyzeWithTierStack(
   projectPath: string,
   displayName?: string,
-  options: { enrich?: boolean } = {}
+  options: { enrich?: boolean; rememberedOnly?: boolean } = {}
 ): Promise<CASOutput> {
   const startedAt = Date.now();
   const index = await readTierStack(projectPath, options);

@@ -38,6 +38,7 @@ export interface RemoteSyncOptions {
 
 
   wait?: boolean;
+  namingDeferred?: boolean;
 
   readinessRequirement?: 'complete' | 'structural';
   onProgress?: (message: string) => void;
@@ -669,6 +670,7 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
     project_path: projectPath,
     changes,
     async: !options.wait,
+    ...(options.namingDeferred ? { naming: 'deferred' as const } : {}),
   }), serverUrl);
   if (options.wait && (response as AnalyzeRemotelyResult).cas) {
     const completed = response as AnalyzeRemotelyResult;

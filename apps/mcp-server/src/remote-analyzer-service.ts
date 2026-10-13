@@ -3827,7 +3827,7 @@ async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountS
 }
 async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
   const { analysisId, workspace, displayName, manifest } = prepared;
-  const summary = await runAnalysis(workspace, { displayName });
+  const summary = await runAnalysis(workspace, { displayName, rememberedOnly: request.naming === 'deferred' });
   const bound = syncResponseCasNodeBound();
   const cas = summary.nodes <= bound ? await getAnalysis(workspace) : undefined;
   return {

@@ -38,6 +38,7 @@ export function createIncrementalUploadRequest(input: {
   project_path: string;
   changes: StreamingWorkingTreePlan;
   async: boolean;
+  naming?: 'deferred';
 }): StreamingJsonRequest {
   return streamingRequest(() => incrementalJson(input));
 }
@@ -109,6 +110,7 @@ async function* incrementalJson(input: Parameters<typeof createIncrementalUpload
   yield `,${field('project_id', input.project_id)}`;
   if (input.organization_id !== undefined) yield `,${field('organization_id', input.organization_id)}`;
   yield `,${field('project_path', input.project_path)}`;
+  if (input.naming !== undefined) yield `,${field('naming', input.naming)}`;
   yield ',"changes":{';
   yield field('project_name', input.changes.project_name);
   if (input.changes.base_commit !== undefined) yield `,${field('base_commit', input.changes.base_commit)}`;

@@ -222,14 +222,14 @@ function hasStaleNarrativePattern(
   return hasPurposeEvidenceDrift(previousPurpose, output);
 }
 
-export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean } = {}): Promise<CASOutput> {
+export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean; rememberedOnly?: boolean } = {}): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async () => {
-    const analyzed = await recorded(projectPath, () => analyzeWithTierStack(projectPath, displayName));
+    const analyzed = await recorded(projectPath, () => analyzeWithTierStack(projectPath, displayName, { rememberedOnly: options.rememberedOnly }));
     const result = options.reuseStoredContext === false
       ? analyzed
       : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
@@ -907,6 +907,7 @@ export function __getAiEnrichmentLanePermitsInUseForTests(): number {
 export async function analyzeProjectIncremental(
   projectPath: string,
   displayName?: string,
+  options: { rememberedOnly?: boolean } = {},
 ): Promise<IncrementalAnalysisResult> {
   const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
   const entry = await getAnalysisEntry(projectPath).catch(() => null);
@@ -914,7 +915,7 @@ export async function analyzeProjectIncremental(
   const rebuilding = version !== null && version.stored_version !== version.current_version;
   if (version) await guardAgainstDoomedVersionRebuild(projectPath, version);
   const previousCasVersion = previous ? getAnalysisVersionInfo(previous).stored_version : undefined;
-  const analyze = () => analyzeProject(projectPath, displayName);
+  const analyze = () => analyzeProject(projectPath, displayName, { rememberedOnly: options.rememberedOnly });
   const output = rebuilding && version
     ? await recordingRebuild(projectPath, version, analyze)
     : await analyze();
@@ -1063,6 +1064,7 @@ export interface RunAnalysisOptions {
 
 
   displayName?: string;
+  rememberedOnly?: boolean;
 }
 
 export async function runAnalysisInProcess(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
@@ -1070,7 +1072,7 @@ export async function runAnalysisInProcess(projectPath: string, options: RunAnal
     const output = await analyzeProject(projectPath, options.displayName);
     return summarizeFullAnalysis(projectPath, output);
   }
-  const result = await analyzeProjectIncremental(projectPath, options.displayName);
+  const result = await analyzeProjectIncremental(projectPath, options.displayName, { rememberedOnly: options.rememberedOnly });
   return summarizeIncrementalAnalysis(projectPath, result);
 }
 
@@ -1415,6 +1417,11 @@ export function __analysisWorkerRunningForTests(): boolean {
   return workerHandle !== null;
 }
 
+function workerEnv(options: RunAnalysisOptions): Record<string, string> {
+  const { KLAURO_REMEMBERED_ONLY: _held, ...env } = collectKlauroEnvSnapshot();
+  return options.rememberedOnly ? { ...env, KLAURO_REMEMBERED_ONLY: '1' } : env;
+}
+
 function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Promise<AnalysisRunSummary> {
   const handle = ensureAnalysisWorker();
   const id = nextWorkerJobId++;
@@ -1426,7 +1433,7 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
       projectPath,
       forceFull: Boolean(options.forceFull),
       displayName: options.displayName,
-      env: collectKlauroEnvSnapshot(),
+      env: workerEnv(options),
     };
     handle.child.send(request, (error) => {
       if (error) {

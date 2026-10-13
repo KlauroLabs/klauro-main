@@ -51,6 +51,10 @@ test('incremental stream preserves added, modified, deleted, diff, hashes, and m
     assert.equal(parsed.changes.git_diff, legacy.git_diff);
     assert.deepEqual(withoutTime(parsed.changes.manifest), withoutTime(legacy.manifest));
     assert.equal(parsed.changes.manifest.transfer_recommendation.operation, 'prepare_local_working_copy_context');
+    assert.equal(parsed.naming, undefined);
+    const deferred = await decode(createIncrementalUploadRequest({ analysis_id: 'a', project_id: 'p', project_path: root, changes: await buildStreamingWorkingTreeChanges(root), async: true, naming: 'deferred' }));
+    assert.equal(deferred.naming, 'deferred');
+    assert.deepEqual(deferred.changes.changed_files, legacy.changed_files);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

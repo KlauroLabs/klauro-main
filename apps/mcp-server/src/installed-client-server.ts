@@ -409,12 +409,13 @@ export function createServer(): McpServer {
   }, async ({ path, force, confirm_scope }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force), confirmScope: Boolean(confirm_scope) })));
 
   register('sync_codebase_remote', {
-    description: 'Upload in-flight working-tree changes for hosted incremental analysis.',
+    description: 'Upload in-flight working-tree changes for hosted incremental analysis. With naming_deferred, the update is structural and costs nothing: new flows and capabilities appear at once with names reused from earlier analyses, and anything new is named on the next normal sync.',
     inputSchema: {
       path: z.string(),
+      naming_deferred: z.boolean().optional().describe('Reuse remembered names only and ask nothing new (for live updates while editing)'),
       confirm_scope: z.boolean().optional().describe('Confirms uploading `path` even though it looks like a container of several unrelated projects rather than one project. Omit/false refuses that upload with an explanatory error instead of silently proceeding.'),
     },
-  }, async ({ path, confirm_scope }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true, confirmScope: Boolean(confirm_scope) })));
+  }, async ({ path, confirm_scope, naming_deferred }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true, confirmScope: Boolean(confirm_scope), namingDeferred: Boolean(naming_deferred) })));
 
   register('get_upload_manifest', {
     description: 'Preview which source files would be uploaded, as counts plus a per-directory breakdown and a sample. Reads files but performs no parsing or analysis.',

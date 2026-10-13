@@ -115,6 +115,7 @@ export interface RemoteSyncRequest {
   };
 
   async?: boolean;
+  naming?: 'deferred';
 }
 
 export interface RemoteAnalyzeDiffRequest {
