@@ -6,8 +6,6 @@ const WRITER_PER_INPUT_TOKEN: f64 = 0.10 / MICROS;
 const WRITER_PER_CACHED_TOKEN: f64 = 0.01 / MICROS;
 const WRITER_PER_OUTPUT_TOKEN: f64 = 0.50 / MICROS;
 const TARGET: f64 = 0.10;
-const CEILING: f64 = 0.25;
-const DECISIONS_CEILING: f64 = 0.05;
 
 static WRITER: AtomicU64 = AtomicU64::new(0);
 static DECIDER: AtomicU64 = AtomicU64::new(0);
@@ -19,8 +17,12 @@ fn dollars(from: &str, fallback: f64) -> f64 {
     std::env::var(from).ok().and_then(|held| held.parse().ok()).unwrap_or(fallback)
 }
 
-fn ceiling() -> f64 {
-    dollars("KLAURO_AI_CEILING_USD", CEILING)
+fn set_ceiling(from: &str) -> Option<f64> {
+    std::env::var(from).ok().and_then(|held| held.parse::<f64>().ok()).filter(|held| *held > 0.0)
+}
+
+fn ceiling() -> Option<f64> {
+    set_ceiling("KLAURO_AI_CEILING_USD")
 }
 
 pub(crate) fn priced(endpoint: &str, answer: &str) -> (bool, f64, u64) {
@@ -52,12 +54,17 @@ pub(crate) fn charge(endpoint: &str, answer: &str) {
         }
     }
     let decided = DECIDER.load(Ordering::Relaxed) as f64 / MICROS;
-    let decisions_ceiling = dollars("KLAURO_DECISIONS_CEILING_USD", DECISIONS_CEILING);
-    if decided >= decisions_ceiling && !DECISIONS_STOPPED.swap(true, Ordering::Relaxed) {
-        eprintln!("  decision service not asked any more: this run has spent ${decided:.4} of its ${decisions_ceiling:.2} decisions ceiling; the writer answers the rest");
+    if let Some(limit) = set_ceiling("KLAURO_DECISIONS_CEILING_USD")
+        && decided >= limit
+        && !DECISIONS_STOPPED.swap(true, Ordering::Relaxed)
+    {
+        eprintln!("  decision service not asked any more: this run has spent ${decided:.4} of its ${limit:.2} decisions ceiling; the writer answers the rest");
     }
-    if spent() >= ceiling() && !STOPPED.swap(true, Ordering::Relaxed) {
-        eprintln!("  AI not asked any more: this run has spent ${:.4} of its ${:.2} ceiling; what is left unanswered stays pending", spent(), ceiling());
+    if let Some(limit) = ceiling()
+        && spent() >= limit
+        && !STOPPED.swap(true, Ordering::Relaxed)
+    {
+        eprintln!("  AI not asked any more: this run has spent ${:.4} of its ${limit:.2} ceiling; what is left unanswered stays pending", spent());
     }
 }
 
@@ -80,7 +87,10 @@ pub(crate) fn said() -> String {
         "ai spend ${:.4} of a ${TARGET:.2} target (writer ${writer:.4}, decisions ${decider:.4} for {} tokens){}",
         writer + decider,
         DECIDER_TOKENS.load(Ordering::Relaxed),
-        if exhausted() { format!(", stopped at the ${:.2} ceiling", ceiling()) } else { String::new() }
+        match (exhausted(), ceiling()) {
+            (true, Some(limit)) => format!(", stopped at the ${limit:.2} ceiling"),
+            _ => String::new(),
+        }
     )
 }
 
