@@ -716,6 +716,7 @@ mod tests {
             description: None,
             lands_in: Vec::new(),
             gathers: Vec::new(),
+            contract: None,
         }
     }
 
@@ -754,6 +755,7 @@ mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            contract: None,
             value: None,
         }
     }

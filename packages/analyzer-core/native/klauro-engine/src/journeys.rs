@@ -105,6 +105,7 @@ fn journey_of(flows: &[Flow], chain: &[(usize, Option<&Seam>)], parts: &Parts) -
             description: None,
             lands_in: vec![member.id.clone()],
             gathers: Vec::new(),
+            contract: None,
         });
         journey.path.extend(member.path.first().map(|first| Step { unit: first.unit.clone(), depth: number as u32, leaves: Vec::new() }));
         if number == 0 {
@@ -320,6 +321,7 @@ mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            contract: None,
             value: None,
         }
     }

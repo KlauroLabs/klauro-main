@@ -272,6 +272,7 @@ pub(crate) mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            contract: None,
             value: None,
         }
     }

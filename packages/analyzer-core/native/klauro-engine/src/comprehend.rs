@@ -84,6 +84,8 @@ pub struct Flow {
     pub capabilities: Vec<crate::ties::Held>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract: Option<crate::contracts::Contract>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2418,6 +2420,7 @@ pub fn derive(
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            contract: None,
             value: None,
         });
     }

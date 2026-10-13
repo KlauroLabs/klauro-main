@@ -337,6 +337,7 @@ mod tests {
             entered_by: Vec::new(),
             runs_in: None,
             capabilities: Vec::new(),
+            contract: None,
             value: None,
         }
     }
@@ -377,7 +378,7 @@ mod tests {
         member.capabilities = vec![Held { capability: "capability:orders:take-orders".to_string(), role: "delivers" }];
         held.flows.push(member);
         let mut journey = flow_named("journey:checkout");
-        journey.steps = vec![crate::steps::LogicalStep { id: "s1".to_string(), kind: "do", label: "Orders: Create order".to_string(), object: None, doing: None, when: "always", arms: Vec::new(), regions: Vec::new(), description: None, lands_in: vec!["create-order".to_string()], gathers: Vec::new() }];
+        journey.steps = vec![crate::steps::LogicalStep { id: "s1".to_string(), kind: "do", label: "Orders: Create order".to_string(), object: None, doing: None, when: "always", arms: Vec::new(), regions: Vec::new(), description: None, lands_in: vec!["create-order".to_string()], gathers: Vec::new(), contract: None }];
         held.whole = Some(Whole { flows: vec![journey], ..Default::default() });
         let names = HashMap::default();
         let roles = HashMap::default();

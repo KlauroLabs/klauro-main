@@ -67,7 +67,7 @@ mod tests {
     use crate::ties::tests::{capability, entity, flow};
 
     fn step(id: &str, said: &str) -> crate::steps::LogicalStep {
-        crate::steps::LogicalStep { id: id.to_string(), kind: "do", label: id.to_string(), object: None, doing: None, when: "always", arms: Vec::new(), regions: Vec::new(), description: Some(said.to_string()), lands_in: Vec::new(), gathers: Vec::new() }
+        crate::steps::LogicalStep { id: id.to_string(), kind: "do", label: id.to_string(), object: None, doing: None, when: "always", arms: Vec::new(), regions: Vec::new(), description: Some(said.to_string()), lands_in: Vec::new(), gathers: Vec::new(), contract: None }
     }
 
     #[test]

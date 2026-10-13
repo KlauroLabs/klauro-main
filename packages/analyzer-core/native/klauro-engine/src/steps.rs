@@ -36,6 +36,8 @@ pub struct LogicalStep {
     pub lands_in: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gathers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract: Option<crate::contracts::Contract>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1213,6 +1215,7 @@ impl<'a> Reader<'a> {
                 description: None,
                 lands_in: Vec::new(),
                 gathers: Vec::new(),
+                contract: None,
             });
         }
         let edges = steps

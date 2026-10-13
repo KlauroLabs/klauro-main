@@ -68,6 +68,7 @@ mod namespaced;
 mod paths;
 mod reach;
 mod assembled;
+mod contracts;
 mod purposes;
 mod spend;
 mod records;
@@ -1683,6 +1684,11 @@ fn read_it() {
     }
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     ties::tie(&mut comprehension, &index.nodes, &index.edges);
+    let contracted = contracts::attach(&mut comprehension.flows, &index.icelot, &index.exit_points);
+    if let Some(whole) = comprehension.whole.as_mut() {
+        contracts::attach(&mut whole.flows, &index.icelot, &index.exit_points);
+    }
+    eprintln!("contracts {contracted} of {} flows", comprehension.flows.len());
     eprintln!(
         "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {} | asked {}",
         comprehend_started.elapsed(),
