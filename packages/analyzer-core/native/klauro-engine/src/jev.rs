@@ -63,7 +63,7 @@ impl From<Vec<String>> for Criteria {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Decision {
     #[serde(default)]
     pub choice: Option<String>,
@@ -136,6 +136,7 @@ pub fn asked() -> bool {
         && deciders().iter().any(|endpoint| key_for(endpoint).is_some())
         && !declined()
         && !crate::spend::exhausted()
+        && !crate::spend::decisions_exhausted()
 }
 
 pub fn able() -> bool {
@@ -147,6 +148,39 @@ pub fn decide_or_write(state: &str, questions: BTreeMap<String, Question>) -> BT
         true => decide(state, questions),
         false => crate::author::decided_by_writer(state, questions),
     }
+}
+
+fn remembered_as(scope: &str, question: &Question) -> String {
+    let criteria = serde_json::to_string(&question.criteria).unwrap_or_default();
+    format!("{scope}\u{1}{}\u{1}{}\u{1}{criteria}", question.kind, question.instructions)
+}
+
+pub fn decide_remembered(scope: &str, state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {
+    let mut known: BTreeMap<String, Decision> = BTreeMap::new();
+    let mut missing: BTreeMap<String, Question> = BTreeMap::new();
+    let mut keys: BTreeMap<String, String> = BTreeMap::new();
+    for (named, question) in questions {
+        let key = remembered_as(scope, &question);
+        match crate::memory::recalled::<Decision>("decision", &key) {
+            Some(held) => {
+                known.insert(named, held);
+            }
+            None => {
+                keys.insert(named.clone(), key);
+                missing.insert(named, question);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return known;
+    }
+    for (named, decision) in decide_or_write(state, missing) {
+        if let Some(key) = keys.get(&named) {
+            crate::memory::keep("decision", key, &decision);
+        }
+        known.insert(named, decision);
+    }
+    known
 }
 
 pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<String, Decision> {

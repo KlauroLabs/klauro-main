@@ -386,6 +386,15 @@ pub fn decided_by_writer(state: &str, questions: BTreeMap<String, crate::jev::Qu
         return BTreeMap::new();
     }
     let asking_of: Vec<(String, crate::jev::Question)> = questions.into_iter().collect();
+    let mut held: BTreeMap<String, crate::jev::Decision> = decided_in_batches(state, &asking_of);
+    let left: Vec<(String, crate::jev::Question)> = asking_of.into_iter().filter(|(key, _)| !held.contains_key(key)).collect();
+    if !left.is_empty() {
+        held.extend(decided_in_batches(state, &left));
+    }
+    held
+}
+
+fn decided_in_batches(state: &str, asking_of: &[(String, crate::jev::Question)]) -> BTreeMap<String, crate::jev::Decision> {
     let chunks: Vec<&[(String, crate::jev::Question)]> = asking_of.chunks(DECIDED_PER_ASK).collect();
     let decided: Vec<Vec<(String, crate::jev::Decision)>> = asking(|| {
         chunks
@@ -403,7 +412,7 @@ pub fn decided_by_writer(state: &str, questions: BTreeMap<String, crate::jev::Qu
                     })
                     .collect();
                 let asked = format!("{DECIDED_BY_WRITER}{CACHED_UP_TO_HERE}\n\n{state}\n\nQuestions:\n{}\n\nReturn JSON only: {{\"decided\":[{{\"n\":1,\"answer\":\"...\"}}]}}", lines.join("\n"));
-                let answer = answered::<serde_json::Value>(&asked, 60 + 16 * chunk.len() as u32, &proposing(), "decided", chunk.len(), DESCRIBING_ASK);
+                let answer = answered::<serde_json::Value>(&asked, 60 + 16 * chunk.len() as u32, &proposing(), "decided", 1, DESCRIBING_ASK);
                 answer
                     .as_ref()
                     .and_then(|answer| answer["decided"].as_array())
@@ -445,7 +454,7 @@ pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(us
             )
         })
         .collect();
-    let decided = crate::jev::decide_or_write(&state, questions);
+    let decided = crate::jev::decide_remembered(spoken_for, &state, questions);
     pairs.iter().filter_map(|(first, second)| Some(((*first, *second), decided.get(&format!("same_{first}_{second}"))?.noul?))).collect()
 }
 

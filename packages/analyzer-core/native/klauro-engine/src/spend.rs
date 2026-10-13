@@ -7,11 +7,13 @@ const WRITER_PER_CACHED_TOKEN: f64 = 0.01 / MICROS;
 const WRITER_PER_OUTPUT_TOKEN: f64 = 0.50 / MICROS;
 const TARGET: f64 = 0.10;
 const CEILING: f64 = 0.25;
+const DECISIONS_CEILING: f64 = 0.05;
 
 static WRITER: AtomicU64 = AtomicU64::new(0);
 static DECIDER: AtomicU64 = AtomicU64::new(0);
 static DECIDER_TOKENS: AtomicU64 = AtomicU64::new(0);
 static STOPPED: AtomicBool = AtomicBool::new(false);
+static DECISIONS_STOPPED: AtomicBool = AtomicBool::new(false);
 
 fn dollars(from: &str, fallback: f64) -> f64 {
     std::env::var(from).ok().and_then(|held| held.parse().ok()).unwrap_or(fallback)
@@ -49,6 +51,11 @@ pub(crate) fn charge(endpoint: &str, answer: &str) {
             WRITER.fetch_add(micros, Ordering::Relaxed);
         }
     }
+    let decided = DECIDER.load(Ordering::Relaxed) as f64 / MICROS;
+    let decisions_ceiling = dollars("KLAURO_DECISIONS_CEILING_USD", DECISIONS_CEILING);
+    if decided >= decisions_ceiling && !DECISIONS_STOPPED.swap(true, Ordering::Relaxed) {
+        eprintln!("  decision service not asked any more: this run has spent ${decided:.4} of its ${decisions_ceiling:.2} decisions ceiling; the writer answers the rest");
+    }
     if spent() >= ceiling() && !STOPPED.swap(true, Ordering::Relaxed) {
         eprintln!("  AI not asked any more: this run has spent ${:.4} of its ${:.2} ceiling; what is left unanswered stays pending", spent(), ceiling());
     }
@@ -56,6 +63,10 @@ pub(crate) fn charge(endpoint: &str, answer: &str) {
 
 pub(crate) fn spent() -> f64 {
     (WRITER.load(Ordering::Relaxed) + DECIDER.load(Ordering::Relaxed)) as f64 / MICROS
+}
+
+pub(crate) fn decisions_exhausted() -> bool {
+    DECISIONS_STOPPED.load(Ordering::Relaxed)
 }
 
 pub(crate) fn exhausted() -> bool {
