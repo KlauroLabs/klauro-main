@@ -544,6 +544,9 @@ async function main() {
 
   if (command === 'device') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
+    if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+      throw new Error(`Refusing to send a session token over a non-HTTPS server URL: ${serverUrl}`);
+    }
     const [decision, userCode] = positionalArgs(process.argv);
     if ((decision !== 'approve' && decision !== 'deny') || !userCode) throw new Error('Usage: klauro device approve|deny CODE [--yes]');
     const token = connectorToken(undefined, serverUrl);
