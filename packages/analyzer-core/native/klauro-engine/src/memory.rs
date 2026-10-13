@@ -98,3 +98,37 @@ pub(crate) fn each_holding<T: Serialize + DeserializeOwned>(
     }
     known
 }
+
+pub(crate) fn in_magnitudes(text: &str) -> String {
+    let mut held = String::new();
+    let mut digits = String::new();
+    let flush = |digits: &mut String, held: &mut String| {
+        if !digits.is_empty() {
+            held.push_str(&format!("~1e{}", digits.trim_start_matches('0').len().saturating_sub(1)));
+            digits.clear();
+        }
+    };
+    for letter in text.chars() {
+        match letter.is_ascii_digit() {
+            true => digits.push(letter),
+            false => {
+                flush(&mut digits, &mut held);
+                held.push(letter);
+            }
+        }
+    }
+    flush(&mut digits, &mut held);
+    held
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_count_is_kept_only_to_its_order_of_magnitude() {
+        assert_eq!(in_magnitudes("serves 334 requests"), in_magnitudes("serves 335 requests"));
+        assert_ne!(in_magnitudes("serves 34 requests"), in_magnitudes("serves 334 requests"));
+        assert_eq!(in_magnitudes("1996 files, 8376 declarations"), "~1e3 files, ~1e3 declarations");
+    }
+}

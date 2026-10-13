@@ -481,7 +481,7 @@ pub fn assign(partition: &mut Partition, facts: &Facts) {
                 basis,
                 summary: plain_summary(kind, tally, project),
                 key: format!("{}\u{1}{}", facts.scope, project.id),
-                digest: crate::jev::named(&format!("{name}\n{told}")),
+                digest: crate::jev::named(&format!("{name}\n{}", crate::memory::in_magnitudes(&told))),
                 name,
                 told,
             }

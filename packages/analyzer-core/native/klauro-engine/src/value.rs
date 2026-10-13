@@ -118,6 +118,17 @@ fn rounded(held: f64) -> f64 {
     (held * 1000.0).round() / 1000.0
 }
 
+fn judged_on_their_own(said: &str, scope: &str, listed: &[(String, String)]) -> Vec<Option<bool>> {
+    let items: Vec<(String, String)> = listed.iter().map(|(name, outcome)| (format!("{name}\u{1}{outcome}"), format!("{name}\u{1}{outcome}"))).collect();
+    let question = OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability");
+    let answered: BTreeMap<String, bool> = crate::memory::each("gives on its own", &format!("{scope}\u{1}{question}"), &items, |missing| {
+        let asked: Vec<(String, String)> = missing.iter().filter_map(|(key, _)| key.split_once('\u{1}').map(|(name, outcome)| (name.to_string(), outcome.to_string()))).collect();
+        let judged = crate::author::give_on_their_own(said, &asked, &question, GIVES, ONLY_ENABLES);
+        missing.iter().zip(judged).filter_map(|((key, _), gave)| Some((key.clone(), gave?))).collect()
+    });
+    items.iter().map(|(key, _)| answered.get(key).copied()).collect()
+}
+
 pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     let count = capabilities.len();
     if count == 0 || !crate::author::asked() {
@@ -160,7 +171,7 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
     };
     let (decided, judged) = rayon::join(
         deciding,
-        || crate::author::give_on_their_own(said, &listed, &OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability"), GIVES, ONLY_ENABLES),
+        || judged_on_their_own(said, &scope, &listed),
     );
     if decided.len() < asked || judged.iter().any(Option::is_none) {
         eprintln!("  value not weighed: {} of {asked} decisions and {} of {count} own-value answers came back", decided.len(), judged.iter().flatten().count());
