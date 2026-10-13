@@ -311,6 +311,12 @@
       "name": "WORKSPACE_MEMBER_REFERENCE_FIELDS",
       "category": "closed-cas-taxonomy",
       "reason": "CAS field names an honest member reference keeps; our own output schema."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/tier-stack/tier-stack-to-cas.ts",
+      "name": "EXIT_ENVELOPE",
+      "category": "closed-technical-taxonomy",
+      "reason": "The field names of the engine's own exit-point record; fields outside this set are carried into metadata unchanged, so the list decides only which engine fields are already mapped, never a classification."
     }
   ]
 }

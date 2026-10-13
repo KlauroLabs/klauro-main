@@ -43,48 +43,8 @@
       "name": "TASK_HINT_STOP_WORDS"
     },
     {
-      "file": "apps/mcp-server/src/agent-from-zero-build-context-proof.ts",
-      "name": "FROM_ZERO_SCENARIOS"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline:165i3dob32sj>"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline:1flz09we07gn>"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline:1rw7z3oy6r4e>"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline:8ot6zf1t0ii2>"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline:zhda9w1i1x4w>"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "lastPathLine"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "sourceFiles"
-    },
-    {
-      "file": "apps/mcp-server/src/agent-workflow.ts",
-      "name": "<inline:avq3m394v37k>"
-    },
-    {
       "file": "apps/mcp-server/src/analysis-focus.ts",
       "name": "FOCUS_PROFILES"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-freshness-deep.ts",
-      "name": "IGNORE_PATTERNS"
     },
     {
       "file": "apps/mcp-server/src/analysis-narrative-enrichment-runner.ts",
@@ -141,14 +101,6 @@
     {
       "file": "apps/mcp-server/src/cas-sections.ts",
       "name": "IDENTITY_FIELDS"
-    },
-    {
-      "file": "apps/mcp-server/src/codebase-memory-agent-adapter.ts",
-      "name": "STOP_WORDS"
-    },
-    {
-      "file": "apps/mcp-server/src/competitors/embeddings-rag.ts",
-      "name": "SOURCE_EXT"
     },
     {
       "file": "apps/mcp-server/src/context-fabric.ts",
@@ -339,78 +291,6 @@
       "name": "WALK_IGNORED_DIRECTORIES"
     },
     {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline:1we2yckwrop3>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline:6qlu1gitks1s>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline:ojx178d41iio>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline:qh5tus1yqn5z>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "BUILD_MEMORY_GENERIC_TERMS"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "GREENFIELD_BUILD_MEMORY_HIGH_SIGNAL_TERMS"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:187g7ascuyvw>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:1lzg33sp0oe8>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:1o3hlg41gty3>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:avq3m394v37k>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:h2r0xhfewc9s>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:l4efkw1yeqbr>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:rerdg81axppt>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline:wxr8t01clmtj>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "durableDomainNeedsData"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "explicitDomainTerms"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "GENERIC_TERMS"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "needsUi"
-    },
-    {
       "file": "apps/mcp-server/src/hosted-transport.ts",
       "name": "RETRIABLE_CODES"
     },
@@ -435,38 +315,6 @@
       "name": "INSTALLED_TOOL_NAMES"
     },
     {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:10b4oac1vb85>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:18kykh41itwa>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:18srj781tjz8>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:1altb1s60sni>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:1bvycn81ewaa>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:1r490g81n78a>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline:1stdms81pw2j>"
-    },
-    {
-      "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "RULES"
-    },
-    {
       "file": "apps/mcp-server/src/layered-analysis.ts",
       "name": "L0_IGNORE_PATTERNS"
     },
@@ -487,24 +335,8 @@
       "name": "EXCLUDED_DIRS"
     },
     {
-      "file": "apps/mcp-server/src/robustness-battery.ts",
-      "name": "CASES"
-    },
-    {
-      "file": "apps/mcp-server/src/robustness-battery.ts",
-      "name": "SUPPORTED_EXTENSIONS"
-    },
-    {
       "file": "apps/mcp-server/src/semantic-search.ts",
       "name": "QUERY_STOPWORDS"
-    },
-    {
-      "file": "apps/mcp-server/src/server.ts",
-      "name": "CORE_TOOL_NAMES"
-    },
-    {
-      "file": "apps/mcp-server/src/server.ts",
-      "name": "GATEWAY_TOOL_GROUPS"
     },
     {
       "file": "apps/mcp-server/src/spec-purity-gate.ts",
@@ -513,10 +345,6 @@
     {
       "file": "apps/mcp-server/src/spec-purity-gate.ts",
       "name": "GENERIC_STOPWORDS"
-    },
-    {
-      "file": "apps/mcp-server/src/storage-maintenance.ts",
-      "name": "TEMP_ARTIFACT_PREFIXES"
     },
     {
       "file": "apps/mcp-server/src/test-discovery.ts",
@@ -563,18 +391,6 @@
       "name": "KNOWN_SERVICE_TLDS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
-      "name": "<inline:vg3czcv5i7ls>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
-      "name": "CLI_DEPENDENCY_MARKERS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
-      "name": "GENERIC_QUALIFIER_TOKENS"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
       "name": "keyword"
     },
@@ -583,112 +399,12 @@
       "name": "CAPABILITY_NAME_STOPWORDS"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/capability-detector.ts",
-      "name": "ACTION_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
-      "name": "AMBIGUOUS_EXTENSION_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
-      "name": "CAPABILITY_PURPOSE_VERBS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
-      "name": "SOURCE_FILE_EXTENSION_TOKENS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
-      "name": "STORAGE_PATH_NOISE_TOKENS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
-      "name": "CORE_CONFIG_FILES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
-      "name": "IGNORE_PATTERNS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/change-detector.ts",
-      "name": "PROJECT_SCOPE_TRIGGER_FILES"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/communication-seams.ts",
       "name": "<inline:1cfif001toz3>"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/coverage-gaps.ts",
-      "name": "CODE_EXTENSIONS_FOR_RATIO"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/coverage-gaps.ts",
-      "name": "DEFAULT_IGNORE_DEPENDENCIES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/dependency-manifest.ts",
-      "name": "IGNORED_DIRS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/container.ts",
-      "name": "<inline:1x4a9pqsnzu2>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/deploy-manifests.ts",
-      "name": "SIMPLE_PAAS_MANIFESTS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
-      "name": "GENERIC_OUTPUT_NOUN_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
-      "name": "REAL_PLATFORM_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/installer.ts",
-      "name": "VERB_PHRASE_PREFIX"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/util.ts",
       "name": "GENERIC_STRUCTURAL_DIR_NAMES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "<inline:1p1kkg48mnls>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "<inline:1w8bgp41hcts>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "DECLARED_TYPE_NODE_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "ENGLISH_STOPWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "FRAMEWORK_AND_LIBRARY_TERMS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "GENERIC_CROSS_CUTTING_HINTS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "GENERIC_INFRASTRUCTURE_HINTS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "GENERIC_PROGRAMMING_TERMS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "PRESENTATION_LAYER_TERMS"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/entity-relations.ts",
@@ -697,14 +413,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/entity-relations.ts",
       "name": "REFERENCE_WRAPPERS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/entrenchment.ts",
-      "name": "UNIT_NODE_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/entry-point-enrichment.ts",
-      "name": "PRIMITIVE_TYPE_NAMES"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
@@ -733,30 +441,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
       "name": "SOURCE_EXTENSIONS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/in-repo-call-resolution.ts",
-      "name": "SOURCE_EXTENSIONS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/incremental-impact.ts",
-      "name": "GRAPH_DEPENDENCY_EDGE_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/incremental-impact.ts",
-      "name": "SOURCE_CANDIDATE_EXTENSIONS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline:1ujxx501duze>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline:fhivg41q5w2d>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline:q0xu90coyx34>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/entry-point-flow-builder.ts",
@@ -823,244 +507,8 @@
       "name": "LANGUAGE_REGISTRY"
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/language-spec.ts",
-      "name": "<inline:1iy0i7c1923f>"
-    },
-    {
       "file": "packages/analyzer-core/src/analyzer/core/minhash-clone-detection.ts",
       "name": "KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/native-parse.ts",
-      "name": "NATIVE_LANGS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1245cps1i9ru>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:15hbi3o1cwjy>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:15uyidq1dgle>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:189gas0150oo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:18ykvzgei4oo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1dx6601g5572>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1egtlecf9wfl>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1eoyshb1tyy1>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1h48amsht651>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1ods6r8g9962>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1ogchfs7aavi>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1p7hvuk3t92w>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1qzc0z83zxat>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1s3o8vo10tg3>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1taxvs8t64um>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1umluz1ufn6k>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1uzcfuwzi687>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1wgscd86wsmp>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:2jt86045px4w>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:4g89i81c9fy8>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:570r2410glf5>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:6ff2v1ngiayo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:6mv2n83wcn40>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:70xuba5t0xds>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:73m243j1pts>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:742s4gd6qeww>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:cu9w8q1xjauw>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:f86jkwr87pc0>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:geoviomft7uo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:iuw6o1q7iqyo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:j234cc1kglgq>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:jel8cg1n5lcl>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:kesx541gv198>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:m9oowk2znc3k>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:o255hkhg6a9s>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:qao5bu43faww>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:r5vanw1pncl1>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:rv1xiw1ylw4j>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:skz8k81strxm>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:xx9l1wx390xs>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "actionVerb"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "CAPABILITY_STRUCTURAL_AREA_NAMES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "danglingTail"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "definingFramework"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "GENERIC"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "GENERIC_PATH_LAYOUT_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "highSignalType"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "IDENTITY_FIELD"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "INFRA_SEGMENT"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "isDataMutationName"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "lead"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "ORM_FAMILY_SUBCATEGORIES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "SOURCE_EXT"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "sourceExtension"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/previous-description-validation.ts",
-      "name": "typeClaimPattern"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/paradigm-conformance.ts",
-      "name": "GENERIC_LEAF_DIRS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/paradigm-conformance.ts",
-      "name": "PUBLIC_ENTRY_PATTERN"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
@@ -1073,230 +521,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
       "name": "LOWERCASE_UTILITY_NAMES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/text-vocabulary.ts",
-      "name": "ENGLISH_FUNCTION_WORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",
-      "name": "CONFIG_PATTERNS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/ci/ci-pipeline-analyzer.ts",
-      "name": "platformMatch"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/dotnet/wpf-analyzer.ts",
-      "name": "isDbOperation"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/game/unity-analyzer.ts",
-      "name": "UNITY_LIFECYCLE_METHODS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/game/unity-analyzer.ts",
-      "name": "UNITY_PHYSICS_CALLBACKS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/index.ts",
-      "name": "FRAMEWORK_ANALYZERS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/javascript/hono-analyzer.ts",
-      "name": "BUILTIN_MIDDLEWARE"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/ocaml/dream-analyzer.ts",
-      "name": "<inline:3qq2uc14pyh3>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/rust/index.ts",
-      "name": "FRAMEWORK_DETECTORS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",
-      "name": "methodPattern"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/fastapi-analyzer.ts",
-      "name": "<inline:1u9bo1i11kjj>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/flask-analyzer.ts",
-      "name": "AUTH"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
-      "name": "<inline:mm8ggs14h0yy>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer.ts",
-      "name": "ENDPOINT_HANDLERS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/rails-analyzer.ts",
-      "name": "callbacks"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/frameworks/web/react-native-analyzer.ts",
-      "name": "RN_PRIMITIVES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/c-cpp-analyzer.ts",
-      "name": "C_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/csharp-analyzer.ts",
-      "name": "<inline:1j08flc1pm0s>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
-      "name": "<inline:9q4nqcviyscg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
-      "name": "NON_ARTIFACT_SOURCE_EXTENSIONS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/elixir-analyzer.ts",
-      "name": "USE_TAGS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/index.ts",
-      "name": "ANALYZER_METADATA"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/java-analyzer.ts",
-      "name": "<inline:1pittj41rnwp>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
-      "name": "COMPOSE_THEME_ONLY_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
-      "name": "KOTLIN_CALL_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/protobuf-analyzer.ts",
-      "name": "SCALAR_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/ruby-analyzer.ts",
-      "name": "RUBY_CALL_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "<inline:1nuujo21wcwz>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "<inline:1s2puumqvmzg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "RUST_PRIMITIVES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "RUST_STD_MODULES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/shell-analyzer.ts",
-      "name": "EXTERNAL_EXIT_COMMANDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/shell-analyzer.ts",
-      "name": "SHELL_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
-      "name": "<inline:rlx5pp1b8smi>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
-      "name": "SOL_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "<inline:1r6kfmk1gczc>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "<inline:b4g6zcan7rwg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "initMatch"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "SWIFT_KEYWORDS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "name": "<inline:c9rz4141tpmo>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "name": "<inline:mm8ggs14h0yy>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer.ts",
-      "name": "AI_PACKAGE_SIGNATURES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/architecture/architectural-library-analyzer.ts",
-      "name": "RULES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/architecture/di-container-analyzer.ts",
-      "name": "RULES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/auth/auth-analyzer.ts",
-      "name": "AUTH_RULES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/efcore-analyzer.ts",
-      "name": "SCALAR_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/http/outbound-http-client-analyzer.ts",
-      "name": "HTTP_CLIENT_DEPENDENCIES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
-      "name": "<inline:1nuujo21wcwz>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
-      "name": "<inline:1s2puumqvmzg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
-      "name": "<inline:198r91ib8d6v>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
-      "name": "<inline:kfpwko2qlukg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/observability/observability-analyzer.ts",
-      "name": "RULES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/orm/doctrine-analyzer.ts",
-      "name": "nameRe"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer.ts",
-      "name": "REACTOR_OPERATORS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/libraries/state/reactive-streams-analyzer.ts",
-      "name": "RXJS_OPERATORS"
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
