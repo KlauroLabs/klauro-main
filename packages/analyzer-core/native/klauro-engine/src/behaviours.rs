@@ -270,6 +270,24 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
 const NAMED_TOGETHER_FROM: usize = 20;
 const SAID_TOGETHER_FROM: usize = 40;
 
+const WAITED_AT_MOST_SECONDS: u64 = 24 * 60 * 60;
+
+fn now_in_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|held| held.as_secs()).unwrap_or_default()
+}
+
+fn waited_long_enough(items: &[(String, String)]) -> bool {
+    let now = now_in_seconds();
+    let mut overdue = false;
+    for (_, told) in items {
+        match crate::memory::recalled::<u64>("waiting to be named", told) {
+            Some(since) => overdue |= now.saturating_sub(since) >= WAITED_AT_MOST_SECONDS,
+            None => crate::memory::keep("waiting to be named", told, &now),
+        }
+    }
+    overdue
+}
+
 fn waits_for_more(missing: usize, all: usize, together_from: usize) -> bool {
     std::env::var("KLAURO_NAME_EVERY_FLOW").is_err() && missing > 0 && missing < together_from && missing * 10 < all
 }
@@ -578,7 +596,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     let waiting = std::sync::atomic::AtomicBool::new(false);
     let (answers, sentences) = rayon::join(
         || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| {
-            if waits_for_more(items.len(), first.len(), NAMED_TOGETHER_FROM) {
+            if waits_for_more(items.len(), first.len(), NAMED_TOGETHER_FROM) && !waited_long_enough(items) {
                 waiting.store(true, std::sync::atomic::Ordering::Relaxed);
                 return std::collections::BTreeMap::new();
             }
