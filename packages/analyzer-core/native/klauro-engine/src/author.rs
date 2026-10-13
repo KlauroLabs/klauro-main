@@ -167,6 +167,31 @@ fn fall_back() -> bool {
     true
 }
 
+const FLOWS_PER_ASK: usize = 32;
+const FLOWS_PER_ASK_OF_A_CHAT_WRITER: usize = 16;
+static CHECKED: std::sync::Once = std::sync::Once::new();
+
+pub fn check_writer() {
+    CHECKED.call_once(|| {
+        if fallback().is_none() || spoken_to().is_some() || !asked() {
+            return;
+        }
+        let to = writer(false);
+        let Some(request) = bodied("Reply with the single word ok.", 8, &model(), "", &to) else { return };
+        if matches!(ask(&request, "", 8, priority(DESCRIBING_ASK), &to), crate::reach::Answer::Refused | crate::reach::Answer::Unauthorized) {
+            fall_back();
+        }
+    });
+}
+
+pub fn flows_per_ask() -> usize {
+    let to = writer(falling_back());
+    match speaks_of_chat(&to.endpoint) {
+        true => FLOWS_PER_ASK_OF_A_CHAT_WRITER,
+        false => FLOWS_PER_ASK,
+    }
+}
+
 struct Writer {
     endpoint: String,
     key: Option<String>,

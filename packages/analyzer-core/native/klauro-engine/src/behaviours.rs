@@ -267,7 +267,6 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
     Told { head, body: lines.join("\n"), rule }
 }
 
-const FLOWS_PER_ASK: usize = 32;
 const NAMED_TOGETHER_FROM: usize = 20;
 const SAID_TOGETHER_FROM: usize = 40;
 
@@ -282,7 +281,7 @@ fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, 
             by_head.entry(told.head.as_str()).or_default().push(id.as_str());
         }
     }
-    let batches: Vec<(&str, Vec<&str>)> = by_head.into_iter().flat_map(|(head, ids)| ids.chunks(FLOWS_PER_ASK).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
+    let batches: Vec<(&str, Vec<&str>)> = by_head.into_iter().flat_map(|(head, ids)| ids.chunks(crate::author::flows_per_ask()).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
     let steps_for = |id: &str| -> Vec<&str> { steps_of.get(id).into_iter().flatten().map(String::as_str).collect() };
     let mut held = batched(&batches, pieces, steps_of);
     let unanswered: Vec<&str> = batches.iter().flat_map(|(_, ids)| ids.iter().copied()).filter(|id| !held.contains_key(*id)).collect();
@@ -290,7 +289,7 @@ fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, 
     for id in &unanswered {
         again.entry(pieces[*id].head.as_str()).or_default().push(id);
     }
-    let retried: Vec<(&str, Vec<&str>)> = again.into_iter().flat_map(|(head, ids)| ids.chunks(FLOWS_PER_ASK).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
+    let retried: Vec<(&str, Vec<&str>)> = again.into_iter().flat_map(|(head, ids)| ids.chunks(crate::author::flows_per_ask()).map(|chunk| (head, chunk.to_vec())).collect::<Vec<_>>()).collect();
     held.extend(batched(&retried, pieces, steps_of));
     let missing: Vec<&(String, String)> = items.iter().filter(|(id, _)| !held.contains_key(id)).collect();
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
@@ -517,6 +516,7 @@ fn merged(flows: Vec<Flow>, facts: &Facts) -> Vec<Flow> {
 }
 
 pub fn settle(held: &mut Comprehension, facts: &Facts) {
+    crate::author::check_writer();
     let entry_of: HashMap<&str, &EntryPoint> = facts.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect();
     let project_of: HashMap<&str, Option<&str>> = facts.nodes.iter().map(|node| (node.id.as_str(), node.project.as_deref())).collect();
     let known = Known::new(facts);
