@@ -85,6 +85,47 @@ test('a delete is recorded as a tombstone, not a removal', async () => {
   });
 });
 
+test('an oversized record is rejected rather than accepted and blowing up the shared file', async () => {
+  await withTempDir(async dataDir => {
+    const store = new SyncStore(dataDir);
+    const huge = { blob: 'x'.repeat(300 * 1024) };
+    const result = await store.pushChanges('usr_1', 'projects', 'dev-a', [
+      { id: 'p1', op: 'put', record: huge, lamport: 1, idempotencyKey: 'k1' },
+    ]);
+    assert.equal(result.accepted.length, 0);
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /too large/);
+    const pulled = await store.pullChanges('usr_1', 'projects', 0);
+    assert.equal(pulled.changes.length, 0, 'a rejected record must never land in storage');
+  });
+});
+
+test('a single account cannot grow one entity class past its record cap, but can still update what it already has', async () => {
+  const previous = process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS;
+  process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS = '3';
+  try {
+    await withTempDir(async dataDir => {
+      const store = new SyncStore(dataDir);
+      for (let i = 0; i < 3; i++) {
+        const r = await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: `p${i}`, op: 'put', record: { name: `P${i}` }, lamport: 1, idempotencyKey: `k${i}` }]);
+        assert.equal(r.accepted.length, 1);
+      }
+      const overCap = await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: 'p3', op: 'put', record: { name: 'One too many' }, lamport: 1, idempotencyKey: 'k3' }]);
+      assert.equal(overCap.accepted.length, 0);
+      assert.match(overCap.rejected[0].reason, /record limit/);
+
+      const update = await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: 'p0', op: 'put', record: { name: 'P0 renamed' }, lamport: 2, idempotencyKey: 'k0-v2' }]);
+      assert.equal(update.accepted.length, 1, 'updating an id the account already owns must never be blocked by the cap');
+
+      const otherAccount = await store.pushChanges('usr_2', 'projects', 'dev-b', [{ id: 'p0', op: 'put', record: { name: 'Different account' }, lamport: 1, idempotencyKey: 'k0' }]);
+      assert.equal(otherAccount.accepted.length, 1, 'the cap is per account, not global');
+    });
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS;
+    else process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS = previous;
+  }
+});
+
 test('data survives across a fresh SyncStore instance pointed at the same directory', async () => {
   await withTempDir(async dataDir => {
     const first = new SyncStore(dataDir);

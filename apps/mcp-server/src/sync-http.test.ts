@@ -112,3 +112,45 @@ test('pushing the same change twice through the HTTP layer is idempotent', async
     assert.equal(first.accepted[0].serverSeq, second.accepted[0].serverSeq);
   });
 });
+
+test('one account hammering the sync endpoint gets rate-limited instead of starving every other account', async () => {
+  const previous = process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE;
+  process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE = '3';
+  try {
+    await withServer(async baseUrl => {
+      const { token } = await registerUser(baseUrl, 'sync-http-rate-limit@example.com');
+      const poll = () => fetch(`${baseUrl}/api/sync/projects/changes?since=0`, { headers: { authorization: `Bearer ${token}` } });
+      const statuses: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        statuses.push((await poll()).status);
+      }
+      assert.ok(statuses.slice(0, 3).every(s => s === 200), `the first requests under the limit should succeed: ${statuses}`);
+      assert.ok(statuses.slice(3).some(s => s === 429), `requests past the limit should be rejected: ${statuses}`);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE;
+    else process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE = previous;
+  }
+});
+
+test('an oversized pushed record is rejected by the real HTTP route, not just the in-process store', async () => {
+  const previous = process.env.KLAURO_SYNC_MAX_RECORD_BYTES;
+  process.env.KLAURO_SYNC_MAX_RECORD_BYTES = '1024';
+  try {
+    await withServer(async baseUrl => {
+      const { token } = await registerUser(baseUrl, 'sync-http-oversized@example.com');
+      const response = await fetch(`${baseUrl}/api/sync/projects/changes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ deviceId: 'dev-a', changes: [{ id: 'p1', op: 'put', record: { blob: 'x'.repeat(5000) }, lamport: 1, idempotencyKey: 'k1' }] }),
+      });
+      assert.equal(response.status, 200, 'the request itself still succeeds; the individual change is reported as rejected');
+      const body = await response.json() as { accepted: unknown[]; rejected: { reason: string }[] };
+      assert.equal(body.accepted.length, 0);
+      assert.match(body.rejected[0].reason, /too large/);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_SYNC_MAX_RECORD_BYTES;
+    else process.env.KLAURO_SYNC_MAX_RECORD_BYTES = previous;
+  }
+});

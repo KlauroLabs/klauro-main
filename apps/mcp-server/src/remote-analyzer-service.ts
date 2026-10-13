@@ -188,6 +188,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const fabricRateLimitPerMinute = options.fabricRateLimitPerMinute ?? Number(process.env.KLAURO_FABRIC_RATE_LIMIT_PER_MINUTE || 12_000);
   const fabricBuckets = new Map<string, RateLimitBucket>();
   const authBuckets = new Map<string, RateLimitBucket>();
+  const syncBuckets = new Map<string, RateLimitBucket>();
   const authRateLimitPerMinute = Number(process.env.KLAURO_AUTH_RATE_LIMIT_PER_MINUTE || 20);
   const activeCommittedSnapshots = new Map<string, string>();
   const completedSyncRequests = new IdempotentSyncStore<RemoteAnalyzeResponse, CASOutput>();
@@ -450,7 +451,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         if (request.method === 'POST' && route === AUTHOR_RELAY_ROUTE) return relayAuthorAsk(request, response, apiAuthorization.userId);
-        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses, deviceAuth, syncStore);
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses, deviceAuth, syncStore, syncBuckets);
         if (accountResult.stream) {
           response.writeHead(accountResult.statusCode, accountResult.stream.headers);
           const stream = createReadStream(accountResult.stream.filePath);
@@ -2355,6 +2356,7 @@ async function handleAccountApi(
   workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
   deviceAuth?: DeviceAuthStore,
   syncStore?: SyncStore,
+  syncBuckets?: Map<string, RateLimitBucket>,
 ): Promise<{
   statusCode: number;
   body: unknown;
@@ -2428,6 +2430,10 @@ async function handleAccountApi(
     if (!syncStore) throw new AccountHttpError(500, 'Sync storage is unavailable');
     const entityClass = decodeURIComponent(syncChangesMatch[1]);
     if (!SYNCED_ENTITY_CLASSES.has(entityClass)) throw new AccountHttpError(404, `Unknown sync entity class: ${entityClass}`);
+    const syncRateLimitPerMinute = Number(process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE || 60);
+    if (syncBuckets && !withinRateLimit(syncBuckets, `sync:${userId}`, syncRateLimitPerMinute)) {
+      throw new AccountHttpError(429, 'Too many sync requests for this account. Try again shortly.');
+    }
 
     if (request.method === 'POST') {
       const body = await readJsonBody<{ deviceId?: string; changes?: SyncPushChange[] }>(request, maxBodyBytes);

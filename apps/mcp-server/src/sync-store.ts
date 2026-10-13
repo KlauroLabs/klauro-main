@@ -47,6 +47,14 @@ interface SyncDatabase {
 const MAX_PULL_LIMIT = 500;
 const DEFAULT_PULL_LIMIT = 200;
 
+function maxRecordBytes(): number {
+  return Number(process.env.KLAURO_SYNC_MAX_RECORD_BYTES) || 256 * 1024;
+}
+
+function maxRecordsPerAccountClass(): number {
+  return Number(process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS) || 5_000;
+}
+
 export class SyncStore {
   private readonly filePath: string;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -64,10 +72,24 @@ export class SyncStore {
           rejected.push({ id: change.id || '', reason: 'invalid change' });
           continue;
         }
+        const recordBytes = Buffer.byteLength(JSON.stringify(change.record ?? null), 'utf8');
+        const recordLimit = maxRecordBytes();
+        if (recordBytes > recordLimit) {
+          rejected.push({ id: change.id, reason: `record too large (${recordBytes} bytes, max ${recordLimit})` });
+          continue;
+        }
         const existing = db.records.find(r => r.userId === userId && r.entityClass === entityClass && r.id === change.id);
         if (existing && existing.idempotencyKey === change.idempotencyKey) {
           accepted.push({ id: change.id, serverSeq: existing.serverSeq });
           continue;
+        }
+        if (!existing) {
+          const classLimit = maxRecordsPerAccountClass();
+          const countForClass = db.records.reduce((n, r) => n + (r.userId === userId && r.entityClass === entityClass ? 1 : 0), 0);
+          if (countForClass >= classLimit) {
+            rejected.push({ id: change.id, reason: `this account has reached the ${classLimit}-record limit for ${entityClass}` });
+            continue;
+          }
         }
         const serverSeq = ++db.nextSeq;
         const now = new Date().toISOString();
