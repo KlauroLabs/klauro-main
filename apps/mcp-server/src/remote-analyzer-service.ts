@@ -2438,7 +2438,12 @@ async function handleAccountApi(
     if (request.method === 'POST') {
       const body = await readJsonBody<{ deviceId?: string; changes?: SyncPushChange[] }>(request, maxBodyBytes);
       if (!body.deviceId || !Array.isArray(body.changes)) throw new AccountHttpError(400, 'deviceId and changes are required');
-      const result = await syncStore.pushChanges(userId, entityClass, body.deviceId, body.changes.slice(0, 200));
+      const changes = body.changes.slice(0, 200);
+      const syncVolumePerMinute = Number(process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE || 2000);
+      if (syncBuckets && changes.length && !withinRateLimit(syncBuckets, `sync-volume:${userId}`, syncVolumePerMinute, changes.length)) {
+        throw new AccountHttpError(429, 'This account is pushing sync changes too fast. A large batch counts toward the limit even under the request-count limit. Try again shortly.');
+      }
+      const result = await syncStore.pushChanges(userId, entityClass, body.deviceId, changes);
       return { statusCode: 200, body: result };
     }
 
@@ -3637,16 +3642,16 @@ async function handleProposalPreview(dataDir: string, request: RemoteProposalPre
   });
 }
 
-function withinRateLimit(buckets: Map<string, RateLimitBucket>, key: string, limit: number): boolean {
+function withinRateLimit(buckets: Map<string, RateLimitBucket>, key: string, limit: number, cost = 1): boolean {
   if (!Number.isFinite(limit) || limit <= 0) return true;
   const now = Date.now();
   const windowStart = now - (now % 60000);
   const bucket = buckets.get(key);
   if (!bucket || bucket.windowStart !== windowStart) {
-    buckets.set(key, { windowStart, count: 1 });
-    return true;
+    buckets.set(key, { windowStart, count: cost });
+    return cost <= limit;
   }
-  bucket.count += 1;
+  bucket.count += cost;
   return bucket.count <= limit;
 }
 

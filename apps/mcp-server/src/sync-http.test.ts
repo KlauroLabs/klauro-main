@@ -133,6 +133,30 @@ test('one account hammering the sync endpoint gets rate-limited instead of starv
   }
 });
 
+test('a single large batch that stays under the request-count limit is still blocked by the change-volume limit', async () => {
+  const previousRequests = process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE;
+  const previousVolume = process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE;
+  process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE = '60';
+  process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE = '10';
+  try {
+    await withServer(async baseUrl => {
+      const { token } = await registerUser(baseUrl, 'sync-http-volume-limit@example.com');
+      const changes = Array.from({ length: 20 }, (_, i) => ({ id: `p${i}`, op: 'put', record: { name: `P${i}` }, lamport: 1, idempotencyKey: `k${i}` }));
+      const response = await fetch(`${baseUrl}/api/sync/projects/changes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ deviceId: 'dev-a', changes }),
+      });
+      assert.equal(response.status, 429, 'one request, 20 changes, under the 60/min request limit, must still trip a 10/min change-volume limit');
+    });
+  } finally {
+    if (previousRequests === undefined) delete process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE;
+    else process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE = previousRequests;
+    if (previousVolume === undefined) delete process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE;
+    else process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE = previousVolume;
+  }
+});
+
 test('an oversized pushed record is rejected by the real HTTP route, not just the in-process store', async () => {
   const previous = process.env.KLAURO_SYNC_MAX_RECORD_BYTES;
   process.env.KLAURO_SYNC_MAX_RECORD_BYTES = '1024';
