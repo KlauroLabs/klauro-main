@@ -263,6 +263,48 @@ pub(crate) fn assembled_groups(groups: &[Vec<&Flow>]) -> Assembled {
     assembled_from(&evidence)
 }
 
+const REGROUPED_FROM: f64 = 0.2;
+
+pub(crate) fn assembled_keeping(flows: &[&Flow], previous: &[Vec<String>]) -> Assembled {
+    let at_of: BTreeMap<&str, usize> = flows.iter().enumerate().map(|(at, flow)| (flow.id.as_str(), at)).collect();
+    let mut groups: Vec<Vec<usize>> = previous.iter().map(|group| group.iter().filter_map(|id| at_of.get(id.as_str()).copied()).collect::<Vec<usize>>()).filter(|group| !group.is_empty()).collect();
+    let mut group_of: BTreeMap<usize, usize> = BTreeMap::new();
+    for (number, group) in groups.iter().enumerate() {
+        for at in group {
+            group_of.insert(*at, number);
+        }
+    }
+    let arrived: Vec<usize> = (0..flows.len()).filter(|at| !group_of.contains_key(at)).collect();
+    if groups.is_empty() || arrived.len() as f64 > REGROUPED_FROM * flows.len() as f64 {
+        return assembled(flows);
+    }
+    let evidence: Vec<BTreeMap<String, f64>> = flows.iter().map(|flow| evidence_of(flow)).collect();
+    let nearest = similarities(&evidence);
+    for at in arrived {
+        let mut pull: BTreeMap<usize, f64> = BTreeMap::new();
+        for (other, weight) in &nearest[at] {
+            if let Some(number) = group_of.get(other) {
+                *pull.entry(*number).or_default() += weight;
+            }
+        }
+        let chosen = pull.into_iter().max_by(|left, right| left.1.total_cmp(&right.1).then(right.0.cmp(&left.0))).map(|(number, _)| number);
+        let number = match chosen {
+            Some(number) => number,
+            None => {
+                groups.push(Vec::new());
+                groups.len() - 1
+            }
+        };
+        groups[number].push(at);
+        group_of.insert(at, number);
+    }
+    for group in groups.iter_mut() {
+        group.sort_unstable();
+    }
+    groups.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
+    Assembled { groups }
+}
+
 fn assembled_from(evidence: &[BTreeMap<String, f64>]) -> Assembled {
     let belongs = modules(evidence.len(), &linked(&similarities(evidence)));
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -277,6 +319,46 @@ fn assembled_from(evidence: &[BTreeMap<String, f64>]) -> Assembled {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flow(id: &str) -> crate::comprehend::Flow {
+        crate::comprehend::Flow {
+            summary: String::new(),
+            writes: Vec::new(),
+            reads: Vec::new(),
+            reaches: Vec::new(),
+            id: id.to_string(),
+            entry_point: format!("entry:{id}"),
+            kind: "export",
+            method: None,
+            operation: id.to_string(),
+            surface: None,
+            plays: None,
+            standing: "reading",
+            confidence: 1.0,
+            unsettled: None,
+            open: 0,
+            cut: false,
+            name: None,
+            description: None,
+            grounding: None,
+            path: Vec::new(),
+            steps: Vec::new(),
+            step_edges: Vec::new(),
+            units: 1,
+            rank: 0,
+            stages: Vec::new(),
+            changes: Vec::new(),
+            takes: Vec::new(),
+            leads_into: Vec::new(),
+            project: Some("subproject:events".to_string()),
+            unshipped: None,
+            entered_by: Vec::new(),
+            runs_in: None,
+            capabilities: Vec::new(),
+            contract: None,
+            value: None,
+        }
+    }
 
     #[test]
     fn two_tight_groups_joined_by_one_link_are_two_modules_every_time() {
@@ -306,6 +388,30 @@ mod tests {
     fn identifier_words_are_split_lowered_and_made_singular() {
         assert_eq!(words("VaultContactsController"), ["vault", "contact", "controller"]);
         assert_eq!(words("update_user_settings"), ["update", "user", "setting"]);
+    }
+
+    #[test]
+    fn a_new_flow_joins_the_group_its_nearest_neighbours_are_in_and_every_other_group_stays_as_it_was() {
+        let mut held: Vec<crate::comprehend::Flow> = Vec::new();
+        for (id, record) in [("flow:a", "Order"), ("flow:b", "Order"), ("flow:c", "Product"), ("flow:d", "Product"), ("flow:e", "Invoice"), ("flow:f", "Invoice"), ("flow:new", "Order")] {
+            let mut made = flow(id);
+            made.writes = vec![record.to_string()];
+            held.push(made);
+        }
+        for extra in 0..30 {
+            let mut made = flow(&format!("flow:other{extra}"));
+            made.writes = vec![format!("Record{extra}")];
+            held.push(made);
+        }
+        let flows: Vec<&crate::comprehend::Flow> = held.iter().collect();
+        let mut previous: Vec<Vec<String>> = vec![vec!["flow:a".into(), "flow:b".into()], vec!["flow:c".into(), "flow:d".into()], vec!["flow:e".into(), "flow:f".into()]];
+        previous.extend((0..30).map(|extra| vec![format!("flow:other{extra}")]));
+        let built = assembled_keeping(&flows, &previous);
+        let named = |group: &Vec<usize>| -> Vec<&str> { group.iter().map(|at| flows[*at].id.as_str()).collect() };
+        let groups: Vec<Vec<&str>> = built.groups.iter().map(named).collect();
+        assert!(groups.contains(&vec!["flow:a", "flow:b", "flow:new"]), "{groups:?}");
+        assert!(groups.contains(&vec!["flow:c", "flow:d"]));
+        assert!(groups.contains(&vec!["flow:e", "flow:f"]));
     }
 
     #[test]

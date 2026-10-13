@@ -307,9 +307,10 @@ fn kept_names(previous: &[NamedGroup], current: &[(String, Vec<String>)]) -> std
 }
 
 fn upward(said: &str, part: Option<&str>, remembered_as: &str, offered: &[&Flow], groups: &[Vec<&Flow>], lines: &[String], supporting_only: Option<&BTreeSet<usize>>, surface_only: bool) -> OfAPart {
+    let previous: Vec<NamedGroup> = crate::memory::recalled("capability groups", remembered_as).unwrap_or_default();
     let built = match surface_only {
         true => crate::assembled::assembled_groups(groups),
-        false => crate::assembled::assembled(offered),
+        false => crate::assembled::assembled_keeping(offered, &previous.iter().map(|group| group.members.clone()).collect::<Vec<_>>()),
     };
     let name_of = |at: &usize| match surface_only {
         true => lines[*at].split_once(". ").map(|(_, said)| said.to_string()).unwrap_or_else(|| lines[*at].clone()),
@@ -326,7 +327,6 @@ fn upward(said: &str, part: Option<&str>, remembered_as: &str, offered: &[&Flow]
             (crate::jev::named(&ids.join("\u{1}")), names.join("; "))
         })
         .collect();
-    let previous: Vec<NamedGroup> = crate::memory::recalled("capability groups", remembered_as).unwrap_or_default();
     let name_in = |chunk: &[(String, String)]| -> Option<Vec<(String, serde_json::Value)>> {
         let numbered: Vec<String> = chunk.iter().enumerate().map(|(at, (_, names))| format!("{}. {names}", at + 1)).collect();
         let answer = crate::author::capabilities_named(&format!("Part: {said}\nGroups:\n{}", numbered.join("\n")), chunk.len())?;
