@@ -674,7 +674,7 @@ export function createServer(): McpServer {
 
 
   register('fab_claim_work', {
-    description: 'ADVISORY awareness claim (CLI-parity for `fab.ts claim`) — announces intent to peers over the hosted coordination fabric, never blocks or queues, takes no lease. The claim always succeeds; overlap with another agent\'s active claim comes back as `conflicts`/`warning` inline. Call fab_release_work when done.',
+    description: 'ADVISORY awareness claim (CLI-parity for `fab.ts claim`) — announces intent to peers over the hosted coordination fabric, never blocks or queues, takes no lease. The claim always succeeds; overlap with another agent\'s active claim comes back as `conflicts`/`warning` inline. The fabric places the claimed paths on the analysed capabilities, flows and steps (`concepts`, `analysis_ref`) and returns `conceptual_awareness`: other agents working in the same step, flow, entity or capability even when their files differ. Call fab_release_work when done.',
     inputSchema: {
       path: z.string(), agent_id: z.string().describe('Stable identifier for the calling agent/session'),
       intent: z.string().describe('Short description of the work being claimed'),
@@ -683,12 +683,16 @@ export function createServer(): McpServer {
       workspace: z.string().optional().describe('Coordination workspace id. Defaults to the bound hosted project id.'),
       agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional(),
       ttl_ms: z.number().optional().describe('Claim TTL in ms (default 30 min, WAN-appropriate)'),
+      concept: z.object({
+        capability_id: z.string().optional(), flow_id: z.string().optional(), step_id: z.string().optional(),
+        entities: z.array(z.string()).optional(),
+      }).optional().describe('The capability/flow/step this work is about, when known; otherwise the fabric derives it from paths'),
     },
-  }, async ({ path: projectPath, agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => {
+  }, async ({ path: projectPath, agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms, concept }: any) => {
     const ws = await resolveCoordinationWorkspace(projectPath, workspace);
     const result: any = await hostedDurableCoordinationCall(projectPath, ws, 'claim', '/v1/coordination/claim', {
       mode: 'advisory', workspace: ws, agent_id, intent, paths: paths || [], symbols: symbols || [],
-      agent_kind: agent_kind || 'claude', ttl_ms,
+      agent_kind: agent_kind || 'claude', ttl_ms, ...(concept ? { concept: { ...concept, source: 'declared' } } : {}),
     });
     return json({ ...result, workspace: ws });
   });
@@ -709,6 +713,7 @@ export function createServer(): McpServer {
     const result: any = await hostedDurableCoordinationCall(projectPath, ws, 'extend', '/v1/coordination/claim', {
       mode: 'advisory', workspace: ws, agent_id, intent: mine?.intent || '',
       claim_id: mine?.claim_id, paths, symbols, agent_kind: mine?.agent_kind || 'claude',
+      ...(mine?.concept?.source === 'declared' ? { concept: mine.concept } : {}),
     });
     return json({ ...result, workspace: ws, paths, symbols, note: mine ? undefined : 'No prior active claim found for this agent_id — extended from an empty scope; call fab_claim_work first for an intent-carrying claim.' });
   });

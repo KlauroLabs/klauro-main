@@ -733,3 +733,27 @@ test('claims naming only files are placed on the analysed flows and steps, so ag
     boot.restoreEnv();
   }
 });
+
+test('a 128-character agent id survives claim, active listing and release, and a declared concept is echoed as declared', async () => {
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const workspace = 'ws-long-agent-id';
+  const agentId = `agent-${'x'.repeat(122)}`;
+  try {
+    assert.equal(agentId.length, 128);
+    const claimed = await remoteClaim(config, {
+      workspace, agentId, intent: 'long id', paths: ['src/a.ts'],
+      concept: { flow_id: 'flow-a', step_id: 'step-a', source: 'declared' },
+    }) as any;
+    assert.equal(claimed.attribution_source, 'declared');
+    assert.equal(claimed.concepts?.[0].source, 'declared');
+    const active = await remoteActive(config, workspace);
+    assert.deepEqual(active.active.map((claim) => claim.agent_id), [agentId]);
+    await remoteRelease(config, { workspace, agentId });
+    const after = await remoteActive(config, workspace);
+    assert.equal(after.active.length, 0);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
