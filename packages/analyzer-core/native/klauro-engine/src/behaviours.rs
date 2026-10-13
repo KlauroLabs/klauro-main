@@ -269,7 +269,7 @@ fn told_in_pieces(flow: &Flow, entry: Option<&EntryPoint>, facts: &Facts, known:
 
 const FLOWS_PER_ASK: usize = 32;
 
-fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>, pieces: &HashMap<String, Told>) -> std::collections::BTreeMap<String, Answer> {
+fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, Vec<String>>, pieces: &HashMap<String, Told>, prompts: &HashMap<String, String>) -> std::collections::BTreeMap<String, Answer> {
     let mut by_head: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
     for (id, _) in items {
         if let Some(told) = pieces.get(id) {
@@ -293,7 +293,8 @@ fn asked_all(kind: &str, items: &[(String, String)], steps_of: &HashMap<String, 
     let alone: Vec<(String, Answer)> = crate::author::asking(|| {
         missing
             .par_iter()
-            .filter_map(|(id, prompt)| {
+            .filter_map(|(id, _)| {
+                let prompt = prompts.get(id)?;
                 let steps = steps_for(id);
                 let before = crate::memory::last::<serde_json::Value>(kind, crate::author::BEHAVIOURS_ASKED, id);
                 let answer = crate::author::behaviours_of(&crate::author::with_before(prompt, before.as_ref().and_then(crate::author::behaviours_before)), &steps)?;
@@ -543,15 +544,18 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
         hosting(held, facts, &project_of);
         return;
     }
-    let first: Vec<(String, String)> = kept
-        .iter()
-        .map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, false)))
-        .collect();
     let pieces_of = |one: bool| -> HashMap<String, Told> {
         kept.iter().map(|flow| (flow.id.clone(), told_in_pieces(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, one))).collect()
     };
     let several_pieces = pieces_of(false);
     let one_pieces = pieces_of(true);
+    let prompts_of = |one: bool| -> HashMap<String, String> {
+        kept.iter().map(|flow| (flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, one))).collect()
+    };
+    let several_prompts = prompts_of(false);
+    let one_prompts = prompts_of(true);
+    let keyed = |pieces: &HashMap<String, Told>, id: &str| -> String { pieces.get(id).map(|told| format!("{}\u{1}{}", told.body, told.rule)).unwrap_or_default() };
+    let first: Vec<(String, String)> = kept.iter().map(|flow| (flow.id.clone(), keyed(&several_pieces, &flow.id))).collect();
     let steps_of: HashMap<String, Vec<String>> = kept.iter().map(|flow| (flow.id.clone(), flow.steps.iter().map(|step| step.id.clone()).collect())).collect();
     let holds = |id: &str, answer: &Answer| {
         let steps: Vec<&str> = steps_of.get(id).into_iter().flatten().map(String::as_str).collect();
@@ -562,7 +566,7 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
     labels.dedup();
     let label_items: Vec<(String, String)> = labels.iter().map(|label| (label.clone(), label.clone())).collect();
     let (answers, sentences) = rayon::join(
-        || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of, &several_pieces)),
+        || crate::memory::each_holding("flow behaviours", crate::author::BEHAVIOURS_ASKED, &first, holds, |items| asked_all("flow behaviours", items, &steps_of, &several_pieces, &several_prompts)),
         || crate::memory::each("step said", crate::author::STEP_SAID_ASKED, &label_items, |missing| {
             crate::author::steps_said(&missing.iter().map(|(label, _)| label.clone()).collect::<Vec<_>>())
         }),
@@ -596,10 +600,10 @@ pub fn settle(held: &mut Comprehension, facts: &Facts) {
             }
         }
         if answer.behaviours.len() > 1 && !alternatives(&answer.behaviours, flow, &deciding) {
-            again.push((flow.id.clone(), told(flow, entry_of.get(flow.entry_point.as_str()).copied(), facts, &known, &landing, true)));
+            again.push((flow.id.clone(), keyed(&one_pieces, &flow.id)));
         }
     }
-    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all("flow behaviour, one", items, &steps_of, &one_pieces));
+    let single = crate::memory::each_holding("flow behaviour, one", crate::author::BEHAVIOURS_ASKED, &again, holds, |items| asked_all("flow behaviour, one", items, &steps_of, &one_pieces, &one_prompts));
     let single: std::collections::BTreeMap<String, Answer> = single.into_iter().map(|(id, answer)| { let answer = filled(&id, answer); (id, answer) }).collect();
     let mut settled: Vec<Flow> = Vec::new();
     for flow in kept {

@@ -438,8 +438,8 @@ fn decided_in_batches(state: &str, asking_of: &[(String, crate::jev::Question)])
     decided.into_iter().flatten().collect()
 }
 
-pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
-    let state = format!("A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n{PURPOSE}");
+pub fn same_purposes(spoken_for: &str, scope: &str, listed: &[(String, String)], pairs: &[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
+    let state = format!("{}\n\n{PURPOSE}", crate::jev::brief(spoken_for));
     let questions: BTreeMap<String, crate::jev::Question> = pairs
         .iter()
         .map(|(first, second)| {
@@ -454,7 +454,7 @@ pub fn same_purposes(spoken_for: &str, listed: &[(String, String)], pairs: &[(us
             )
         })
         .collect();
-    let decided = crate::jev::decide_remembered(spoken_for, &state, questions);
+    let decided = crate::jev::decide_remembered(scope, &state, questions);
     pairs.iter().filter_map(|(first, second)| Some(((*first, *second), decided.get(&format!("same_{first}_{second}"))?.noul?))).collect()
 }
 

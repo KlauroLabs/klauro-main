@@ -237,6 +237,12 @@ pub(crate) fn the_same_among(
         .collect()
 }
 
+pub(crate) fn scope_of(capabilities: &[Capability]) -> String {
+    let project = capabilities.iter().find_map(|capability| capability.project.clone()).unwrap_or_default();
+    let level = capabilities.first().map(|capability| capability.level).unwrap_or_default();
+    format!("{level}\u{1}{project}")
+}
+
 pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec<Joined> {
     if capabilities.len() < 2 {
         return Vec::new();
@@ -259,7 +265,8 @@ pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec
         })
         .collect();
     let near = |first: usize, second: usize| !reached[first].is_disjoint(&reached[second]);
-    the_same_among(&listed, near, |pairs| crate::author::same_purposes(said, &listed, pairs))
+    let scope = scope_of(capabilities);
+    the_same_among(&listed, near, |pairs| crate::author::same_purposes(said, &scope, &listed, pairs))
 }
 
 pub(crate) fn merge_the_same(capabilities: &mut Vec<Capability>, groups: Vec<Joined>) {

@@ -305,7 +305,7 @@ fn upward(said: &str, part: Option<&str>, offered: &[&Flow], groups: &[Vec<&Flow
                 .collect(),
         )
     };
-    let answered = crate::memory::each("capability named", &format!("{said}\u{1}{}", crate::author::CAPABILITIES_NAMED), &told, |missing| {
+    let answered = crate::memory::each("capability named", &format!("{}\u{1}{}", part.unwrap_or("whole"), crate::author::CAPABILITIES_NAMED), &told, |missing| {
         crate::author::asking(|| {
             use rayon::prelude::*;
             let mut named: std::collections::BTreeMap<String, serde_json::Value> = missing.par_chunks(NAMED_PER_ASK).filter_map(name_in).flatten().collect();

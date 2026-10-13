@@ -41,7 +41,17 @@ fn choice(first: String, second: String) -> crate::jev::Question {
 
 const ALL_PAIRS_UP_TO: usize = 16;
 
-pub(crate) fn compared(count: usize) -> Vec<(usize, usize)> {
+fn closeness(left: &str, right: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let (low, high) = if left <= right { (left, right) } else { (right, left) };
+    let mut hasher = rustc_hash::FxHasher::default();
+    low.hash(&mut hasher);
+    high.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn compared(keys: &[String]) -> Vec<(usize, usize)> {
+    let count = keys.len();
     let mut held: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
     if count <= ALL_PAIRS_UP_TO {
         for first in 0..count {
@@ -51,14 +61,14 @@ pub(crate) fn compared(count: usize) -> Vec<(usize, usize)> {
         }
         return held.into_iter().collect();
     }
-    let mut step = 1;
-    while step < count {
-        for first in 0..count {
-            let second = (first + step) % count;
+    let partners = 2 * (usize::BITS - (count - 1).leading_zeros()) as usize;
+    for first in 0..count {
+        let mut others: Vec<usize> = (0..count).filter(|second| *second != first).collect();
+        others.sort_by_key(|second| (closeness(&keys[first], &keys[*second]), *second));
+        for second in others.into_iter().take(partners) {
             held.insert((first, second));
             held.insert((second, first));
         }
-        step *= 2;
     }
     held.into_iter().collect()
 }
@@ -120,12 +130,14 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
         return;
     }
     let listed: Vec<(String, String)> = capabilities.iter().map(told).collect();
-    let state = format!("{said}\n\nEverything it lets people do:\n{}", listed.iter().map(|(name, outcome)| format!("- {name}: {outcome}")).collect::<Vec<_>>().join("\n"));
+    let state = crate::jev::brief(said);
+    let scope = crate::capabilities::scope_of(capabilities);
     let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
     for (at, (name, outcome)) in listed.iter().enumerate() {
         questions.insert(format!("own_{at}"), noul(own_value_question(name, outcome), GIVES.to_string(), ONLY_ENABLES.to_string()));
     }
-    let pairs = compared(count);
+    let keys: Vec<String> = capabilities.iter().map(|capability| capability.id.clone()).collect();
+    let pairs = compared(&keys);
     for (first, second) in pairs.iter().copied() {
         {
             let (earlier, earlier_does) = &listed[first];
@@ -146,7 +158,7 @@ Answer no when \"{later}\" only looks at, reports on, undoes or follows up what 
     }
     let asked = questions.len();
     let (decided, judged) = rayon::join(
-        || crate::jev::decide_remembered(said, &state, questions),
+        || crate::jev::decide_remembered(&scope, &state, questions),
         || crate::author::give_on_their_own(said, &listed, &OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability"), GIVES, ONLY_ENABLES),
     );
     if decided.len() < asked || judged.iter().any(Option::is_none) {
@@ -200,10 +212,11 @@ mod tests {
     }
 
     #[test]
-    fn a_long_list_is_compared_along_doubling_steps_so_questions_grow_as_n_log_n() {
-        assert_eq!(compared(3).len(), 6, "a short list compares every ordered pair");
-        let held = compared(600);
-        assert!(held.len() <= 2 * 600 * 10, "{} questions", held.len());
+    fn a_long_list_is_compared_with_a_few_stable_partners_each_and_a_newcomer_moves_only_its_own_pairs() {
+        let keys: Vec<String> = (0..600).map(|at| format!("capability:part:{at}")).collect();
+        assert_eq!(compared(&keys[..3]).len(), 6, "a short list compares every ordered pair");
+        let held = compared(&keys);
+        assert!(held.len() <= 2 * 600 * 20, "{} questions", held.len());
         let mut reached = std::collections::BTreeSet::from([0usize]);
         let mut frontier = vec![0usize];
         while let Some(at) = frontier.pop() {
@@ -214,6 +227,13 @@ mod tests {
             }
         }
         assert_eq!(reached.len(), 600, "every capability is ranked against the rest");
+        let named = |pairs: &[(usize, usize)], keys: &[String]| -> std::collections::BTreeSet<(String, String)> { pairs.iter().map(|(first, second)| (keys[*first].clone(), keys[*second].clone())).collect() };
+        let before = named(&held, &keys);
+        let mut grown = keys.clone();
+        grown.insert(300, "capability:part:newcomer".to_string());
+        let after = named(&compared(&grown), &grown);
+        let kept = before.intersection(&after).count();
+        assert!(kept * 100 >= before.len() * 95, "{kept} of {} pairs kept", before.len());
     }
 
     #[test]
