@@ -167,10 +167,19 @@ fn fall_back() -> bool {
     true
 }
 
-fn key() -> Option<String> {
-    if falling_back() {
-        return None;
+struct Writer {
+    endpoint: String,
+    key: Option<String>,
+}
+
+fn writer(fallen: bool) -> Writer {
+    match fallen {
+        true => Writer { endpoint: fallback().unwrap_or_default(), key: None },
+        false => Writer { endpoint: endpoint(), key: key() },
     }
+}
+
+fn key() -> Option<String> {
     ["KLAURO_AUTHOR_KEY", "DEEPINFRA_API_KEY"]
         .into_iter()
         .find_map(|named| std::env::var(named).ok())
@@ -180,14 +189,11 @@ fn key() -> Option<String> {
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
         && std::env::var("KLAURO_AI_INTERPRETATION").map(|held| held != "false").unwrap_or(true)
-        && (spoken_to().is_some() || addressed().is_some() || key().is_some())
+        && (spoken_to().is_some() || addressed().is_some() || key().is_some() || fallback().is_some())
         && !crate::spend::exhausted()
 }
 
 fn addressed() -> Option<String> {
-    if falling_back() {
-        return fallback();
-    }
     std::env::var("KLAURO_AUTHOR_ENDPOINT").ok().filter(|held| !held.is_empty())
 }
 
@@ -1037,8 +1043,8 @@ fn carved(text: &str) -> &str {
     &held[open..=close]
 }
 
-fn speaks_of_chat() -> bool {
-    endpoint().contains("/api/chat")
+fn speaks_of_chat(endpoint: &str) -> bool {
+    endpoint.contains("/api/chat")
 }
 
 fn shaped(of: &str) -> serde_json::Value {
@@ -1176,7 +1182,7 @@ fn shaped(of: &str) -> serde_json::Value {
 
 const TERSE: &str = "Answer with the JSON alone, minified on one line: no code fence, no indentation, no words before or after it.";
 
-fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
+fn bodied(prompt: &str, most: u32, model: &str, of: &str, to: &Writer) -> Option<String> {
     let shape = shaped(of);
     let terse;
     let prompt = match of.is_empty() {
@@ -1187,13 +1193,13 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
         }
     };
     let content = match prompt.split_once(CACHED_UP_TO_HERE) {
-        Some((kept, rest)) if endpoint().contains("openrouter.ai") => serde_json::json!([
+        Some((kept, rest)) if to.endpoint.contains("openrouter.ai") => serde_json::json!([
             {"type": "text", "text": kept, "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": rest},
         ]),
         _ => serde_json::Value::String(prompt.replace(CACHED_UP_TO_HERE, "")),
     };
-    let mut held = match speaks_of_chat() {
+    let mut held = match speaks_of_chat(&to.endpoint) {
         true => serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": content}],
@@ -1212,7 +1218,7 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
             "temperature": 0,
         }),
     };
-    if endpoint().contains("openrouter.ai") {
+    if to.endpoint.contains("openrouter.ai") {
         held["usage"] = serde_json::json!({"include": true});
         held["reasoning"] = match std::env::var("KLAURO_AUTHOR_REASONING").ok().filter(|effort| !effort.is_empty() && effort != "none") {
             Some(effort) => serde_json::json!({"effort": effort}),
@@ -1222,9 +1228,9 @@ fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
     serde_json::to_string(&held).ok()
 }
 
-fn spoken_content(text: &str) -> Option<String> {
+fn spoken_content(text: &str, to: &Writer) -> Option<String> {
     let held = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    match speaks_of_chat() {
+    match speaks_of_chat(&to.endpoint) {
         true => held["message"]["content"].as_str().map(str::to_string),
         false => held["choices"][0]["message"]["content"].as_str().map(str::to_string),
     }
@@ -1251,23 +1257,25 @@ fn answered<T: serde::de::DeserializeOwned>(
             Some(_) => true,
         })
     };
-    let read = |text: &str| -> Option<T> {
+    let read = |text: &str, to: &Writer| -> Option<T> {
         let held = match &spoken_to {
             Some(_) => carved(text).to_string(),
-            None => carved(&spoken_content(text)?).to_string(),
+            None => carved(&spoken_content(text, to)?).to_string(),
         };
         carries(&held).then(|| serde_json::from_str::<T>(&held).ok())?
     };
     let mut held = None;
     'asking: for model in models {
         let fallen = fallback_model();
-        let mut model: &str = if falling_back() { fallen.as_str() } else { model.as_str() };
+        let mut by_fallback = falling_back();
+        let mut to = writer(by_fallback);
+        let mut model: &str = if by_fallback { fallen.as_str() } else { model.as_str() };
         let mut request = match &spoken_to {
             Some(command) => format!("{command}\n{prompt}"),
-            None => bodied(prompt, most, model, of)?,
+            None => bodied(prompt, most, model, of, &to)?,
         };
         if let Some(remembered) = crate::jev::remembered(&request)
-            && let Some(value) = read(&remembered)
+            && let Some(value) = read(&remembered, &to)
         {
             return Some(value);
         }
@@ -1281,11 +1289,11 @@ fn answered<T: serde::de::DeserializeOwned>(
                     crate::reach::Answer::Missed,
                     crate::reach::Answer::Held,
                 ),
-                None => ask(&request, of, most, priority(urgency)),
+                None => ask(&request, of, most, priority(urgency), &to),
             };
             match answered {
                 crate::reach::Answer::Held(text) => {
-                    if let Some(value) = read(&text) {
+                    if let Some(value) = read(&text, &to) {
                         held = Some((value, text, request));
                         break 'asking;
                     }
@@ -1298,13 +1306,15 @@ fn answered<T: serde::de::DeserializeOwned>(
                     rejected += 1;
                 }
                 crate::reach::Answer::Refused | crate::reach::Answer::Unauthorized => {
-                    if spoken_to.is_some() || model == fallen.as_str() || !fall_back() {
+                    if spoken_to.is_some() || by_fallback || !fall_back() {
                         break;
                     }
+                    by_fallback = true;
+                    to = writer(true);
                     model = fallen.as_str();
-                    request = bodied(prompt, most, model, of)?;
+                    request = bodied(prompt, most, model, of, &to)?;
                     if let Some(remembered) = crate::jev::remembered(&request)
-                        && let Some(value) = read(&remembered)
+                        && let Some(value) = read(&remembered, &to)
                     {
                         return Some(value);
                     }
@@ -1359,12 +1369,12 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
     String::from_utf8(answered.stdout).ok()
 }
 
-fn ask(request: &str, of: &str, most: u32, urgency: u64) -> crate::reach::Answer {
+fn ask(request: &str, of: &str, most: u32, urgency: u64, to: &Writer) -> crate::reach::Answer {
     let started = std::time::Instant::now();
-    let answer = match (key(), addressed()) {
-        (Some(key), _) => crate::reach::asking(&endpoint(), &key, request, urgency),
-        (None, Some(endpoint)) => crate::reach::asking(&endpoint, "", request, urgency),
-        (None, None) => crate::reach::Answer::Refused,
+    let answer = match (&to.key, to.endpoint.is_empty()) {
+        (Some(key), false) => crate::reach::asking(&to.endpoint, key, request, urgency),
+        (None, false) if to.endpoint != ENDPOINT => crate::reach::asking(&to.endpoint, "", request, urgency),
+        _ => crate::reach::Answer::Refused,
     };
     if let crate::reach::Answer::Held(held) = &answer {
         measured(held, started.elapsed());
