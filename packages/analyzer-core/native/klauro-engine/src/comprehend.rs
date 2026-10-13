@@ -969,8 +969,16 @@ fn describe_one(
             false => kept.join(", "),
         }
     };
+    let steady = {
+        let mut lines: Vec<&str> = listed.lines().collect();
+        lines.sort_unstable();
+        let mut records: Vec<&str> = kept.split(", ").collect();
+        records.sort_unstable();
+        records.dedup();
+        format!("{}\u{1}{}", lines.join("\n"), records.join(", "))
+    };
     let digest = crate::jev::named(&format!(
-        "{project:?}\u{1}{}\u{1}{spoken}\u{1}{listed}\u{1}{kept}\u{1}{}\u{1}{}",
+        "{project:?}\u{1}{}\u{1}{spoken}\u{1}{steady}\u{1}{}\u{1}{}",
         crate::author::DESCRIBING,
         told.shape,
         told.frameworks.join(",")

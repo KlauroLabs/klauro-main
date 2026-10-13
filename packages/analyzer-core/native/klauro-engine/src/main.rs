@@ -1312,7 +1312,8 @@ fn read_it() {
             .iter()
             .map(|project| {
                 let told = components::told(&project.name, &project.shape, &project.frameworks);
-                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&format!("{}\n{told}", crate::author::ARCHITECTURE_ASKED)), told)
+                let steady = components::steady(&project.name, &project.shape, &project.frameworks);
+                (format!("{}\u{1}{}", root.display(), project.project), crate::jev::named(&format!("{}\n{steady}", crate::author::ARCHITECTURE_ASKED)), told)
             })
             .collect();
         let names: Vec<String> = architecture.projects.iter().map(|project| project.name.clone()).collect();

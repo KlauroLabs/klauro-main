@@ -311,6 +311,22 @@ pub fn shape_of(project: &str, sources: &Sources) -> Shape {
     Shape { components, modules, organised_by, styles, stages, starts, provisions }
 }
 
+pub fn steady(name: &str, shape: &Shape, frameworks: &[String]) -> String {
+    let styles: Vec<&str> = shape.styles.iter().map(|style| style.style).collect();
+    let components: Vec<&str> = shape.components.iter().map(|component| component.label.as_str()).collect();
+    format!(
+        "{name}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+        shape.organised_by,
+        frameworks.join(","),
+        styles.join(","),
+        shape.stages.join(","),
+        shape.starts.join(","),
+        shape.provisions.join(","),
+        shape.modules.join(","),
+        components.join(",")
+    )
+}
+
 pub fn told(name: &str, shape: &Shape, frameworks: &[String]) -> String {
     let mut told = format!("part: {name}\n");
     if shape.organised_by != "not shown" {

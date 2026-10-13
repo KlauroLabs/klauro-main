@@ -141,8 +141,25 @@ pub fn asked() -> bool {
 
 const BRIEF_AT_MOST: usize = 280;
 
+fn without_markup(line: &str) -> String {
+    let mut held = String::new();
+    let mut inside = 0usize;
+    for letter in line.chars() {
+        match letter {
+            '<' => inside += 1,
+            '>' if inside > 0 => inside -= 1,
+            _ if inside == 0 => held.push(letter),
+            _ => {}
+        }
+    }
+    let held = regex::Regex::new(r"!\[[^\]]*\]\([^)]*\)").map(|image| image.replace_all(&held, "").to_string()).unwrap_or(held);
+    let held = regex::Regex::new(r"\[([^\]]*)\]\([^)]*\)").map(|link| link.replace_all(&held, "$1").to_string()).unwrap_or(held);
+    held.trim_start_matches(['#', '>', '*', '-', ' ']).trim().to_string()
+}
+
 pub fn brief(said: &str) -> String {
-    let line = said.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    let line = said.lines().map(without_markup).find(|line| line.split_whitespace().count() >= 3).unwrap_or_default();
+    let line = line.as_str();
     match line.char_indices().nth(BRIEF_AT_MOST) {
         Some((at, _)) => line[..at].rsplit_once(' ').map(|(kept, _)| kept).unwrap_or(&line[..at]).to_string(),
         None => line.to_string(),
@@ -359,6 +376,12 @@ pub fn remember(request: &str, answered: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_brief_context_is_the_first_real_sentence_without_markup() {
+        let said = "<p align=\"center\">\n  ![Logo](https://example.com/logo.png)\n</p>\n<h1 align=\"center\">Monica</h1>\nMonica is a [personal CRM](https://example.com) to remember everything about your friends.";
+        assert_eq!(brief(said), "Monica is a personal CRM to remember everything about your friends.");
+    }
 
     #[test]
     fn the_decision_key_goes_only_to_the_decision_service_over_https() {
