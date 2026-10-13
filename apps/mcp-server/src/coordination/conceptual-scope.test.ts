@@ -332,3 +332,14 @@ test('a claimed file maps to the flow steps whose functions live in it, with the
   const elsewhere = deriveConceptualCoordinates({ scope: { paths: ['README.md'], symbols: [] } }, index);
   assert.equal(elsewhere.length, 0);
 });
+
+test('without node records, a claimed file is found from the file path each engine unit id starts with', () => {
+  const flow = {
+    flow_id: 'flow:show', entry_point: 'GET /vaults/{vault}', entities: [],
+    capability_relationships: [{ capability_id: 'cap:vaults', role: 'primary' }],
+    steps: [{ step_id: 'flow:show:load', functions: [{ function_id: 'app/Http/VaultController.php:function:show' }] }],
+  } as unknown as Parameters<typeof buildConceptIndex>[0][number];
+  const index = buildConceptIndex([flow]);
+  const found = deriveConceptualCoordinates({ scope: { paths: ['app/Http/VaultController.php'], symbols: [] } }, index);
+  assert.deepEqual(found.map((coordinate) => [coordinate.capability_id, coordinate.step_id]), [['cap:vaults', 'flow:show:load']]);
+});

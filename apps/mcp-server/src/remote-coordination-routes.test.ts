@@ -685,9 +685,9 @@ test('claims naming only files are placed on the analysed flows and steps, so ag
       base_commit: 'abc1234',
       system: { id: 'contacts', name: 'Contacts', type: 'service', root_path: '/contacts' },
       nodes: [
-        { id: 'u:store', name: 'store', type: 'function', source: { file: 'app/Services/ContactService.php', line: 1 } },
-        { id: 'u:reply', name: 'reply', type: 'function', source: { file: 'app/Http/ContactController.php', line: 1 } },
-        { id: 'u:archive', name: 'archive', type: 'function', source: { file: 'app/Services/ArchiveService.php', line: 1 } },
+        { id: 'app/Services/ContactService.php:function:store', name: 'store', type: 'function', source: { file: 'app/Services/ContactService.php', line: 1 } },
+        { id: 'app/Http/ContactController.php:function:reply', name: 'reply', type: 'function', source: { file: 'app/Http/ContactController.php', line: 1 } },
+        { id: 'app/Services/ArchiveService.php:function:archive', name: 'archive', type: 'function', source: { file: 'app/Services/ArchiveService.php', line: 1 } },
       ],
       edges: [],
       entry_points: [],
@@ -699,15 +699,15 @@ test('claims naming only files are placed on the analysed flows and steps, so ag
           capability_id: 'cap:keep-contacts',
           capability_relationships: [{ capability_id: 'cap:keep-contacts', role: 'primary' }],
           steps: [
-            { step_id: 'flow:create:store', functions: [{ function_id: 'u:store' }] },
-            { step_id: 'flow:create:reply', functions: [{ function_id: 'u:reply' }] },
+            { step_id: 'flow:create:store', functions: [{ function_id: 'app/Services/ContactService.php:function:store' }] },
+            { step_id: 'flow:create:reply', functions: [{ function_id: 'app/Http/ContactController.php:function:reply' }] },
           ],
         },
         {
           flow_id: 'flow:archive', name: 'Archive a contact', entry_point: 'DELETE /contacts/{id}', entities: [],
           capability_id: 'cap:keep-contacts',
           capability_relationships: [{ capability_id: 'cap:keep-contacts', role: 'primary' }],
-          steps: [{ step_id: 'flow:archive:archive', functions: [{ function_id: 'u:archive' }] }],
+          steps: [{ step_id: 'flow:archive:archive', functions: [{ function_id: 'app/Services/ArchiveService.php:function:archive' }] }],
         },
       ],
     } as unknown as import('../../../packages/analyzer-core/src/types/cas.types').CASOutput);

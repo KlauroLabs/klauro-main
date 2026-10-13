@@ -81,15 +81,22 @@ export function buildConceptIndex(flows: FlowConcept[], nodes: FunctionSource[] 
     }
   }
 
-  for (const node of nodes) {
-    const file = node.source?.file;
-    if (!file || !byFunctionId.has(node.id)) continue;
+  const fileOf = new Map(nodes.map((node) => [node.id, node.source?.file]));
+  for (const functionId of byFunctionId.keys()) {
+    const file = fileOf.get(functionId) ?? fileInUnitId(functionId);
+    if (!file) continue;
     const held = byFile.get(normalizedPath(file)) ?? [];
-    held.push(node.id);
+    held.push(functionId);
     byFile.set(normalizedPath(file), held);
   }
 
   return { byFunctionId, byEntryPoint, byFile, flows };
+}
+
+function fileInUnitId(unitId: string): string | undefined {
+  const at = unitId.indexOf(':');
+  const file = at > 0 ? unitId.slice(0, at) : undefined;
+  return file && /\.[A-Za-z0-9]+$/.test(file) ? file : undefined;
 }
 
 function normalizedPath(file: string): string {

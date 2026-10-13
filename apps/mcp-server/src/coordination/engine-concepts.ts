@@ -28,10 +28,10 @@ async function indexFor(analysisKey: string): Promise<HeldIndex | undefined> {
   if (!identity?.analysis_id) return undefined;
   const known = held.get(analysisKey);
   if (known?.ref.analysis_id === identity.analysis_id) return known;
-  const cas = await getAnalysis(analysisKey, { sections: ['identity', 'graph', 'comprehension'] }).catch(() => undefined);
+  const cas = await getAnalysis(analysisKey, { sections: ['identity', 'comprehension'] }).catch(() => undefined);
   if (!cas?.flows?.length) return undefined;
   const fresh: HeldIndex = {
-    index: buildConceptIndex(cas.flows, cas.nodes ?? []),
+    index: buildConceptIndex(cas.flows),
     ref: {
       analysis_id: identity.analysis_id,
       ...(identity.base_commit ? { commit: identity.base_commit } : {}),
