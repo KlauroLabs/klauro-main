@@ -17,6 +17,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { DeviceAuthStore, REGISTERED_CLIENTS } from './device-auth';
+import { SyncStore, type SyncPushChange } from './sync-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { resolveWorkspaceMemberResponse } from './workspace-member-route';
 import { workspaceContractsHttpResponse } from './workspace-contracts';
@@ -100,6 +101,7 @@ import { reserveHostedAnalysis } from './hosted-analysis-admission';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
+const SYNCED_ENTITY_CLASSES = new Set(['projects']);
 declare const __KLAURO_VERSION__: string | undefined;
 const SERVICE_VERSION: string | null = (() => {
   try {
@@ -195,6 +197,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   void reapStaleAttemptRecordsOnStartup(dataDir);
   const accounts = new AccountStore(dataDir);
   const deviceAuth = new DeviceAuthStore();
+  const syncStore = new SyncStore(dataDir);
 
   const workspaceAnalyses = new AccountWorkspaceAnalysisScheduler(dataDir, accounts);
   const notifyProjectAnalysisLandedForAnalysisId = async (analysisId: string | undefined): Promise<void> => {
@@ -447,7 +450,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         if (request.method === 'POST' && route === AUTHOR_RELAY_ROUTE) return relayAuthorAsk(request, response, apiAuthorization.userId);
-        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses, deviceAuth);
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses, deviceAuth, syncStore);
         if (accountResult.stream) {
           response.writeHead(accountResult.statusCode, accountResult.stream.headers);
           const stream = createReadStream(accountResult.stream.filePath);
@@ -2351,6 +2354,7 @@ async function handleAccountApi(
   dataDir?: string,
   workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
   deviceAuth?: DeviceAuthStore,
+  syncStore?: SyncStore,
 ): Promise<{
   statusCode: number;
   body: unknown;
@@ -2416,6 +2420,29 @@ async function handleAccountApi(
     const approved = deviceAuth.approve(body.user_code, session.token, session.user);
     if (!approved) throw new AccountHttpError(404, 'That code is unknown, expired, or already used.');
     return { statusCode: 200, body: { status: 'approved', email: session.user.email } };
+  }
+
+  const syncChangesMatch = route.match(/^\/api\/sync\/([^/]+)\/changes$/);
+  if (syncChangesMatch) {
+    if (sharedToken) throw new AccountHttpError(400, 'Sync is not available for shared-token requests');
+    if (!syncStore) throw new AccountHttpError(500, 'Sync storage is unavailable');
+    const entityClass = decodeURIComponent(syncChangesMatch[1]);
+    if (!SYNCED_ENTITY_CLASSES.has(entityClass)) throw new AccountHttpError(404, `Unknown sync entity class: ${entityClass}`);
+
+    if (request.method === 'POST') {
+      const body = await readJsonBody<{ deviceId?: string; changes?: SyncPushChange[] }>(request, maxBodyBytes);
+      if (!body.deviceId || !Array.isArray(body.changes)) throw new AccountHttpError(400, 'deviceId and changes are required');
+      const result = await syncStore.pushChanges(userId, entityClass, body.deviceId, body.changes.slice(0, 200));
+      return { statusCode: 200, body: result };
+    }
+
+    if (request.method === 'GET') {
+      const params = new URL(request.url || '', 'http://localhost').searchParams;
+      const since = Number(params.get('since') || 0) || 0;
+      const limit = Number(params.get('limit') || 0) || undefined;
+      const result = await syncStore.pullChanges(userId, entityClass, since, limit);
+      return { statusCode: 200, body: result };
+    }
   }
 
   if (request.method === 'GET' && route === '/api/account/activity') {
