@@ -29,7 +29,10 @@ export function DevicePage() {
     const code = userCode.trim();
     setPreview(null);
     setLookupError('');
-    if (code.length < 8) return;
+    if (code.length < 8) {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     setChecking(true);
     const handle = setTimeout(() => {

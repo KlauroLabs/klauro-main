@@ -392,10 +392,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const userCode = new URL(request.url || '', 'http://localhost').searchParams.get('code') || '';
         const record = deviceAuth.findByUserCode(userCode);
         if (!record || record.status !== 'pending') {
-          writeJson(response, 404, { status: 'error', error: 'That code is unknown or has expired.' });
+          writeJsonNoStore(response, 404, { status: 'error', error: 'That code is unknown or has expired.' });
           return;
         }
-        writeJson(response, 200, {
+        writeJsonNoStore(response, 200, {
           client_id: record.clientId,
           client_name: REGISTERED_CLIENTS[record.clientId],
           requested_at: new Date(record.issuedAt).toISOString(),
@@ -2272,6 +2272,9 @@ async function handleAccountApi(
   if (syncChangesMatch) {
     if (sharedToken) throw new AccountHttpError(400, 'Sync is not available for shared-token requests');
     if (!syncStore) throw new AccountHttpError(500, 'Sync storage is unavailable');
+    if (request.method !== 'POST' && request.method !== 'GET') {
+      throw new AccountHttpError(405, `Method ${request.method} is not allowed on this route`);
+    }
     const entityClass = decodeURIComponent(syncChangesMatch[1]);
     if (!SYNCED_ENTITY_CLASSES.has(entityClass)) throw new AccountHttpError(404, `Unknown sync entity class: ${entityClass}`);
     const syncRateLimitPerMinute = Number(process.env.KLAURO_SYNC_RATE_LIMIT_PER_MINUTE || 60);
@@ -2282,7 +2285,8 @@ async function handleAccountApi(
     if (request.method === 'POST') {
       const body = await readJsonBody<{ deviceId?: string; changes?: SyncPushChange[] }>(request, maxBodyBytes);
       if (!body.deviceId || !Array.isArray(body.changes)) throw new AccountHttpError(400, 'deviceId and changes are required');
-      const changes = body.changes.slice(0, 200);
+      if (body.changes.length > 200) throw new AccountHttpError(400, 'A push may carry at most 200 changes per request; split this batch and retry');
+      const changes = body.changes;
       const syncVolumePerMinute = Number(process.env.KLAURO_SYNC_MAX_CHANGES_PER_MINUTE || 2000);
       if (syncBuckets && changes.length && !withinRateLimit(syncBuckets, `sync-volume:${userId}`, syncVolumePerMinute, changes.length)) {
         throw new AccountHttpError(429, 'This account is pushing sync changes too fast. A large batch counts toward the limit even under the request-count limit. Try again shortly.');
@@ -2291,13 +2295,11 @@ async function handleAccountApi(
       return { statusCode: 200, body: result };
     }
 
-    if (request.method === 'GET') {
-      const params = new URL(request.url || '', 'http://localhost').searchParams;
-      const since = Number(params.get('since') || 0) || 0;
-      const limit = Number(params.get('limit') || 0) || undefined;
-      const result = await syncStore.pullChanges(userId, entityClass, since, limit);
-      return { statusCode: 200, body: result };
-    }
+    const params = new URL(request.url || '', 'http://localhost').searchParams;
+    const since = Number(params.get('since') || 0) || 0;
+    const limit = Number(params.get('limit') || 0) || undefined;
+    const result = await syncStore.pullChanges(userId, entityClass, since, limit);
+    return { statusCode: 200, body: result };
   }
 
   if (request.method === 'GET' && route === '/api/account/activity') {

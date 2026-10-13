@@ -126,6 +126,27 @@ test('a single account cannot grow one entity class past its record cap, but can
   }
 });
 
+test('deleting records frees quota instead of letting tombstones count against the cap forever', async () => {
+  const previous = process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS;
+  process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS = '3';
+  try {
+    await withTempDir(async dataDir => {
+      const store = new SyncStore(dataDir);
+      for (let i = 0; i < 3; i++) {
+        await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: `p${i}`, op: 'put', record: { name: `P${i}` }, lamport: 1, idempotencyKey: `k${i}` }]);
+      }
+      for (let i = 0; i < 3; i++) {
+        await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: `p${i}`, op: 'delete', record: null, lamport: 2, idempotencyKey: `kd${i}` }]);
+      }
+      const afterDeletes = await store.pushChanges('usr_1', 'projects', 'dev-a', [{ id: 'p-new', op: 'put', record: { name: 'New' }, lamport: 1, idempotencyKey: 'knew' }]);
+      assert.equal(afterDeletes.accepted.length, 1, 'quota freed by a delete must be reusable, not consumed forever by the tombstone');
+    });
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS;
+    else process.env.KLAURO_SYNC_MAX_RECORDS_PER_ACCOUNT_CLASS = previous;
+  }
+});
+
 test('data survives across a fresh SyncStore instance pointed at the same directory', async () => {
   await withTempDir(async dataDir => {
     const first = new SyncStore(dataDir);

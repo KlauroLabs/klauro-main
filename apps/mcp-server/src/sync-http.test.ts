@@ -178,3 +178,28 @@ test('an oversized pushed record is rejected by the real HTTP route, not just th
     else process.env.KLAURO_SYNC_MAX_RECORD_BYTES = previous;
   }
 });
+
+test('a batch over 200 changes is rejected outright rather than silently truncated', async () => {
+  await withServer(async baseUrl => {
+    const { token } = await registerUser(baseUrl, 'sync-http-oversized-batch@example.com');
+    const changes = Array.from({ length: 201 }, (_, i) => ({ id: `p${i}`, op: 'put' as const, record: { name: `P${i}` }, lamport: 1, idempotencyKey: `k${i}` }));
+    const response = await fetch(`${baseUrl}/api/sync/projects/changes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ deviceId: 'dev-a', changes }),
+    });
+    assert.equal(response.status, 400, 'a batch this large must be rejected, never silently truncated and reported as fully accepted');
+  });
+});
+
+test('a method other than GET or POST on the sync route is rejected as not allowed, not treated as an unknown route', async () => {
+  await withServer(async baseUrl => {
+    const { token } = await registerUser(baseUrl, 'sync-http-wrong-method@example.com');
+    const response = await fetch(`${baseUrl}/api/sync/projects/changes`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ deviceId: 'dev-a', changes: [] }),
+    });
+    assert.equal(response.status, 405);
+  });
+});

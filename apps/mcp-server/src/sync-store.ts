@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { writeJsonAtomic } from './json-storage-writer';
 
 export interface SyncPushChange {
   id: string;
@@ -85,7 +86,7 @@ export class SyncStore {
         }
         if (!existing) {
           const classLimit = maxRecordsPerAccountClass();
-          const countForClass = db.records.reduce((n, r) => n + (r.userId === userId && r.entityClass === entityClass ? 1 : 0), 0);
+          const countForClass = db.records.reduce((n, r) => n + (r.userId === userId && r.entityClass === entityClass && r.deletedAt === null ? 1 : 0), 0);
           if (countForClass >= classLimit) {
             rejected.push({ id: change.id, reason: `this account has reached the ${classLimit}-record limit for ${entityClass}` });
             continue;
@@ -155,9 +156,6 @@ export class SyncStore {
   }
 
   private async writeToDisk(db: SyncDatabase): Promise<void> {
-    await fs.ensureDir(path.dirname(this.filePath));
-    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeJson(tmpPath, db, { spaces: 2 });
-    await fs.rename(tmpPath, this.filePath);
+    await writeJsonAtomic(this.filePath, db, { spaces: 2 });
   }
 }

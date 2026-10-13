@@ -164,6 +164,7 @@ test('the status preview reveals which client is asking, before any approval dec
 
     const statusResponse = await fetch(`${baseUrl}/api/auth/device/status?code=${encodeURIComponent(issued.user_code)}`);
     assert.equal(statusResponse.status, 200);
+    assert.equal(statusResponse.headers.get('cache-control'), 'no-store', 'a pending sign-in preview must never be cacheable by an intermediary');
     const status = await statusResponse.json() as { client_id: string; client_name: string; requested_at: string };
     assert.equal(status.client_id, 'agent-desktop');
     assert.equal(status.client_name, 'Agent Desktop');

@@ -65,4 +65,17 @@ describe('DevicePage', () => {
     await waitFor(() => expect(approveDeviceCode).toHaveBeenCalledWith('ABCD-1234', 'session-token'));
     expect(await screen.findByText(/Device approved/)).toBeInTheDocument();
   });
+
+  it('never gets stuck showing the lookup spinner after the code is shortened below 8 characters', async () => {
+    mockAuth();
+    vi.spyOn(api, 'getDeviceCodeStatus').mockResolvedValue({ client_id: 'agent-desktop', client_name: 'Agent Desktop', requested_at: new Date().toISOString() });
+    renderWithProviders(<DevicePage />, { route: { pathname: '/device', search: '?code=ABCD-1234' }, path: '/device' });
+
+    expect(screen.getByText('Looking up that code…')).toBeInTheDocument();
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'ABCD-1' } });
+
+    expect(screen.queryByText('Looking up that code…')).not.toBeInTheDocument();
+  });
 });
