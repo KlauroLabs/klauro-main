@@ -61,21 +61,24 @@ try {
   // no id-bearing collection, self-reported in validation and gated by nothing.
   // Asserted here because this is the one deploy step that runs a REAL
   // analysis end to end.
-  const { checkEdgeReferentialIntegrity, formatReferentialIntegrityReport } = await import(
-    '/app/packages/analyzer-core/src/analyzer/core/graph-referential-integrity.ts'
+  const endpointIds = new Set(
+    [output?.nodes, output?.entry_points, output?.exit_points].flatMap((rows) => (rows || []).map((row) => row.id)),
   );
-  const integrity = checkEdgeReferentialIntegrity(output?.edges, {
-    nodes: output?.nodes,
-    entry_points: output?.entry_points,
-    exit_points: output?.exit_points,
-  });
-  if (!integrity.ok) {
+  const edges = output?.edges || [];
+  const dangling = edges.filter((edge) => !endpointIds.has(edge.source) || !endpointIds.has(edge.target));
+  const integrity = dangling.length === 0
+    ? `edge referential integrity clean — ${edges.length} edge(s), 0 dangling endpoints.`
+    : `${dangling.length} of ${edges.length} edge(s) reference an id that exists in no id-bearing collection; e.g. ${dangling
+      .slice(0, 5)
+      .map((edge) => `${edge.type || 'edge'} ${endpointIds.has(edge.source) ? edge.target : edge.source}`)
+      .join(', ')}`;
+  if (dangling.length > 0) {
     console.error('ANALYSIS SMOKE FAIL: edge referential integrity violated.');
-    console.error(formatReferentialIntegrityReport(integrity));
+    console.error(integrity);
     process.exit(1);
   }
 
-  console.log(`analysis smoke OK — ${nodes} nodes in ${elapsed}ms; ${formatReferentialIntegrityReport(integrity)}`);
+  console.log(`analysis smoke OK — ${nodes} nodes in ${elapsed}ms; ${integrity}`);
 } catch (error) {
   // A torn/partial deploy surfaces HERE (e.g. ReferenceError: X is not defined).
   console.error(`ANALYSIS SMOKE FAIL: ${error instanceof Error ? error.message : String(error)}`);
