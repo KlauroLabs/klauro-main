@@ -365,11 +365,6 @@ what the dispatched work achieves for someone, so name the result of the work, n
 routing or forwarding it. Every flow that reaches an outcome belongs to a capability, and one that only \
 supports a purpose is attached to the capability it serves with the role that says so.";
 
-pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
-history or whether it is still maintained; what the software does is read from the code below, and that decides. \
-When it does say what the software is for, the purposes below are the ones it names in its own words. When it says \
-nothing about itself, name a purpose only when the outcomes below jointly deliver it.";
-
 pub const SAME_PURPOSE_ASKED: &str = "Are these two the same purpose: the same outcome for the same audience, named two ways, or one a stage, \
 a way in or a narrower view of the other that ends in that same outcome? Two reached through the same entry points or changing the same \
 records, differing only in the words used, are one purpose, and so is a small step a person takes while doing the other. Keep them apart \
@@ -439,7 +434,7 @@ fn decided_in_batches(state: &str, asking_of: &[(String, crate::jev::Question)])
 }
 
 pub fn same_purposes(spoken_for: &str, scope: &str, listed: &[(String, String)], pairs: &[(usize, usize)]) -> BTreeMap<(usize, usize), f64> {
-    let state = format!("{}\n\n{PURPOSE}", crate::jev::brief(spoken_for));
+    let state = format!("{}\n\n{PURPOSE}\n\n{SAME_PURPOSE_ASKED}", crate::jev::brief(spoken_for));
     let questions: BTreeMap<String, crate::jev::Question> = pairs
         .iter()
         .map(|(first, second)| {
@@ -448,7 +443,7 @@ pub fn same_purposes(spoken_for: &str, scope: &str, listed: &[(String, String)],
                 format!("same_{first}_{second}"),
                 crate::jev::Question {
                     kind: "noul",
-                    instructions: format!("{SAME_PURPOSE_ASKED}\nFirst: {}\nSecond: {}", told(*first), told(*second)),
+                    instructions: format!("First: {}\nSecond: {}", told(*first), told(*second)),
                     criteria: BTreeMap::from([("true".to_string(), "they are the same purpose".to_string()), ("false".to_string(), "they are different purposes".to_string())]).into(),
                 },
             )

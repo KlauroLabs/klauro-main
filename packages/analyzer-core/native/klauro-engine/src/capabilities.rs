@@ -237,6 +237,8 @@ pub(crate) fn the_same_among(
         .collect()
 }
 
+const DISTINCTIVE_SHARE: usize = 4;
+
 pub(crate) fn scope_of(capabilities: &[Capability]) -> String {
     let project = capabilities.iter().find_map(|capability| capability.project.clone()).unwrap_or_default();
     let level = capabilities.first().map(|capability| capability.level).unwrap_or_default();
@@ -264,7 +266,14 @@ pub(crate) fn which_are_the_same(capabilities: &[Capability], said: &str) -> Vec
             records.chain(ways_in).collect()
         })
         .collect();
-    let near = |first: usize, second: usize| !reached[first].is_disjoint(&reached[second]);
+    let mut held_by: BTreeMap<&str, usize> = BTreeMap::new();
+    for facts in &reached {
+        for fact in facts {
+            *held_by.entry(fact).or_default() += 1;
+        }
+    }
+    let distinctive_at_most = (capabilities.len() / DISTINCTIVE_SHARE).max(2);
+    let near = |first: usize, second: usize| reached[first].intersection(&reached[second]).any(|fact| held_by.get(fact).copied().unwrap_or_default() <= distinctive_at_most);
     let scope = scope_of(capabilities);
     the_same_among(&listed, near, |pairs| crate::author::same_purposes(said, &scope, &listed, pairs))
 }

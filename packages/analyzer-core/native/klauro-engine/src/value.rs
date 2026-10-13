@@ -27,16 +27,14 @@ fn told(capability: &Capability) -> (String, String) {
     (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
 }
 
-pub(crate) fn own_value_question(name: &str, outcome: &str) -> String {
-    OWN_VALUE_ASKED.replace("{name}", name).replace("{outcome}", outcome)
-}
-
 fn noul(instructions: String, yes: String, no: String) -> crate::jev::Question {
     crate::jev::Question { kind: "noul", instructions, criteria: BTreeMap::from([("true".to_string(), yes), ("false".to_string(), no)]).into() }
 }
 
+const TOWARD_ASKED: &str = "Each question names an earlier and a later thing people do with this product. Answer true when people do the earlier one to prepare for or decide on the later one, because the later one is what they are working toward. Answer false when the later one only looks at, reports on, undoes or follows up what the earlier one already gave them.";
+
 fn choice(first: String, second: String) -> crate::jev::Question {
-    crate::jev::Question { kind: "choice", instructions: CLOSER_ASKED.to_string(), criteria: BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]).into() }
+    crate::jev::Question { kind: "choice", instructions: "Which of these two?".to_string(), criteria: BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]).into() }
 }
 
 const ALL_PAIRS_UP_TO: usize = 16;
@@ -130,35 +128,38 @@ pub(crate) fn weigh(capabilities: &mut [Capability], said: &str) {
         return;
     }
     let listed: Vec<(String, String)> = capabilities.iter().map(told).collect();
-    let state = crate::jev::brief(said);
     let scope = crate::capabilities::scope_of(capabilities);
-    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    let mut owning: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
     for (at, (name, outcome)) in listed.iter().enumerate() {
-        questions.insert(format!("own_{at}"), noul(own_value_question(name, outcome), GIVES.to_string(), ONLY_ENABLES.to_string()));
+        owning.insert(format!("own_{at}"), noul(format!("\"{name}\" ({outcome})"), GIVES.to_string(), ONLY_ENABLES.to_string()));
     }
     let keys: Vec<String> = capabilities.iter().map(|capability| capability.id.clone()).collect();
     let pairs = compared(&keys);
+    let mut toward_of: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    let mut closer_of: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
     for (first, second) in pairs.iter().copied() {
-        {
-            let (earlier, earlier_does) = &listed[first];
-            let (later, later_does) = &listed[second];
-            questions.insert(
-                format!("toward_{first}_{second}"),
-                noul(
-                    format!(
-                        "Do people do \"{earlier}\" ({earlier_does}) to prepare for or decide on \"{later}\" ({later_does}), because \"{later}\" is what they are working toward? \
-Answer no when \"{later}\" only looks at, reports on, undoes or follows up what \"{earlier}\" already gave them."
-                    ),
-                    format!("\"{earlier}\" is done working toward \"{later}\""),
-                    format!("\"{later}\" is not what \"{earlier}\" works toward"),
-                ),
-            );
-            questions.insert(format!("closer_{first}_{second}"), choice(format!("{earlier}: {earlier_does}"), format!("{later}: {later_does}")));
-        }
+        let (earlier, earlier_does) = &listed[first];
+        let (later, later_does) = &listed[second];
+        toward_of.insert(
+            format!("toward_{first}_{second}"),
+            noul(format!("Earlier: \"{earlier}\" ({earlier_does})\nLater: \"{later}\" ({later_does})"), "the earlier is done working toward the later".to_string(), "the later is not what the earlier works toward".to_string()),
+        );
+        closer_of.insert(format!("closer_{first}_{second}"), choice(format!("{earlier}: {earlier_does}"), format!("{later}: {later_does}")));
     }
-    let asked = questions.len();
+    let brief = crate::jev::brief(said);
+    let own_state = format!("{brief}\n\n{}", OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the capability named in each question"));
+    let toward_state = format!("{brief}\n\n{TOWARD_ASKED}");
+    let closer_state = format!("{brief}\n\n{CLOSER_ASKED}");
+    let asked = owning.len() + toward_of.len() + closer_of.len();
+    let deciding = || {
+        let ((own, toward), closer) = rayon::join(
+            || rayon::join(|| crate::jev::decide_remembered(&scope, &own_state, owning), || crate::jev::decide_remembered(&scope, &toward_state, toward_of)),
+            || crate::jev::decide_remembered(&scope, &closer_state, closer_of),
+        );
+        own.into_iter().chain(toward).chain(closer).collect::<BTreeMap<String, crate::jev::Decision>>()
+    };
     let (decided, judged) = rayon::join(
-        || crate::jev::decide_remembered(&scope, &state, questions),
+        deciding,
         || crate::author::give_on_their_own(said, &listed, &OWN_VALUE_ASKED.replace("\"{name}\" ({outcome})", "the numbered capability"), GIVES, ONLY_ENABLES),
     );
     if decided.len() < asked || judged.iter().any(Option::is_none) {
